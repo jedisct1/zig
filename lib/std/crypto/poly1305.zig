@@ -46,6 +46,9 @@ pub const Poly1305 = if (@sizeOf(usize) >= 8)
             const r0 = st.r[0];
             const r1 = st.r[1];
             const r2 = st.r[2];
+            var h0 = st.h[0];
+            var h1 = st.h[1];
+            var h2 = st.h[2];
             const s1 = r1 * (5 << 2);
             const s2 = r2 * (5 << 2);
             var i: usize = 0;
@@ -53,29 +56,30 @@ pub const Poly1305 = if (@sizeOf(usize) >= 8)
                 // h += m[i]
                 const t0 = mem.readIntLittle(u64, m[i..][0..8]);
                 const t1 = mem.readIntLittle(u64, m[i + 8 ..][0..8]);
-                st.h[0] += t0 & 0xfffffffffff;
-                st.h[1] += ((t0 >> 44) | (t1 << 20)) & 0xfffffffffff;
-                st.h[2] += (((t1 >> 24)) & 0x3ffffffffff) | hibit;
+                h0 += t0 & 0xfffffffffff;
+                h1 += ((t0 >> 44) | (t1 << 20)) & 0xfffffffffff;
+                h2 += (((t1 >> 24)) & 0x3ffffffffff) | hibit;
 
                 // h *= r
-                const d0 = @as(u128, st.h[0]) * r0 + @as(u128, st.h[1]) * s2 + @as(u128, st.h[2]) * s1;
-                var d1 = @as(u128, st.h[0]) * r1 + @as(u128, st.h[1]) * r0 + @as(u128, st.h[2]) * s2;
-                var d2 = @as(u128, st.h[0]) * r2 + @as(u128, st.h[1]) * r1 + @as(u128, st.h[2]) * r0;
+                const d0 = @as(u128, h0) * r0 + @as(u128, h1) * s2 + @as(u128, h2) * s1;
+                var d1 = @as(u128, h0) * r1 + @as(u128, h1) * r0 + @as(u128, h2) * s2;
+                var d2 = @as(u128, h0) * r2 + @as(u128, h1) * r1 + @as(u128, h2) * r0;
 
                 // partial reduction
                 var carry = d0 >> 44;
-                st.h[0] = @truncate(u64, d0) & 0xfffffffffff;
+                h0 = @truncate(u64, d0) & 0xfffffffffff;
                 d1 += carry;
                 carry = @intCast(u64, d1 >> 44);
-                st.h[1] = @truncate(u64, d1) & 0xfffffffffff;
+                h1 = @truncate(u64, d1) & 0xfffffffffff;
                 d2 += carry;
                 carry = @intCast(u64, d2 >> 42);
-                st.h[2] = @truncate(u64, d2) & 0x3ffffffffff;
-                st.h[0] += @truncate(u64, carry) * 5;
-                carry = st.h[0] >> 44;
-                st.h[0] &= 0xfffffffffff;
-                st.h[1] += @truncate(u64, carry);
+                h2 = @truncate(u64, d2) & 0x3ffffffffff;
+                h0 += @truncate(u64, carry) * 5;
+                carry = h0 >> 44;
+                h0 &= 0xfffffffffff;
+                h1 += @truncate(u64, carry);
             }
+            st.h = [_]u64{ h0, h1, h2 };
         }
 
         pub fn update(st: *Poly1305, m: []const u8) void {
@@ -238,6 +242,11 @@ else
             const r2 = st.r[2];
             const r3 = st.r[3];
             const r4 = st.r[4];
+            var h0 = st.h[0];
+            var h1 = st.h[1];
+            var h2 = st.h[2];
+            var h3 = st.h[3];
+            var h4 = st.h[4];
             const s1 = r1 * 5;
             const s2 = r2 * 5;
             const s3 = r3 * 5;
@@ -245,39 +254,40 @@ else
             var i: usize = 0;
             while (i + block_size <= m.len) : (i += block_size) {
                 // h += m[i]
-                st.h[0] += mem.readIntLittle(u32, m[i..][0..4]) & 0x3ffffff;
-                st.h[1] += (mem.readIntLittle(u32, m[i + 3 ..][0..4]) >> 2) & 0x3ffffff;
-                st.h[2] += (mem.readIntLittle(u32, m[i + 6 ..][0..4]) >> 4) & 0x3ffffff;
-                st.h[3] += (mem.readIntLittle(u32, m[i + 9 ..][0..4]) >> 6) & 0x3ffffff;
-                st.h[4] += (mem.readIntLittle(u32, m[i + 12 ..][0..4]) >> 8) | hibit;
+                h0 += mem.readIntLittle(u32, m[i..][0..4]) & 0x3ffffff;
+                h1 += (mem.readIntLittle(u32, m[i + 3 ..][0..4]) >> 2) & 0x3ffffff;
+                h2 += (mem.readIntLittle(u32, m[i + 6 ..][0..4]) >> 4) & 0x3ffffff;
+                h3 += (mem.readIntLittle(u32, m[i + 9 ..][0..4]) >> 6) & 0x3ffffff;
+                h4 += (mem.readIntLittle(u32, m[i + 12 ..][0..4]) >> 8) | hibit;
 
                 // h *= r
-                const d0 = (@as(u64, st.h[0]) * r0) + (@as(u64, st.h[1]) * s4) + (@as(u64, st.h[2]) * s3) + (@as(u64, st.h[3]) * s2) + (@as(u64, st.h[4]) * s1);
-                var d1 = (@as(u64, st.h[0]) * r1) + (@as(u64, st.h[1]) * r0) + (@as(u64, st.h[2]) * s4) + (@as(u64, st.h[3]) * s3) + (@as(u64, st.h[4]) * s2);
-                var d2 = (@as(u64, st.h[0]) * r2) + (@as(u64, st.h[1]) * r1) + (@as(u64, st.h[2]) * r0) + (@as(u64, st.h[3]) * s4) + (@as(u64, st.h[4]) * s3);
-                var d3 = (@as(u64, st.h[0]) * r3) + (@as(u64, st.h[1]) * r2) + (@as(u64, st.h[2]) * r1) + (@as(u64, st.h[3]) * r0) + (@as(u64, st.h[4]) * s4);
-                var d4 = (@as(u64, st.h[0]) * r4) + (@as(u64, st.h[1]) * r3) + (@as(u64, st.h[2]) * r2) + (@as(u64, st.h[3]) * r1) + (@as(u64, st.h[4]) * r0);
+                const d0 = (@as(u64, h0) * r0) + (@as(u64, h1) * s4) + (@as(u64, h2) * s3) + (@as(u64, h3) * s2) + (@as(u64, h4) * s1);
+                var d1 = (@as(u64, h0) * r1) + (@as(u64, h1) * r0) + (@as(u64, h2) * s4) + (@as(u64, h3) * s3) + (@as(u64, h4) * s2);
+                var d2 = (@as(u64, h0) * r2) + (@as(u64, h1) * r1) + (@as(u64, h2) * r0) + (@as(u64, h3) * s4) + (@as(u64, h4) * s3);
+                var d3 = (@as(u64, h0) * r3) + (@as(u64, h1) * r2) + (@as(u64, h2) * r1) + (@as(u64, h3) * r0) + (@as(u64, h4) * s4);
+                var d4 = (@as(u64, h0) * r4) + (@as(u64, h1) * r3) + (@as(u64, h2) * r2) + (@as(u64, h3) * r1) + (@as(u64, h4) * r0);
 
                 // partial reduction
                 var carry = @truncate(u32, d0 >> 26);
-                st.h[0] = @truncate(u32, d0) & 0x3ffffff;
+                h0 = @truncate(u32, d0) & 0x3ffffff;
                 d1 += carry;
                 carry = @truncate(u32, d1 >> 26);
-                st.h[1] = @truncate(u32, d1) & 0x3ffffff;
+                h1 = @truncate(u32, d1) & 0x3ffffff;
                 d2 += carry;
                 carry = @truncate(u32, d2 >> 26);
-                st.h[2] = @truncate(u32, d2) & 0x3ffffff;
+                h2 = @truncate(u32, d2) & 0x3ffffff;
                 d3 += carry;
                 carry = @truncate(u32, d3 >> 26);
-                st.h[3] = @truncate(u32, d3) & 0x3ffffff;
+                h3 = @truncate(u32, d3) & 0x3ffffff;
                 d4 += carry;
                 carry = @truncate(u32, d4 >> 26);
-                st.h[4] = @truncate(u32, d4) & 0x3ffffff;
-                st.h[0] += carry * 5;
-                carry = st.h[0] >> 26;
-                st.h[0] &= 0x3ffffff;
-                st.h[1] += carry;
+                h4 = @truncate(u32, d4) & 0x3ffffff;
+                h0 += carry * 5;
+                carry = h0 >> 26;
+                h0 &= 0x3ffffff;
+                h1 += carry;
             }
+            st.h = [_]u32{ h0, h1, h2, h3, h4 };
         }
 
         pub fn update(st: *Poly1305, m: []const u8) void {
