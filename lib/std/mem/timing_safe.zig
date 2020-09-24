@@ -7,7 +7,7 @@ const testing = std.testing;
 
 const TimingSafeEql = struct {
     fn _x86_64(comptime T: type, comptime xlen: usize, a: []const T, b: []const T) u64 {
-        @setEvalBranchQuota(10000);
+        @setEvalBranchQuota(20000);
 
         comptime var i: usize = 0;
         comptime var buf = [_]u8{0} ** 1024;
@@ -133,6 +133,7 @@ pub fn timingSafeEql(comptime T: type, comptime len: usize, a: [len]T, b: [len]T
 test "timingSafeEql" {
     var a: [256]u8 = undefined;
     var b: [256]u8 = undefined;
+
     comptime var i: usize = 1;
     inline while (i <= 256) : (i += 13) {
         crypto.randomBytes(a[0..i]) catch unreachable;
