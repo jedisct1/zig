@@ -13,6 +13,7 @@ pub const aead = struct {
     pub const XChaCha20Poly1305 = chacha20.XChacha20Poly1305;
     pub const AEGIS128L = @import("crypto/aegis.zig").AEGIS128L;
     pub const AEGIS256 = @import("crypto/aegis.zig").AEGIS256;
+    pub const AESGCM = @import("crypto/aes_gcm.zig").AESGCM;
 };
 
 /// Authentication (MAC) functions.
