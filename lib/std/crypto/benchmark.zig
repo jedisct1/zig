@@ -14,6 +14,7 @@ const crypto = std.crypto;
 
 const KiB = 1024;
 const MiB = 1024 * KiB;
+const GiB = 1024 * MiB;
 
 var prng = std.rand.DefaultPrng.init(0);
 
@@ -21,6 +22,50 @@ const Crypto = struct {
     ty: type,
     name: []const u8,
 };
+
+pub fn benchmarkRawCopies(comptime bytes: comptime_int) !u64 {
+    var in: [512 * KiB]u8 = undefined;
+    prng.random.bytes(in[0..]);
+
+    var out: [in.len]u8 = undefined;
+
+    var offset: usize = 0;
+    var timer = try Timer.start();
+    const start = timer.lap();
+    while (offset < bytes) : (offset += in.len) {
+        mem.doNotOptimizeAway(&in);
+        mem.copy(u8, out[0..], in[0..]);
+        mem.doNotOptimizeAway(&out);
+    }
+    const end = timer.read();
+
+    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
+    const throughput = @floatToInt(u64, bytes / elapsed_s);
+
+    return throughput;
+}
+
+pub fn benchmarkRawMoves(comptime bytes: comptime_int) !u64 {
+    var in: [512 * KiB]u8 = undefined;
+    prng.random.bytes(in[0..]);
+
+    var out = in;
+
+    var offset: usize = 0;
+    var timer = try Timer.start();
+    const start = timer.lap();
+    while (offset < bytes) : (offset += in.len) {
+        mem.doNotOptimizeAway(&in);
+        mem.copy(u8, out[0..], in[1..]);
+        mem.doNotOptimizeAway(&out);
+    }
+    const end = timer.read();
+
+    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
+    const throughput = @floatToInt(u64, bytes / elapsed_s);
+
+    return throughput;
+}
 
 const hashes = [_]Crypto{
     Crypto{ .ty = crypto.hash.Md5, .name = "md5" },
@@ -296,6 +341,16 @@ pub fn main() !void {
             usage();
             std.os.exit(1);
         }
+    }
+
+    if (filter == null or std.mem.indexOf(u8, "raw copy", filter.?) != null) {
+        const throughput = try benchmarkRawCopies(mode(4 * GiB));
+        try stdout.print("{:>17}: {:10} MiB/s\n", .{ "raw copy", throughput / (1 * MiB) });
+    }
+
+    if (filter == null or std.mem.indexOf(u8, "raw move", filter.?) != null) {
+        const throughput = try benchmarkRawMoves(mode(4 * GiB));
+        try stdout.print("{:>17}: {:10} MiB/s\n", .{ "raw move", throughput / (1 * MiB) });
     }
 
     inline for (hashes) |H| {
