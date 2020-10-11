@@ -43,7 +43,7 @@ pub const Curve25519 = struct {
         }
     }
 
-    fn ladder_core(p: Curve25519, s: [32]u8, comptime bits: usize) struct { x2: Quotient, x3: Quotient } {
+    fn ladder_core(p: Curve25519, s: [32]u8, comptime bits: usize) Quotient {
         var x1 = p.x;
         var x2 = Fe.one;
         var z2 = Fe.zero;
@@ -70,14 +70,11 @@ pub const Curve25519 = struct {
             if (pos == 0) break;
         }
         Fe.cSwap2(&x2, &x3, &z2, &z3, swap);
-        return .{
-            .x2 = Quotient{ .xz = x2, .z = z2 },
-            .x3 = Quotient{ .xz = x3, .z = z3 },
-        };
+        return Quotient{ .xz = x2, .z = z2 };
     }
 
     fn ladder(p: Curve25519, s: [32]u8, comptime bits: usize) !Curve25519 {
-        const x2 = ladder_core(p, s, bits).x2;
+        const x2 = ladder_core(p, s, bits);
         const x = x2.xz.mul(x2.z.invert());
         if (x.isZero()) {
             return error.IdentityElement;
