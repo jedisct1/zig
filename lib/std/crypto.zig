@@ -93,6 +93,7 @@ pub const pwhash = struct {
 /// Digital signature functions.
 pub const sign = struct {
     pub const Ed25519 = @import("crypto/25519/ed25519.zig").Ed25519;
+    pub const Qd25519 = @import("crypto/25519/qd25519.zig").Qd25519;
 };
 
 /// Stream ciphers. These do not provide any kind of authentication.

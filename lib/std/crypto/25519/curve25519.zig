@@ -21,8 +21,8 @@ pub const Curve25519 = struct {
     x: Fe,
 
     /// Decode a Curve25519 point from its compressed (X) coordinates.
-    pub inline fn fromBytes(s: [32]u8) Curve25519 {
-        return .{ .x = Fe.fromBytes(s) };
+    pub inline fn fromBytes(s: [32]u8) !Curve25519 {
+        return Curve25519{ .x = Fe.fromBytes(s) };
     }
 
     /// Encode a Curve25519 point.
@@ -46,7 +46,7 @@ pub const Curve25519 = struct {
     }
 
     /// Montgomery ladder - Returns x in projective coordinates
-    fn ladder_core(p: Curve25519, s: [32]u8, comptime bits: usize) Quotient {
+    fn ladderCore(p: Curve25519, s: [32]u8, comptime bits: usize) Quotient {
         var x1 = p.x;
         var x2 = Fe.one;
         var z2 = Fe.zero;
@@ -77,7 +77,7 @@ pub const Curve25519 = struct {
     }
 
     fn ladder(p: Curve25519, s: [32]u8, comptime bits: usize) !Curve25519 {
-        const x2 = ladder_core(p, s, bits);
+        const x2 = ladderCore(p, s, bits);
         const x = x2.xz.mul(x2.z.invert());
         if (x.isZero()) {
             return error.IdentityElement;
@@ -105,6 +105,13 @@ pub const Curve25519 = struct {
         const cofactor = [_]u8{8} ++ [_]u8{0} ** 31;
         _ = ladder(p, cofactor, 4) catch |_| return error.WeakPublicKey;
         return try ladder(p, s, 256);
+    }
+
+    /// Return p*s projective coordinates (x:z, z)
+    pub fn mulQ(p: Curve25519, s: [32]u8) !Quotient {
+        const cofactor = [_]u8{8} ++ [_]u8{0} ** 31;
+        _ = ladder(p, cofactor, 4) catch |_| return error.WeakPublicKey;
+        return try ladderCore(p, s, 256);
     }
 };
 
@@ -148,13 +155,13 @@ test "curve25519 small order check" {
         },
     };
     for (small_order_ss) |small_order_s| {
-        std.testing.expectError(error.WeakPublicKey, Curve25519.fromBytes(small_order_s).mul(s));
+        std.testing.expectError(error.WeakPublicKey, (Curve25519.fromBytes(small_order_s) catch unreachable).mul(s));
         var extra = small_order_s;
         extra[31] ^= 0x80;
-        std.testing.expectError(error.WeakPublicKey, Curve25519.fromBytes(extra).mul(s));
+        std.testing.expectError(error.WeakPublicKey, (Curve25519.fromBytes(extra) catch unreachable).mul(s));
         var valid = small_order_s;
         valid[31] = 0x40;
         s[0] = 0;
-        std.testing.expectError(error.IdentityElement, Curve25519.fromBytes(valid).mul(s));
+        std.testing.expectError(error.IdentityElement, (Curve25519.fromBytes(valid) catch unreachable).mul(s));
     }
 }

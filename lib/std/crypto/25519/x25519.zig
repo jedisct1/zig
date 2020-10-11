@@ -41,7 +41,7 @@ pub const X25519 = struct {
         var b: [32]u8 = undefined;
         mem.copy(u8, &s, private_key[0..32]);
         mem.copy(u8, &b, public_key[0..32]);
-        if (Curve.fromBytes(b).clampedMul(s)) |q| {
+        if ((Curve.fromBytes(b) catch unreachable).clampedMul(s)) |q| {
             mem.copy(u8, out, q.toBytes()[0..]);
             return true;
         } else |_| {
