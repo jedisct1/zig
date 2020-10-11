@@ -153,18 +153,52 @@ pub const Fe = struct {
 
     pub inline fn cMov(fe: *Fe, a: Fe, c: u64) void {
         const mask: u64 = 0 -% c;
-        var x = fe.*;
-        comptime var i = 0;
-        inline while (i < 5) : (i += 1) {
-            x.limbs[i] ^= a.limbs[i];
-        }
-        i = 0;
-        inline while (i < 5) : (i += 1) {
-            x.limbs[i] &= mask;
-        }
-        i = 0;
-        inline while (i < 5) : (i += 1) {
-            fe.limbs[i] ^= x.limbs[i];
+        switch (std.Target.current.cpu.arch) {
+            .x86_64 => {
+                var t0: u64 = undefined;
+                var t1: u64 = undefined;
+                var t2: u64 = undefined;
+                asm volatile (
+                    \\ test      %[c],     %[c]
+                    \\ movq     (%[b]),    %[t0]
+                    \\ cmoveq   (%[a]),    %[t0]
+                    \\ movq    8(%[b]),    %[t1]
+                    \\ cmoveq  8(%[a]),    %[t1]
+                    \\ movq   16(%[b]),    %[t2]
+                    \\ cmoveq 16(%[a]),    %[t2]
+                    \\ movq      %[t0],   (%[a])
+                    \\ movq      %[t1],  8(%[a])
+                    \\ movq   24(%[b]),    %[t0]
+                    \\ cmoveq 24(%[a]),    %[t0]
+                    \\ movq   32(%[b]),    %[t1]
+                    \\ cmoveq 32(%[a]),    %[t1]
+                    \\ movq      %[t2], 16(%[a])
+                    \\ movq      %[t0], 24(%[a])
+                    \\ movq      %[t1], 32(%[a])
+                    : [t0] "=&r" (t0),
+                      [t1] "=&r" (t1),
+                      [t2] "=&r" (t2)
+                    : [a] "r" (&fe.limbs),
+                      [b] "r" (&a.limbs),
+                      [c] "r" (c)
+                    : "cc", "memory"
+                );
+            },
+            else => {
+                var x = fe.*;
+                comptime var i = 0;
+                inline while (i < 5) : (i += 1) {
+                    x.limbs[i] ^= a.limbs[i];
+                }
+                i = 0;
+                inline while (i < 5) : (i += 1) {
+                    x.limbs[i] &= mask;
+                }
+                i = 0;
+                inline while (i < 5) : (i += 1) {
+                    fe.limbs[i] ^= x.limbs[i];
+                }
+            },
         }
     }
 
