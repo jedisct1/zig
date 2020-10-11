@@ -12,10 +12,12 @@ pub const Curve25519 = struct {
     /// Field arithmetic mod the order of the main subgroup.
     pub const scalar = @import("scalar.zig");
 
-    const Quotient = struct {
+    /// x projective coordinate (xz, z)
+    pub const Quotient = struct {
         xz: Fe, z: Fe
     };
 
+    /// x coordinate
     x: Fe,
 
     /// Decode a Curve25519 point from its compressed (X) coordinates.
@@ -43,6 +45,7 @@ pub const Curve25519 = struct {
         }
     }
 
+    /// Montgomery ladder - Returns x in projective coordinates
     fn ladder_core(p: Curve25519, s: [32]u8, comptime bits: usize) Quotient {
         var x1 = p.x;
         var x2 = Fe.one;
