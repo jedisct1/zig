@@ -12,6 +12,10 @@ pub const Curve25519 = struct {
     /// Field arithmetic mod the order of the main subgroup.
     pub const scalar = @import("scalar.zig");
 
+    const Quotient = struct {
+        xz: Fe, z: Fe
+    };
+
     x: Fe,
 
     /// Decode a Curve25519 point from its compressed (X) coordinates.
@@ -39,7 +43,7 @@ pub const Curve25519 = struct {
         }
     }
 
-    fn ladder(p: Curve25519, s: [32]u8, comptime bits: usize) !Curve25519 {
+    fn ladder_core(p: Curve25519, s: [32]u8, comptime bits: usize) struct { x2: Quotient, x3: Quotient } {
         var x1 = p.x;
         var x2 = Fe.one;
         var z2 = Fe.zero;
@@ -66,12 +70,19 @@ pub const Curve25519 = struct {
             if (pos == 0) break;
         }
         Fe.cSwap2(&x2, &x3, &z2, &z3, swap);
-        z2 = z2.invert();
-        x2 = x2.mul(z2);
-        if (x2.isZero()) {
+        return .{
+            .x2 = Quotient{ .xz = x2, .z = z2 },
+            .x3 = Quotient{ .xz = x3, .z = z3 },
+        };
+    }
+
+    fn ladder(p: Curve25519, s: [32]u8, comptime bits: usize) !Curve25519 {
+        const x2 = ladder_core(p, s, bits).x2;
+        const x = x2.xz.mul(x2.z.invert());
+        if (x.isZero()) {
             return error.IdentityElement;
         }
-        return Curve25519{ .x = x2 };
+        return Curve25519{ .x = x };
     }
 
     /// Multiply a Curve25519 point by a scalar after "clamping" it.
