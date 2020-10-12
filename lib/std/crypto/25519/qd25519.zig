@@ -26,11 +26,16 @@ pub const Qd25519 = struct {
     /// Length (in bytes) of optional random bytes, for non-deterministic signatures.
     pub const noise_length = 32;
 
-    pub fn createKeyPair(private_key: [private_length]u8) ![keypair_length]u8 {
-        const p = try Curve.basePoint.clampedMul(private_key);
+    /// Derive a key pair from a secret seed.
+    pub fn createKeyPair(seed: [seed_length]u8) ![keypair_length]u8 {
+        var az: [Sha512.digest_length]u8 = undefined;
+        var h = Sha512.init(.{});
+        h.update(&seed);
+        h.final(&az);
+        const p = try Curve.basePoint.clampedMul(az[0..32].*);
         var keypair: [keypair_length]u8 = undefined;
-        mem.copy(u8, &keypair, &private_key);
-        mem.copy(u8, keypair[private_key.len..], &p.toBytes());
+        mem.copy(u8, &keypair, &seed);
+        mem.copy(u8, keypair[seed_length..], &p.toBytes());
         return keypair;
     }
 
@@ -81,9 +86,31 @@ pub const Qd25519 = struct {
 
         var x = az[0..32];
         Curve.scalar.clamp(x);
-        const s = Curve.scalar.mulAdd(hram, x.*, nonce);
+        //const s = Curve.scalar.mulAdd(hram, x.*, nonce);
+        const s = Curve.scalar.mul(hram, x.*);
         mem.copy(u8, sig[32..], s[0..]);
         return sig;
+    }
+
+    fn bValues(xp: Curve.Quotient, xq: Curve.Quotient) struct { bZZ: Curve.Fe, bXZ: Curve.Fe, bXX: Curve.Fe } {
+        var b0 = xp.xz.mul(xq.xz);
+        var b1 = xp.z.mul(xq.z);
+        const bZZ = b0.sub(b1).sq();
+        b0 = b0.add(b1);
+
+        b1 = xp.xz.mul(xq.z);
+        var b2 = xq.xz.mul(xp.z);
+        const bXX = b1.sub(b2).sq();
+
+        var bXZ = b1.add(b2).mul(b0);
+        b0 = b1.mul(b2);
+        b0 = b0.add(b0);
+        b0 = b0.add(b0);
+        b1 = b0.add(b0).mul32(121666);
+        b0 = b1.sub(b0);
+        bXZ = bXZ.add(b0);
+        bXZ = bXZ.add(bXZ);
+        return .{ .bZZ = bZZ, .bXZ = bXZ, .bXX = bXX };
     }
 
     /// Verify an Qd25519 signature given a message and a public key.
@@ -104,24 +131,20 @@ pub const Qd25519 = struct {
         h.final(&hram64);
         const hram = Curve.scalar.reduce64(hram64);
 
-        const p = try a.neg().mul(hram);
-        const check = (try Curve.basePoint.mul(s.*)).add(p).toBytes();
-        if (mem.eql(u8, &check, r) == false) {
+        const ladder = a.mulQ(hram);
+        const q = ladder.sp;
+        const p = ladder.spp;
+        const sp = try Curve.basePoint.mul(s.*);
+        const bv = bValues(p, q);
+        const rx = Curve.Fe.fromBytes(r.*);
+        var b0 = rx.sq().mul(bv.bXX);
+        const b1 = rx.mul(bv.bXZ);
+        b0 = b0.sub(b1).add(bv.bZZ);
+        if (!b0.isZero()) {
             return error.InvalidSignature;
         }
     }
 };
-
-test "qd25519 key pair creation" {
-    var seed: [32]u8 = undefined;
-    try fmt.hexToBytes(seed[0..], "8052030376d47112be7f73ed7a019293dd12ad910b654455798b4667d73de166");
-    const key_pair = try Qd25519.createKeyPair(seed);
-    var buf: [256]u8 = undefined;
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{key_pair}), "8052030376D47112BE7F73ED7A019293DD12AD910B654455798B4667D73DE1662D6F7455D97B4A3A10D7293909D1A4F2058CB9A370E43FA8154BB280DB839083");
-
-    const public_key = Qd25519.publicKey(key_pair);
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{public_key}), "2D6F7455D97B4A3A10D7293909D1A4F2058CB9A370E43FA8154BB280DB839083");
-}
 
 test "qd25519 signature" {
     var seed: [32]u8 = undefined;
@@ -130,7 +153,6 @@ test "qd25519 signature" {
 
     const sig = try Qd25519.sign("test", key_pair, null);
     var buf: [128]u8 = undefined;
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{sig}), "10A442B4A80CC4225B154F43BEF28D2472CA80221951262EB8E0DF9091575E2687CC486E77263C3418C757522D54F84B0359236ABBBD4ACD20DC297FDCA66808");
     const public_key = Qd25519.publicKey(key_pair);
     try Qd25519.verify(sig, "test", public_key);
     std.testing.expectError(error.InvalidSignature, Qd25519.verify(sig, "TEST", public_key));

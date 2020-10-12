@@ -46,7 +46,7 @@ pub const Curve25519 = struct {
     }
 
     /// Montgomery ladder - Returns x in projective coordinates
-    fn ladderCore(p: Curve25519, s: [32]u8, comptime bits: usize) Quotient {
+    fn ladderCore(p: Curve25519, s: [32]u8, comptime bits: usize) struct { sp: Quotient, spp: Quotient } {
         var x1 = p.x;
         var x2 = Fe.one;
         var z2 = Fe.zero;
@@ -73,11 +73,14 @@ pub const Curve25519 = struct {
             if (pos == 0) break;
         }
         Fe.cSwap2(&x2, &x3, &z2, &z3, swap);
-        return Quotient{ .xz = x2, .z = z2 };
+        return .{
+            .sp = Quotient{ .xz = x2, .z = z2 },
+            .spp = Quotient{ .xz = x3, .z = z3 },
+        };
     }
 
     fn ladder(p: Curve25519, s: [32]u8, comptime bits: usize) !Curve25519 {
-        const x2 = ladderCore(p, s, bits);
+        const x2 = ladderCore(p, s, bits).sp;
         const x = x2.xz.mul(x2.z.invert());
         if (x.isZero()) {
             return error.IdentityElement;
@@ -107,11 +110,10 @@ pub const Curve25519 = struct {
         return try ladder(p, s, 256);
     }
 
-    /// Return p*s projective coordinates (x:z, z)
-    pub fn mulQ(p: Curve25519, s: [32]u8) !Quotient {
-        const cofactor = [_]u8{8} ++ [_]u8{0} ** 31;
-        _ = ladder(p, cofactor, 4) catch |_| return error.WeakPublicKey;
-        return try ladderCore(p, s, 256);
+    /// Return s*p and s*p+p as projective coordinates (x:z, z)
+    pub fn mulQ(p: Curve25519, s: [32]u8) struct { sp: Quotient, spp: Quotient } {
+        const q = ladderCore(p, s, 256);
+        return .{ .sp = q.sp, .spp = q.spp };
     }
 };
 
