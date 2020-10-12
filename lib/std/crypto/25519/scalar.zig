@@ -150,11 +150,6 @@ pub inline fn clamp(s: *[32]u8) void {
     s[31] = (s[31] & 127) | 64;
 }
 
-/// Return a+b (mod L)
-pub fn add(a: [32]u8, b: [32]u8) [32]u8 {
-    return ScalarExpanded.fromBytes(a).add(ScalarExpanded.fromBytes(b)).toBytes();
-}
-
 /// Return a*b (mod L)
 pub fn mul(a: [32]u8, b: [32]u8) [32]u8 {
     return ScalarExpanded.fromBytes(a).mul(ScalarExpanded.fromBytes(b)).toBytes();
