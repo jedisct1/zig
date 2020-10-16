@@ -7,7 +7,7 @@ const testing = std.testing;
 
 const TimingSafeEql = struct {
     fn _x86_64(comptime T: type, comptime xlen: usize, a: []const T, b: []const T) u64 {
-        @setEvalBranchQuota(10000);
+        @setEvalBranchQuota(50000);
 
         comptime var i: usize = 0;
         comptime var buf = [_]u8{0} ** 1024;
@@ -91,11 +91,14 @@ const TimingSafeEql = struct {
 
     fn x86_64(comptime T: type, comptime len: usize, a: [len]T, b: [len]T) bool {
         const xlen = len * @sizeOf(T);
-        comptime var i: usize = 0;
+        var i: usize = 0;
         var ret: u64 = 0;
         // Comparing more than 512 bits is unusual, but even if we did, there wouldn't be much to learn with such a large block
-        inline while (i < xlen) : (i += 128) {
-            comptime const left = math.min(128, xlen - i);
+        while (i + 128 <= xlen) : (i += 128) {
+            ret |= _x86_64(T, 128, a[i..], b[i..]);
+        }
+        comptime const left = xlen % 128;
+        if (left > 0) {
             ret |= _x86_64(T, left, a[i..], b[i..]);
         }
         return ret == 0;
