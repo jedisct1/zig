@@ -18,9 +18,6 @@ jobs:
       %CD:~0,2%\msys64\usr\bin\bash -lc "pacman --noconfirm -Syuu"
       %CD:~0,2%\msys64\usr\bin\bash -lc "pacman --noconfirm -Syuu"
     displayName: Update MSYS2
-  - task: DownloadSecureFile@1
-    inputs:
-      secureFile: s3cfg
   - script: ci/azure/windows_msvc_script.bat
     name: main
     displayName: 'Build and test'
