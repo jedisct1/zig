@@ -7,22 +7,21 @@ const testing = std.testing;
 
 const TimingSafeEql = struct {
     fn _x86_64(comptime T: type, comptime xlen: usize, a: []const T, b: []const T) u64 {
-        @setEvalBranchQuota(50000);
+        @setEvalBranchQuota(30000);
 
         comptime var i: usize = 0;
-        comptime var buf = [_]u8{0} ** 1024;
         var z: u64 = 0;
 
         // 16 bytes at a time
         if (i + 16 <= xlen) {
             comptime var x16code: []const u8 = "pxor %%xmm2, %%xmm2;";
             inline while (i + 16 <= xlen) : (i += 16) {
-                x16code = x16code ++ (std.fmt.bufPrint(&buf,
+                x16code = x16code ++ std.fmt.comptimePrint(
                     \\ movups {}(%[a]), %%xmm0;
                     \\ movups {}(%[b]), %%xmm1;
                     \\ pxor %%xmm0, %%xmm1;
                     \\ por %%xmm1, %%xmm2;
-                , .{ i, i }) catch unreachable);
+                , .{ i, i });
             }
             x16code = x16code ++
                 \\ pxor %%xmm0, %%xmm0;
@@ -42,12 +41,12 @@ const TimingSafeEql = struct {
         if (i + 8 <= xlen) {
             comptime var x8code: []const u8 = "";
             inline while (i + 8 <= xlen) : (i += 8) {
-                x8code = x8code ++ (std.fmt.bufPrint(&buf,
+                x8code = x8code ++ std.fmt.comptimePrint(
                     \\ movq {}(%[a]), %[s];
                     \\ movq {}(%[b]), %[t];
                     \\ xorq %[s], %[t];
                     \\ orq %[t], %[ret];
-                , .{ i, i }) catch unreachable);
+                , .{ i, i });
             }
             x8code = "movq %[z], %[ret];" ++ x8code;
             var s: u64 = 0;
@@ -66,12 +65,12 @@ const TimingSafeEql = struct {
         if (i < xlen) {
             comptime var x1code: []const u8 = "";
             inline while (i < xlen) : (i += 1) {
-                x1code = x1code ++ (std.fmt.bufPrint(&buf,
+                x1code = x1code ++ std.fmt.comptimePrint(
                     \\ movzbq {}(%[a]), %[s];
                     \\ movzbq {}(%[b]), %[t];
                     \\ xorq %[s], %[t];
                     \\ orq %[t], %[ret];
-                , .{ i, i }) catch unreachable);
+                , .{ i, i });
             }
             x1code = "movq %[z], %[ret];" ++ x1code;
             var s: u64 = 0;
