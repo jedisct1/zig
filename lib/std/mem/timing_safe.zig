@@ -6,73 +6,96 @@ const mem = std.mem;
 const testing = std.testing;
 
 const TimingSafeEql = struct {
+    fn _x86_64_x16(comptime i: comptime_int) [:0]u8 {
+        var buf: [1024]u8 = undefined;
+        const buf2 = try std.fmt.bufPrintZ(&buf,
+            \\ movups {}(%[a]), %%xmm0;
+            \\ movups {}(%[b]), %%xmm1;
+        , .{ i, i });
+        return buf2;
+    }
+
+    fn _x86_64_x8(comptime i: comptime_int) [:0]u8 {
+        var buf: [1024]u8 = undefined;
+        const buf2 = try std.fmt.bufPrintZ(&buf,
+            \\ movq {}(%[a]), %[s];
+            \\ movq {}(%[b]), %[t];
+        , .{ i, i });
+        return buf2;
+    }
+
+    fn _x86_64_x1(comptime i: comptime_int) [:0]u8 {
+        var buf: [1024]u8 = undefined;
+        const buf2 = try std.fmt.bufPrintZ(&buf,
+            \\ movzbq {}(%[a]), %[s];
+            \\ movzbq {}(%[b]), %[t];
+        , .{ i, i });
+        return buf2;
+    }
+
     fn _x86_64(comptime T: type, comptime xlen: usize, a: []const T, b: []const T) u64 {
-        @setEvalBranchQuota(25000);
+        @setEvalBranchQuota(20000);
 
         comptime var i: usize = 0;
         var z: u64 = 0;
 
-        if (false) {
-            // 16 bytes at a time
-            if (i + 16 <= xlen) {
-                comptime var x16code: []const u8 = "pxor %%xmm2, %%xmm2;";
-                inline while (i + 16 <= xlen) : (i += 16) {
-                    x16code = x16code ++ std.fmt.comptimePrint(
-                        \\ movups {}(%[a]), %%xmm0;
-                        \\ movups {}(%[b]), %%xmm1;
-                        \\ pxor %%xmm0, %%xmm1;
-                        \\ por %%xmm1, %%xmm2;
-                    , .{ i, i });
-                }
+        // 16 bytes at a time
+        if (i + 16 <= xlen) {
+            comptime var x16code: []const u8 = "pxor %%xmm2, %%xmm2;";
+            inline while (i + 16 <= xlen) : (i += 16) {
+                x16code = x16code ++ _x86_64_x16(i);
                 x16code = x16code ++
-                    \\ pxor %%xmm0, %%xmm0;
-                    \\ pcmpeqd %%xmm2, %%xmm0;
-                    \\ pmovmskb %%xmm0, %[ret];
-                    \\ notq %[ret];
-                    \\ andq $0xffff, %[ret];
+                    \\ pxor %%xmm0, %%xmm1;
+                    \\ por %%xmm1, %%xmm2;
                 ;
-                z = asm volatile (x16code
-                    : [ret] "=r" (-> u64)
-                    : [a] "r" (a.ptr),
-                      [b] "r" (b.ptr)
-                    : "xmm0", "xmm1", "xmm2", "cc"
-                );
             }
-            // 8 bytes at a time
-            if (i + 8 <= xlen) {
-                comptime var x8code: []const u8 = "";
-                inline while (i + 8 <= xlen) : (i += 8) {
-                    x8code = x8code ++ std.fmt.comptimePrint(
-                        \\ movq {}(%[a]), %[s];
-                        \\ movq {}(%[b]), %[t];
-                        \\ xorq %[s], %[t];
-                        \\ orq %[t], %[ret];
-                    , .{ i, i });
-                }
-                x8code = "movq %[z], %[ret];" ++ x8code;
-                var s: u64 = 0;
-                var t: u64 = 0;
-                z = asm volatile (x8code
-                    : [ret] "=&r" (-> u64),
-                      [s] "=&r" (s),
-                      [t] "=&r" (t)
-                    : [a] "r" (a.ptr),
-                      [b] "r" (b.ptr),
-                      [z] "rm" (z)
-                    : "cc"
-                );
-            }
+            x16code = x16code ++
+                \\ pxor %%xmm0, %%xmm0;
+                \\ pcmpeqd %%xmm2, %%xmm0;
+                \\ pmovmskb %%xmm0, %[ret];
+                \\ notq %[ret];
+                \\ andq $0xffff, %[ret];
+            ;
+            z = asm volatile (x16code
+                : [ret] "=r" (-> u64)
+                : [a] "r" (a.ptr),
+                  [b] "r" (b.ptr)
+                : "xmm0", "xmm1", "xmm2", "cc"
+            );
         }
+        // 8 bytes at a time
+        if (i + 8 <= xlen) {
+            comptime var x8code: []const u8 = "";
+            inline while (i + 8 <= xlen) : (i += 8) {
+                x8code = x8code ++ _x86_64_x8(i);
+                x8code = x8code ++
+                    \\ xorq %[s], %[t];
+                    \\ orq %[t], %[ret];
+                ;
+            }
+            x8code = "movq %[z], %[ret];" ++ x8code;
+            var s: u64 = 0;
+            var t: u64 = 0;
+            z = asm volatile (x8code
+                : [ret] "=&r" (-> u64),
+                  [s] "=&r" (s),
+                  [t] "=&r" (t)
+                : [a] "r" (a.ptr),
+                  [b] "r" (b.ptr),
+                  [z] "rm" (z)
+                : "cc"
+            );
+        }
+
         // remaining bytes
         if (i < xlen) {
             comptime var x1code: []const u8 = "";
             inline while (i < xlen) : (i += 1) {
-                x1code = x1code ++ std.fmt.comptimePrint(
-                    \\ movzbq {}(%[a]), %[s];
-                    \\ movzbq {}(%[b]), %[t];
+                x1code = x1code ++ _x86_64_x1(i);
+                x1code = x1code ++
                     \\ xorq %[s], %[t];
                     \\ orq %[t], %[ret];
-                , .{ i, i });
+                ;
             }
             x1code = "movq %[z], %[ret];" ++ x1code;
             var s: u64 = 0;
