@@ -7,59 +7,61 @@ const testing = std.testing;
 
 const TimingSafeEql = struct {
     fn _x86_64(comptime T: type, comptime xlen: usize, a: []const T, b: []const T) u64 {
-        @setEvalBranchQuota(30000);
+        @setEvalBranchQuota(25000);
 
         comptime var i: usize = 0;
         var z: u64 = 0;
 
-        // 16 bytes at a time
-        if (i + 16 <= xlen) {
-            comptime var x16code: []const u8 = "pxor %%xmm2, %%xmm2;";
-            inline while (i + 16 <= xlen) : (i += 16) {
-                x16code = x16code ++ std.fmt.comptimePrint(
-                    \\ movups {}(%[a]), %%xmm0;
-                    \\ movups {}(%[b]), %%xmm1;
-                    \\ pxor %%xmm0, %%xmm1;
-                    \\ por %%xmm1, %%xmm2;
-                , .{ i, i });
+        if (false) {
+            // 16 bytes at a time
+            if (i + 16 <= xlen) {
+                comptime var x16code: []const u8 = "pxor %%xmm2, %%xmm2;";
+                inline while (i + 16 <= xlen) : (i += 16) {
+                    x16code = x16code ++ std.fmt.comptimePrint(
+                        \\ movups {}(%[a]), %%xmm0;
+                        \\ movups {}(%[b]), %%xmm1;
+                        \\ pxor %%xmm0, %%xmm1;
+                        \\ por %%xmm1, %%xmm2;
+                    , .{ i, i });
+                }
+                x16code = x16code ++
+                    \\ pxor %%xmm0, %%xmm0;
+                    \\ pcmpeqd %%xmm2, %%xmm0;
+                    \\ pmovmskb %%xmm0, %[ret];
+                    \\ notq %[ret];
+                    \\ andq $0xffff, %[ret];
+                ;
+                z = asm volatile (x16code
+                    : [ret] "=r" (-> u64)
+                    : [a] "r" (a.ptr),
+                      [b] "r" (b.ptr)
+                    : "xmm0", "xmm1", "xmm2", "cc"
+                );
             }
-            x16code = x16code ++
-                \\ pxor %%xmm0, %%xmm0;
-                \\ pcmpeqd %%xmm2, %%xmm0;
-                \\ pmovmskb %%xmm0, %[ret];
-                \\ notq %[ret];
-                \\ andq $0xffff, %[ret];
-            ;
-            z = asm volatile (x16code
-                : [ret] "=r" (-> u64)
-                : [a] "r" (a.ptr),
-                  [b] "r" (b.ptr)
-                : "xmm0", "xmm1", "xmm2", "cc"
-            );
-        }
-        // 8 bytes at a time
-        if (i + 8 <= xlen) {
-            comptime var x8code: []const u8 = "";
-            inline while (i + 8 <= xlen) : (i += 8) {
-                x8code = x8code ++ std.fmt.comptimePrint(
-                    \\ movq {}(%[a]), %[s];
-                    \\ movq {}(%[b]), %[t];
-                    \\ xorq %[s], %[t];
-                    \\ orq %[t], %[ret];
-                , .{ i, i });
+            // 8 bytes at a time
+            if (i + 8 <= xlen) {
+                comptime var x8code: []const u8 = "";
+                inline while (i + 8 <= xlen) : (i += 8) {
+                    x8code = x8code ++ std.fmt.comptimePrint(
+                        \\ movq {}(%[a]), %[s];
+                        \\ movq {}(%[b]), %[t];
+                        \\ xorq %[s], %[t];
+                        \\ orq %[t], %[ret];
+                    , .{ i, i });
+                }
+                x8code = "movq %[z], %[ret];" ++ x8code;
+                var s: u64 = 0;
+                var t: u64 = 0;
+                z = asm volatile (x8code
+                    : [ret] "=&r" (-> u64),
+                      [s] "=&r" (s),
+                      [t] "=&r" (t)
+                    : [a] "r" (a.ptr),
+                      [b] "r" (b.ptr),
+                      [z] "rm" (z)
+                    : "cc"
+                );
             }
-            x8code = "movq %[z], %[ret];" ++ x8code;
-            var s: u64 = 0;
-            var t: u64 = 0;
-            z = asm volatile (x8code
-                : [ret] "=&r" (-> u64),
-                  [s] "=&r" (s),
-                  [t] "=&r" (t)
-                : [a] "r" (a.ptr),
-                  [b] "r" (b.ptr),
-                  [z] "rm" (z)
-                : "cc"
-            );
         }
         // remaining bytes
         if (i < xlen) {
