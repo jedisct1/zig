@@ -128,9 +128,13 @@ const TimingSafeEql = struct {
 pub fn timingSafeEql(comptime T: type, comptime len: usize, a: [len]T, b: [len]T) bool {
     comptime debug.assert(len > 0);
 
-    switch (std.builtin.arch) {
-        .x86_64 => return TimingSafeEql.x86_64(T, len, a, b),
-        else => return @call(.{ .modifier = .never_inline }, TimingSafeEql.generic, .{ T, len, a, b }),
+    if (std.builtin.abi == .msvc) {
+        return @call(.{ .modifier = .never_inline }, TimingSafeEql.generic, .{ T, len, a, b });
+    } else {
+        switch (std.builtin.arch) {
+            .x86_64 => return TimingSafeEql.x86_64(T, len, a, b),
+            else => return @call(.{ .modifier = .never_inline }, TimingSafeEql.generic, .{ T, len, a, b }),
+        }
     }
 }
 
