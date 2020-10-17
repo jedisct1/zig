@@ -25,7 +25,3 @@ cmake.exe .. -Thost=x64 -G"Visual Studio 16 2019" -A x64 "-DCMAKE_INSTALL_PREFIX
 msbuild /maxcpucount /p:Configuration=Release INSTALL.vcxproj || exit /b
 
 "%ZIGINSTALLDIR%\bin\zig.exe" build test -Dskip-non-native -Dskip-compile-errors || exit /b
-
-set "PATH=%CD:~0,2%\msys64\usr\bin;C:\Windows\system32;C:\Windows;C:\Windows\System32\Wbem"
-SET "MSYSTEM=MINGW64"
-bash -lc "cd ${SRCROOT} && ci/azure/windows_upload" || exit /b
