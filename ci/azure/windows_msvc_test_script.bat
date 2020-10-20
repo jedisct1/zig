@@ -16,6 +16,7 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliar
 
 cd %ZIGBUILDDIR%
 
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-behavior -Dskip-non-native -Dskip-compile-errors || exit /b
 "%ZIGINSTALLDIR%\bin\zig.exe" build test-stage2 -Dskip-non-native -Dskip-compile-errors || exit /b
 "%ZIGINSTALLDIR%\bin\zig.exe" build test-fmt -Dskip-non-native -Dskip-compile-errors || exit /b
 "%ZIGINSTALLDIR%\bin\zig.exe" build test-std -Dskip-non-native -Dskip-compile-errors || exit /b
