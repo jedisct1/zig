@@ -6,9 +6,6 @@ jobs:
   timeoutInMinutes: 360
 
   steps:
-  - task: DownloadSecureFile@1
-    inputs:
-      secureFile: s3cfg
   - script: ci/azure/macos_script
     name: main
     displayName: 'Build and test'
