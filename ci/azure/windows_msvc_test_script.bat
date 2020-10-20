@@ -16,4 +16,17 @@ call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliar
 
 cd %ZIGBUILDDIR%
 
-"%ZIGINSTALLDIR%\bin\zig.exe" build test -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-stage2 -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-fmt -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-std -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-compiler-rt -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-compare-output -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-standalone -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-stack-traces -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-cli -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-asm-link -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-runtime-safety -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-translate-c -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-run-translated-c -Dskip-non-native -Dskip-compile-errors || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-compile-errors -Dskip-non-native -Dskip-compile-errors || exit /b
+
