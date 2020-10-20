@@ -44,30 +44,9 @@ jobs:
       %CD:~0,2%\msys64\usr\bin\bash -lc "pacman --noconfirm -Syuu"
       %CD:~0,2%\msys64\usr\bin\bash -lc "pacman --noconfirm -Syuu"
     displayName: Update MSYS2
-  - task: DownloadSecureFile@1
-    inputs:
-      secureFile: s3cfg
   - script: ci/azure/windows_msvc_build_script.bat
     name: build
     displayName: 'Build'
   - script: ci/azure/windows_msvc_test_script.bat
     name: test
     displayName: 'Test'
-- job: OnMasterSuccess
-  dependsOn:
-  - BuildMacOS
-  - BuildLinux
-  - BuildWindows
-  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))
-  strategy:
-    maxParallel: 1
-  pool:
-    vmImage: 'ubuntu-18.04'
-  variables:
-    version: $[ dependencies.BuildLinux.outputs['main.version'] ]
-  steps:
-  - task: DownloadSecureFile@1
-    inputs:
-      secureFile: oauth_token
-  - script: ci/azure/on_master_success
-    displayName: 'master branch success hook'
