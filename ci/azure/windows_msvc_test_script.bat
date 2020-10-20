@@ -29,3 +29,4 @@ cd %ZIGBUILDDIR%
 "%ZIGINSTALLDIR%\bin\zig.exe" build test-runtime-safety -Dskip-non-native || exit /b
 "%ZIGINSTALLDIR%\bin\zig.exe" build test-translate-c -Dskip-non-native || exit /b
 "%ZIGINSTALLDIR%\bin\zig.exe" build test-run-translated-c -Dskip-non-native || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-compile-errors -Dskip-non-native || exit /b
