@@ -47,9 +47,12 @@ jobs:
   - task: DownloadSecureFile@1
     inputs:
       secureFile: s3cfg
-  - script: ci/azure/windows_msvc_script.bat
-    name: main
-    displayName: 'Build and test'
+  - script: ci/azure/windows_msvc_build_script.bat
+    name: build
+    displayName: 'Build'
+  - script: ci/azure/windows_msvc_test_script.bat
+    name: test
+    displayName: 'Test'
 - job: OnMasterSuccess
   dependsOn:
   - BuildMacOS
