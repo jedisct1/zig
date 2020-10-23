@@ -80,7 +80,7 @@ inline fn undiagonalize(rows: *Rows) void {
     rows[2] = @shuffle(u32, rows[2], undefined, [_]i32{ 3, 0, 1, 2 });
 }
 
-inline fn compress(
+fn compress(
     chaining_value: [8]u32,
     block_words: [16]u32,
     block_len: u32,
@@ -120,7 +120,6 @@ inline fn compress(
         t2 = @shuffle(u32, tt, undefined, [_]i32{ 0, 2, 3, 1 });
         g(false, &rows, t2);
         t3 = @shuffle(u32, m[1], m[3], [_]i32{ 2, (-1 - 2), 3, (-1 - 3) });
-
         tt = @shuffle(u32, m[2], t3, [_]i32{ 0, (-1 - 0), 1, (-1 - 1) });
         t3 = @shuffle(u32, tt, undefined, [_]i32{ 2, 3, 1, 0 });
         g(true, &rows, t3);
