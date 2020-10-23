@@ -11,6 +11,7 @@ const fmt = std.fmt;
 const math = std.math;
 const mem = std.mem;
 const testing = std.testing;
+const Vector = std.meta.Vector;
 
 const ChunkIterator = struct {
     slice: []u8,
@@ -39,16 +40,6 @@ const IV = [8]u32{
     0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
 };
 
-const MSG_SCHEDULE = [7][16]u8{
-    [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
-    [_]u8{ 2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8 },
-    [_]u8{ 3, 4, 10, 12, 13, 2, 7, 14, 6, 5, 9, 0, 11, 15, 8, 1 },
-    [_]u8{ 10, 7, 12, 9, 14, 3, 13, 15, 4, 0, 11, 2, 5, 8, 1, 6 },
-    [_]u8{ 12, 13, 9, 11, 15, 10, 14, 8, 7, 2, 5, 3, 0, 1, 6, 4 },
-    [_]u8{ 9, 14, 11, 5, 8, 12, 15, 1, 13, 3, 0, 10, 2, 6, 4, 7 },
-    [_]u8{ 11, 15, 5, 0, 1, 9, 8, 6, 14, 10, 2, 12, 3, 4, 7, 13 },
-};
-
 // These are the internal flags that we use to domain separate root/non-root,
 // chunk/parent, and chunk beginning/middle/end. These get set at the high end
 // of the block flags word in the compression function, so their values start
@@ -61,74 +52,95 @@ const KEYED_HASH: u8 = 1 << 4;
 const DERIVE_KEY_CONTEXT: u8 = 1 << 5;
 const DERIVE_KEY_MATERIAL: u8 = 1 << 6;
 
-// The mixing function, G, which mixes either a column or a diagonal.
-fn g(state: *[16]u32, a: usize, b: usize, c: usize, d: usize, mx: u32, my: u32) void {
-    _ = @addWithOverflow(u32, state[a], state[b], &state[a]);
-    _ = @addWithOverflow(u32, state[a], mx, &state[a]);
-    state[d] = math.rotr(u32, state[d] ^ state[a], 16);
-    _ = @addWithOverflow(u32, state[c], state[d], &state[c]);
-    state[b] = math.rotr(u32, state[b] ^ state[c], 12);
-    _ = @addWithOverflow(u32, state[a], state[b], &state[a]);
-    _ = @addWithOverflow(u32, state[a], my, &state[a]);
-    state[d] = math.rotr(u32, state[d] ^ state[a], 8);
-    _ = @addWithOverflow(u32, state[c], state[d], &state[c]);
-    state[b] = math.rotr(u32, state[b] ^ state[c], 7);
+const Lane = Vector(4, u32);
+const Rows = [4]Lane;
+
+inline fn rot(x: Lane, comptime n: comptime_int) Lane {
+    return (x >> @splat(4, @as(u5, n))) | (x << @splat(4, @as(u5, 32 - n)));
 }
 
-fn round(state: *[16]u32, msg: [16]u32, schedule: [16]u8) void {
-    // Mix the columns.
-    g(state, 0, 4, 8, 12, msg[schedule[0]], msg[schedule[1]]);
-    g(state, 1, 5, 9, 13, msg[schedule[2]], msg[schedule[3]]);
-    g(state, 2, 6, 10, 14, msg[schedule[4]], msg[schedule[5]]);
-    g(state, 3, 7, 11, 15, msg[schedule[6]], msg[schedule[7]]);
-
-    // Mix the diagonals.
-    g(state, 0, 5, 10, 15, msg[schedule[8]], msg[schedule[9]]);
-    g(state, 1, 6, 11, 12, msg[schedule[10]], msg[schedule[11]]);
-    g(state, 2, 7, 8, 13, msg[schedule[12]], msg[schedule[13]]);
-    g(state, 3, 4, 9, 14, msg[schedule[14]], msg[schedule[15]]);
+inline fn g(comptime even: bool, rows: *Rows, m: Lane) void {
+    rows[0] +%= rows[1] +% m;
+    rows[3] ^= rows[0];
+    rows[3] = rot(rows[3], if (even) 8 else 16);
+    rows[2] +%= rows[3];
+    rows[1] ^= rows[2];
+    rows[1] = rot(rows[1], if (even) 7 else 12);
 }
 
-fn compress(
+inline fn diagonalize(rows: *Rows) void {
+    rows[0] = @shuffle(u32, rows[0], undefined, [_]i32{ 3, 0, 1, 2 });
+    rows[3] = @shuffle(u32, rows[3], undefined, [_]i32{ 2, 3, 0, 1 });
+    rows[2] = @shuffle(u32, rows[2], undefined, [_]i32{ 1, 2, 3, 0 });
+}
+
+inline fn undiagonalize(rows: *Rows) void {
+    rows[0] = @shuffle(u32, rows[0], undefined, [_]i32{ 1, 2, 3, 0 });
+    rows[3] = @shuffle(u32, rows[3], undefined, [_]i32{ 2, 3, 0, 1 });
+    rows[2] = @shuffle(u32, rows[2], undefined, [_]i32{ 3, 0, 1, 2 });
+}
+
+inline fn compress(
     chaining_value: [8]u32,
     block_words: [16]u32,
     block_len: u32,
     counter: u64,
     flags: u8,
 ) [16]u32 {
-    var state = [16]u32{
-        chaining_value[0],
-        chaining_value[1],
-        chaining_value[2],
-        chaining_value[3],
-        chaining_value[4],
-        chaining_value[5],
-        chaining_value[6],
-        chaining_value[7],
-        IV[0],
-        IV[1],
-        IV[2],
-        IV[3],
-        @truncate(u32, counter),
-        @truncate(u32, counter >> 32),
-        block_len,
-        flags,
-    };
-    for (MSG_SCHEDULE) |schedule| {
-        round(&state, block_words, schedule);
+    const md_lane = Lane{ @truncate(u32, counter), @truncate(u32, counter >> 32), block_len, @as(u32, flags) };
+    var rows = Rows{ chaining_value[0..4].*, chaining_value[4..8].*, IV[0..4].*, md_lane };
+
+    var m = Rows{ block_words[0..4].*, block_words[4..8].*, block_words[8..12].*, block_words[12..16].* };
+    var t0 = @shuffle(u32, m[0], m[1], [_]i32{ 0, 2, (-1 - 0), (-1 - 2) });
+    g(false, &rows, t0);
+    var t1 = @shuffle(u32, m[0], m[1], [_]i32{ 1, 3, (-1 - 1), (-1 - 3) });
+    g(true, &rows, t1);
+    diagonalize(&rows);
+    var t2 = @shuffle(u32, m[2], m[3], [_]i32{ 0, 2, (-1 - 0), (-1 - 2) });
+    t2 = @shuffle(u32, t2, undefined, [_]i32{ 3, 0, 1, 2 });
+    g(false, &rows, t2);
+    var t3 = @shuffle(u32, m[2], m[3], [_]i32{ 1, 3, (-1 - 1), (-1 - 3) });
+    t3 = @shuffle(u32, t3, undefined, [_]i32{ 3, 0, 1, 2 });
+    g(true, &rows, t3);
+    undiagonalize(&rows);
+    m = Rows{ t0, t1, t2, t3 };
+
+    comptime var i: usize = 0;
+    inline while (i < 6) : (i += 1) {
+        t0 = @shuffle(u32, m[0], m[1], [_]i32{ 2, 1, (-1 - 1), (-1 - 3) });
+        t0 = @shuffle(u32, t0, undefined, [_]i32{ 1, 2, 3, 0 });
+        g(false, &rows, t0);
+        t1 = @shuffle(u32, m[2], m[3], [_]i32{ 2, 2, (-1 - 3), (-1 - 3) });
+        var tt = @shuffle(u32, m[0], undefined, [_]i32{ 3, 3, 0, 0 });
+        t1 = @shuffle(u32, tt, t1, [_]i32{ 0, (-1 - 1), 2, (-1 - 3) });
+        g(true, &rows, t1);
+        diagonalize(&rows);
+        t2 = @shuffle(u32, m[3], m[1], [_]i32{ 0, 1, (-1 - 0), (-1 - 1) });
+        tt = @shuffle(u32, t2, m[2], [_]i32{ 0, 1, 2, (-1 - 3) });
+        t2 = @shuffle(u32, tt, undefined, [_]i32{ 0, 2, 3, 1 });
+        g(false, &rows, t2);
+        t3 = @shuffle(u32, m[1], m[3], [_]i32{ 2, (-1 - 2), 3, (-1 - 3) });
+
+        tt = @shuffle(u32, m[2], t3, [_]i32{ 0, (-1 - 0), 1, (-1 - 1) });
+        t3 = @shuffle(u32, tt, undefined, [_]i32{ 2, 3, 1, 0 });
+        g(true, &rows, t3);
+        undiagonalize(&rows);
+        m = Rows{ t0, t1, t2, t3 };
     }
-    for (chaining_value) |_, i| {
-        state[i] ^= state[i + 8];
-        state[i + 8] ^= chaining_value[i];
-    }
-    return state;
+
+    rows[0] ^= rows[2];
+    rows[1] ^= rows[3];
+    rows[2] ^= Vector(4, u32){ chaining_value[0], chaining_value[1], chaining_value[2], chaining_value[3] };
+    rows[3] ^= Vector(4, u32){ chaining_value[4], chaining_value[5], chaining_value[6], chaining_value[7] };
+
+    return @bitCast([16]u32, rows);
 }
 
-fn first8Words(words: [16]u32) [8]u32 {
+inline fn first8Words(words: [16]u32) [8]u32 {
     return @ptrCast(*const [8]u32, &words).*;
 }
 
-fn wordsFromLittleEndianBytes(words: []u32, bytes: []const u8) void {
+inline fn wordsFromLittleEndianBytes(words: []u32, bytes: []const u8) void {
     var byte_slice = bytes;
     for (words) |*word| {
         word.* = mem.readIntSliceLittle(u32, byte_slice);
@@ -181,9 +193,9 @@ const Output = struct {
 };
 
 const ChunkState = struct {
-    chaining_value: [8]u32,
+    chaining_value: [8]u32 align(16),
     chunk_counter: u64,
-    block: [BLOCK_LEN]u8 = [_]u8{0} ** BLOCK_LEN,
+    block: [BLOCK_LEN]u8 align(16) = [_]u8{0} ** BLOCK_LEN,
     block_len: u8 = 0,
     blocks_compressed: u8 = 0,
     flags: u8,
