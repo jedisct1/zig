@@ -228,7 +228,7 @@ const Salsa20NonVecImpl = struct {
         };
     }
 
-    inline fn salsa20Core(x: *BlockVec, input: BlockVec, comptime feedback: bool) void {
+    inline fn salsa20Core(x: *BlockVec, input: BlockVec) void {
         const arx_steps = comptime [_]QuarterRound{
             Rp(4, 0, 12, 7),   Rp(8, 4, 0, 9),    Rp(12, 8, 4, 13),   Rp(0, 12, 8, 18),
             Rp(9, 5, 1, 7),    Rp(13, 9, 5, 9),   Rp(1, 13, 9, 13),   Rp(5, 1, 13, 18),
