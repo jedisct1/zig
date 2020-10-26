@@ -34,14 +34,14 @@ const Salsa20VecImpl = struct {
         return (x << @splat(4, @as(u5, n))) | (x >> @splat(4, @as(u5, 1 +% ~n)));
     }
 
-    inline fn salsa20Core(x: *BlockVec, input: BlockVec, comptime feedback: bool) void {
-        const n1n2n3n0 = Lane{ x[3][1], x[3][2], x[3][3], x[3][0] };
+    inline fn salsa20Core(x: *BlockVec, input: BlockVec) void {
+        const n1n2n3n0 = Lane{ input[3][1], input[3][2], input[3][3], input[3][0] };
         const n1n2 = Half{ n1n2n3n0[0], n1n2n3n0[1] };
         const n3n0 = Half{ n1n2n3n0[2], n1n2n3n0[3] };
-        const k0k1 = Half{ x[0][0], x[0][1] };
-        const k2k3 = Half{ x[0][2], x[0][3] };
-        const k4k5 = Half{ x[1][0], x[1][1] };
-        const k6k7 = Half{ x[1][2], x[1][3] };
+        const k0k1 = Half{ input[0][0], input[0][1] };
+        const k2k3 = Half{ input[0][2], input[0][3] };
+        const k4k5 = Half{ input[1][0], input[1][1] };
+        const k6k7 = Half{ input[1][2], input[1][3] };
         const n0k0 = Half{ n3n0[0], k0k1[0] };
         const k0n0 = Half{ n0k0[1], n0k0[0] };
         const k4k5k0n0 = Lane{ k4k5[0], k4k5[1], k0n0[0], k0n0[1] };
@@ -52,7 +52,7 @@ const Salsa20VecImpl = struct {
         const n3k7 = Half{ k7n3[1], k7n3[0] };
         const k2k3n3k7 = Lane{ k2k3[0], k2k3[1], n3k7[0], n3k7[1] };
 
-        var diag0 = x[2];
+        var diag0 = input[2];
         var diag1 = @shuffle(u32, k4k5k0n0, undefined, [_]i32{ 1, 2, 3, 0 });
         var diag2 = @shuffle(u32, n1n2k6k1, undefined, [_]i32{ 1, 2, 3, 0 });
         var diag3 = @shuffle(u32, k2k3n3k7, undefined, [_]i32{ 1, 2, 3, 0 });
@@ -96,16 +96,10 @@ const Salsa20VecImpl = struct {
             diag2 = diag2_shift;
             diag3 = diag3_shift;
         }
-        var x0x5x10x15 = diag0;
-        var x12x1x6x11 = diag1;
-        var x8x13x2x7 = diag2;
-        var x4x9x14x3 = diag3;
-        if (feedback) {
-            x0x5x10x15 +%= start0;
-            x12x1x6x11 +%= start1;
-            x8x13x2x7 +%= start2;
-            x4x9x14x3 +%= start3;
-        }
+        const x0x5x10x15 = diag0;
+        const x12x1x6x11 = diag1;
+        const x8x13x2x7 = diag2;
+        const x4x9x14x3 = diag3;
 
         const x0x1x10x11 = Lane{ x0x5x10x15[0], x12x1x6x11[1], x0x5x10x15[2], x12x1x6x11[3] };
         const x12x13x6x7 = Lane{ x12x1x6x11[0], x8x13x2x7[1], x12x1x6x11[2], x8x13x2x7[3] };
@@ -146,7 +140,8 @@ const Salsa20VecImpl = struct {
         var buf: [64]u8 = undefined;
         var i: usize = 0;
         while (i + 64 <= in.len) : (i += 64) {
-            salsa20Core(x[0..], ctx, true);
+            salsa20Core(x[0..], ctx);
+            contextFeedback(&x, ctx);
             hashToBytes(buf[0..], x);
             var xout = out[i..];
             const xin = in[i..];
@@ -164,7 +159,8 @@ const Salsa20VecImpl = struct {
             }
         }
         if (i < in.len) {
-            salsa20Core(x[0..], ctx, true);
+            salsa20Core(x[0..], ctx);
+            contextFeedback(&x, ctx);
             hashToBytes(buf[0..], x);
 
             var xout = out[i..];
@@ -183,7 +179,7 @@ const Salsa20VecImpl = struct {
         }
         const ctx = initContext(keyToWords(key), c);
         var x: BlockVec = undefined;
-        salsa20Core(x[0..], ctx, false);
+        salsa20Core(x[0..], ctx);
         var out: [32]u8 = undefined;
         mem.writeIntLittle(u32, out[0..4], x[0][0]);
         mem.writeIntLittle(u32, out[4..8], x[1][1]);
