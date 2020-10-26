@@ -34,10 +34,10 @@ const Salsa20VecImpl = struct {
         return (x << @splat(4, @as(u5, n))) | (x >> @splat(4, @as(u5, 1 +% ~n)));
     }
 
-    inline fn salsa20Core(x: *BlockVec, input: BlockVec) void {
+    inline fn salsa20Core(x: *BlockVec, input: BlockVec, comptime feedback: bool) void {
         const n1n2n3n0 = Lane{ x[3][1], x[3][2], x[3][3], x[3][0] };
-        const n1n2 = Half{ n1n2n3n0[1], n1n2n3n0[2] };
-        const n3n0 = Half{ n1n2n3n0[3], n1n2n3n0[0] };
+        const n1n2 = Half{ n1n2n3n0[0], n1n2n3n0[1] };
+        const n3n0 = Half{ n1n2n3n0[2], n1n2n3n0[3] };
         const k0k1 = Half{ x[0][0], x[0][1] };
         const k2k3 = Half{ x[0][2], x[0][3] };
         const k4k5 = Half{ x[1][0], x[1][1] };
@@ -48,13 +48,19 @@ const Salsa20VecImpl = struct {
         const k1k6 = Half{ k0k1[1], k6k7[0] };
         const k6k1 = Half{ k1k6[1], k1k6[0] };
         const n1n2k6k1 = Lane{ n1n2[0], n1n2[1], k6k1[0], k6k1[1] };
-        const k7n3 = Half{ k6k7[0], n3n0[0] };
+        const k7n3 = Half{ k6k7[1], n3n0[0] };
         const n3k7 = Half{ k7n3[1], k7n3[0] };
         const k2k3n3k7 = Lane{ k2k3[0], k2k3[1], n3k7[0], n3k7[1] };
+
         var diag0 = x[2];
         var diag1 = @shuffle(u32, k4k5k0n0, undefined, [_]i32{ 1, 2, 3, 0 });
         var diag2 = @shuffle(u32, n1n2k6k1, undefined, [_]i32{ 1, 2, 3, 0 });
         var diag3 = @shuffle(u32, k2k3n3k7, undefined, [_]i32{ 1, 2, 3, 0 });
+
+        const start0 = diag0;
+        const start1 = diag1;
+        const start2 = diag2;
+        const start3 = diag3;
 
         var i: usize = 0;
         while (i < 20) : (i += 2) {
@@ -90,10 +96,16 @@ const Salsa20VecImpl = struct {
             diag2 = diag2_shift;
             diag3 = diag3_shift;
         }
-        const x0x5x10x15 = diag0;
-        const x12x1x6x11 = diag1;
-        const x8x13x2x7 = diag2;
-        const x4x9x14x3 = diag3;
+        var x0x5x10x15 = diag0;
+        var x12x1x6x11 = diag1;
+        var x8x13x2x7 = diag2;
+        var x4x9x14x3 = diag3;
+        if (feedback) {
+            x0x5x10x15 +%= start0;
+            x12x1x6x11 +%= start1;
+            x8x13x2x7 +%= start2;
+            x4x9x14x3 +%= start3;
+        }
 
         const x0x1x10x11 = Lane{ x0x5x10x15[0], x12x1x6x11[1], x0x5x10x15[2], x12x1x6x11[3] };
         const x12x13x6x7 = Lane{ x12x1x6x11[0], x8x13x2x7[1], x12x1x6x11[2], x8x13x2x7[3] };
@@ -106,9 +118,9 @@ const Salsa20VecImpl = struct {
         const x12x13x14x15 = Lane{ x12x13x6x7[0], x12x13x6x7[1], x4x5x14x15[2], x4x5x14x15[3] };
 
         x[0] = x0x1x2x3;
-        x[1] = x0x1x2x3;
-        x[2] = x0x1x2x3;
-        x[3] = x0x1x2x3;
+        x[1] = x4x5x6x7;
+        x[2] = x8x9x10x11;
+        x[3] = x12x13x14x15;
     }
 
     fn hashToBytes(out: *[64]u8, x: BlockVec) void {
@@ -134,8 +146,7 @@ const Salsa20VecImpl = struct {
         var buf: [64]u8 = undefined;
         var i: usize = 0;
         while (i + 64 <= in.len) : (i += 64) {
-            salsa20Core(x[0..], ctx);
-            contextFeedback(&x, ctx);
+            salsa20Core(x[0..], ctx, true);
             hashToBytes(buf[0..], x);
             var xout = out[i..];
             const xin = in[i..];
@@ -153,8 +164,7 @@ const Salsa20VecImpl = struct {
             }
         }
         if (i < in.len) {
-            salsa20Core(x[0..], ctx);
-            contextFeedback(&x, ctx);
+            salsa20Core(x[0..], ctx, true);
             hashToBytes(buf[0..], x);
 
             var xout = out[i..];
@@ -173,7 +183,7 @@ const Salsa20VecImpl = struct {
         }
         const ctx = initContext(keyToWords(key), c);
         var x: BlockVec = undefined;
-        salsa20Core(x[0..], ctx);
+        salsa20Core(x[0..], ctx, false);
         var out: [32]u8 = undefined;
         mem.writeIntLittle(u32, out[0..4], x[0][0]);
         mem.writeIntLittle(u32, out[4..8], x[1][1]);
@@ -222,7 +232,7 @@ const Salsa20NonVecImpl = struct {
         };
     }
 
-    inline fn salsa20Core(x: *BlockVec, input: BlockVec) void {
+    inline fn salsa20Core(x: *BlockVec, input: BlockVec, comptime feedback: bool) void {
         const arx_steps = comptime [_]QuarterRound{
             Rp(4, 0, 12, 7),   Rp(8, 4, 0, 9),    Rp(12, 8, 4, 13),   Rp(0, 12, 8, 18),
             Rp(9, 5, 1, 7),    Rp(13, 9, 5, 9),   Rp(1, 13, 9, 13),   Rp(5, 1, 13, 18),
@@ -342,7 +352,7 @@ pub const Salsa20 = struct {
     pub fn xor(out: []u8, in: []const u8, counter: u64, key: [key_length]u8, nonce: [nonce_length]u8) void {
         debug.assert(in.len == out.len);
 
-        var d: [4]u32 = undefined;
+        var d: [4]u32 align(16) = undefined;
         d[0] = mem.readIntLittle(u32, nonce[0..4]);
         d[1] = mem.readIntLittle(u32, nonce[4..8]);
         d[2] = @truncate(u32, counter);
@@ -553,6 +563,17 @@ pub const sealedBox = struct {
         return box.open(m, c[public_length..], nonce, epk.*, keypair.secret_key);
     }
 };
+
+test "salsa20" {
+    const key = [_]u8{0x69} ** 32;
+    const nonce = [_]u8{0x42} ** 8;
+    const msg = [_]u8{0} ** 20;
+    var c: [msg.len]u8 = undefined;
+
+    Salsa20.xor(&c, msg[0..], 0, key, nonce);
+    std.debug.print("{x}\n", .{c});
+    std.debug.print("expected: 30ff9933aa6534ff5207142593cd1fca4b23bdd8\n", .{});
+}
 
 test "xsalsa20poly1305" {
     var msg: [100]u8 = undefined;
