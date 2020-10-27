@@ -34,7 +34,7 @@ const Salsa20VecImpl = struct {
         return (x << @splat(4, @as(u5, n))) | (x >> @splat(4, @as(u5, 1 +% ~n)));
     }
 
-    inline fn salsa20Core(x: *BlockVec, input: BlockVec) void {
+    inline fn salsa20Core(x: *BlockVec, input: BlockVec, comptime feedback: bool) void {
         const n1n2n3n0 = Lane{ input[3][1], input[3][2], input[3][3], input[3][0] };
         const n1n2 = Half{ n1n2n3n0[0], n1n2n3n0[1] };
         const n3n0 = Half{ n1n2n3n0[2], n1n2n3n0[3] };
@@ -56,6 +56,11 @@ const Salsa20VecImpl = struct {
         var diag1 = @shuffle(u32, k4k5k0n0, undefined, [_]i32{ 1, 2, 3, 0 });
         var diag2 = @shuffle(u32, n1n2k6k1, undefined, [_]i32{ 1, 2, 3, 0 });
         var diag3 = @shuffle(u32, k2k3n3k7, undefined, [_]i32{ 1, 2, 3, 0 });
+
+        const start0 = diag0;
+        const start1 = diag1;
+        const start2 = diag2;
+        const start3 = diag3;
 
         var i: usize = 0;
         while (i < 20) : (i += 2) {
@@ -91,10 +96,17 @@ const Salsa20VecImpl = struct {
             diag2 = diag2_shift;
             diag3 = diag3_shift;
         }
-        const x0x5x10x15 = diag0;
-        const x12x1x6x11 = diag1;
-        const x8x13x2x7 = diag2;
-        const x4x9x14x3 = diag3;
+        var x0x5x10x15 = diag0;
+        var x12x1x6x11 = diag1;
+        var x8x13x2x7 = diag2;
+        var x4x9x14x3 = diag3;
+
+        if (feedback) {
+            x0x5x10x15 +%= start0;
+            x12x1x6x11 +%= start1;
+            x8x13x2x7 +%= start2;
+            x4x9x14x3 +%= start3;
+        }
 
         const x0x1x10x11 = Lane{ x0x5x10x15[0], x12x1x6x11[1], x0x5x10x15[2], x12x1x6x11[3] };
         const x12x13x6x7 = Lane{ x12x1x6x11[0], x8x13x2x7[1], x12x1x6x11[2], x8x13x2x7[3] };
@@ -122,21 +134,13 @@ const Salsa20VecImpl = struct {
         }
     }
 
-    fn contextFeedback(x: *BlockVec, ctx: BlockVec) void {
-        x[0] +%= ctx[0];
-        x[1] +%= ctx[1];
-        x[2] +%= ctx[2];
-        x[3] +%= ctx[3];
-    }
-
     fn salsa20Internal(out: []u8, in: []const u8, key: [8]u32, d: [4]u32) void {
         var ctx = initContext(key, d);
         var x: BlockVec = undefined;
         var buf: [64]u8 = undefined;
         var i: usize = 0;
         while (i + 64 <= in.len) : (i += 64) {
-            salsa20Core(x[0..], ctx);
-            contextFeedback(&x, ctx);
+            salsa20Core(x[0..], ctx, true);
             hashToBytes(buf[0..], x);
             var xout = out[i..];
             const xin = in[i..];
@@ -154,8 +158,7 @@ const Salsa20VecImpl = struct {
             }
         }
         if (i < in.len) {
-            salsa20Core(x[0..], ctx);
-            contextFeedback(&x, ctx);
+            salsa20Core(x[0..], ctx, true);
             hashToBytes(buf[0..], x);
 
             var xout = out[i..];
@@ -174,7 +177,7 @@ const Salsa20VecImpl = struct {
         }
         const ctx = initContext(keyToWords(key), c);
         var x: BlockVec = undefined;
-        salsa20Core(x[0..], ctx);
+        salsa20Core(x[0..], ctx, false);
         var out: [32]u8 = undefined;
         mem.writeIntLittle(u32, out[0..4], x[0][0]);
         mem.writeIntLittle(u32, out[4..8], x[1][1]);
@@ -223,7 +226,7 @@ const Salsa20NonVecImpl = struct {
         };
     }
 
-    inline fn salsa20Core(x: *BlockVec, input: BlockVec) void {
+    inline fn salsa20Core(x: *BlockVec, input: BlockVec, comptime feedback: bool) void {
         const arx_steps = comptime [_]QuarterRound{
             Rp(4, 0, 12, 7),   Rp(8, 4, 0, 9),    Rp(12, 8, 4, 13),   Rp(0, 12, 8, 18),
             Rp(9, 5, 1, 7),    Rp(13, 9, 5, 9),   Rp(1, 13, 9, 13),   Rp(5, 1, 13, 18),
@@ -241,18 +244,16 @@ const Salsa20NonVecImpl = struct {
                 x[r.a] ^= math.rotl(u32, x[r.b] +% x[r.c], r.d);
             }
         }
+        if (feedback) {
+            while (j < 16) : (j += 1) {
+                x[j] +%= ctx[j];
+            }
+        }
     }
 
     fn hashToBytes(out: *[64]u8, x: BlockVec) void {
         for (x) |w, i| {
             mem.writeIntLittle(u32, out[i * 4 ..][0..4], w);
-        }
-    }
-
-    fn contextFeedback(x: *BlockVec, ctx: BlockVec) void {
-        var i: usize = 0;
-        while (i < 16) : (i += 1) {
-            x[i] +%= ctx[i];
         }
     }
 
