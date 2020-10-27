@@ -42,7 +42,7 @@ const Salsa20VecImpl = struct {
         const k2k3 = Half{ input[0][2], input[0][3] };
         const k4k5 = Half{ input[1][0], input[1][1] };
         const k6k7 = Half{ input[1][2], input[1][3] };
-        const n0k0 = Half{ n3n0[0], k0k1[0] };
+        const n0k0 = Half{ n3n0[1], k0k1[0] };
         const k0n0 = Half{ n0k0[1], n0k0[0] };
         const k4k5k0n0 = Lane{ k4k5[0], k4k5[1], k0n0[0], k0n0[1] };
         const k1k6 = Half{ k0k1[1], k6k7[0] };
@@ -57,11 +57,6 @@ const Salsa20VecImpl = struct {
         var diag2 = @shuffle(u32, n1n2k6k1, undefined, [_]i32{ 1, 2, 3, 0 });
         var diag3 = @shuffle(u32, k2k3n3k7, undefined, [_]i32{ 1, 2, 3, 0 });
 
-        const start0 = diag0;
-        const start1 = diag1;
-        const start2 = diag2;
-        const start3 = diag3;
-
         var i: usize = 0;
         while (i < 20) : (i += 2) {
             var a0 = diag1 +% diag0;
@@ -69,7 +64,7 @@ const Salsa20VecImpl = struct {
             var a1 = diag0 +% diag3;
             diag2 ^= rot(a1, 9);
             var a2 = diag3 +% diag2;
-            diag3 ^= rot(a2, 13);
+            diag1 ^= rot(a2, 13);
             var a3 = diag2 +% diag1;
             diag0 ^= rot(a3, 18);
 
