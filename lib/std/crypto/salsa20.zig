@@ -263,8 +263,7 @@ const Salsa20NonVecImpl = struct {
         var buf: [64]u8 = undefined;
         var i: usize = 0;
         while (i + 64 <= in.len) : (i += 64) {
-            salsa20Core(x[0..], ctx);
-            contextFeedback(&x, ctx);
+            salsa20Core(x[0..], ctx, true);
             hashToBytes(buf[0..], x);
             var xout = out[i..];
             const xin = in[i..];
@@ -279,8 +278,7 @@ const Salsa20NonVecImpl = struct {
             ctx[9] += @boolToInt(@addWithOverflow(u32, ctx[8], 1, &ctx[8]));
         }
         if (i < in.len) {
-            salsa20Core(x[0..], ctx);
-            contextFeedback(&x, ctx);
+            salsa20Core(x[0..], ctx, true);
             hashToBytes(buf[0..], x);
 
             var xout = out[i..];
