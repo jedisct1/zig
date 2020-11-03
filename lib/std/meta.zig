@@ -584,19 +584,28 @@ test "std.meta.eql" {
     const u_2 = U{ .s = s_1 };
     const u_3 = U{ .f = 24 };
 
+std.debug.print("x\n", .{});
     testing.expect(eql(s_1, s_3));
+std.debug.print("x\n", .{});    
     testing.expect(eql(&s_1, &s_1));
+    std.debug.print("x\n", .{});
     testing.expect(!eql(&s_1, &s_3));
-    testing.expect(eql(u_1, u_3));
+    std.debug.print("x\n", .{});
+    testing.expect(eql(u_1, u_3));    
+    std.debug.print("x\n", .{});
     testing.expect(!eql(u_1, u_2));
+std.debug.print("x\n", .{});    
 
     var a1 = "abcdef".*;
     var a2 = "abcdef".*;
     var a3 = "ghijkl".*;
 
     testing.expect(eql(a1, a2));
+std.debug.print("x\n", .{});    
     testing.expect(!eql(a1, a3));
+std.debug.print("x\n", .{});    
     testing.expect(!eql(a1[0..], a2[0..]));
+std.debug.print("x\n", .{});    
 
     const EU = struct {
         fn tst(err: bool) !u8 {
@@ -606,15 +615,20 @@ test "std.meta.eql" {
     };
 
     testing.expect(eql(EU.tst(true), EU.tst(true)));
+std.debug.print("x\n", .{});    
     testing.expect(eql(EU.tst(false), EU.tst(false)));
+    std.debug.print("x\n", .{});
     testing.expect(!eql(EU.tst(false), EU.tst(true)));
+    std.debug.print("x\n", .{});
 
     var v1 = @splat(4, @as(u32, 1));
     var v2 = @splat(4, @as(u32, 1));
     var v3 = @splat(4, @as(u32, 2));
 
     testing.expect(eql(v1, v2));
+    std.debug.print("x\n", .{});
     testing.expect(!eql(v1, v3));
+    std.debug.print("x\n", .{});
 }
 
 test "intToEnum with error return" {
