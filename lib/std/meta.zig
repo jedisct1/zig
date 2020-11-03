@@ -589,7 +589,7 @@ std.debug.print("x\n", .{});
 std.debug.print("x\n", .{});    
     testing.expect(eql(&s_1, &s_1));
     std.debug.print("x\n", .{});
-    std.mem.doNotOptimizeAway(&s_3);    
+//    std.mem.doNotOptimizeAway(&s_3);    
     testing.expect(!eql(&s_1, &s_3));
     std.debug.print("x\n", .{});
     testing.expect(eql(u_1, u_3));    
