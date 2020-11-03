@@ -574,7 +574,7 @@ test "std.meta.eql" {
         .c = "54321".*,
     };
 
-    const s_3 = S{
+    var s_3 = S{
         .a = 134,
         .b = 123.3,
         .c = "12345".*,
@@ -589,7 +589,6 @@ std.debug.print("x\n", .{});
 std.debug.print("x\n", .{});    
     testing.expect(eql(&s_1, &s_1));
     std.debug.print("x\n", .{});
-    std.mem.doNotOptimizeAway(&s_1);
     std.mem.doNotOptimizeAway(&s_3);    
     testing.expect(!eql(&s_1, &s_3));
     std.debug.print("x\n", .{});
