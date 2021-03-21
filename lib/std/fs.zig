@@ -53,10 +53,10 @@ pub const MAX_PATH_BYTES = switch (builtin.os.tag) {
 pub const base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".*;
 
 /// Base64 encoder, replacing the standard `+/` with `-_` so that it can be used in a file name on any filesystem.
-pub const base64_encoder = base64.Base64Encoder.init(base64_alphabet, null);
+pub const base64_encoder = base64.Base64Encoder.init(base64_alphabet, '=');
 
 /// Base64 decoder, replacing the standard `+/` with `-_` so that it can be used in a file name on any filesystem.
-pub const base64_decoder = base64.Base64Decoder.init(base64_alphabet, null);
+pub const base64_decoder = base64.Base64Decoder.init(base64_alphabet, '=');
 
 /// Whether or not async file system syscalls need a dedicated thread because the operating
 /// system does not support non-blocking I/O on the file system.

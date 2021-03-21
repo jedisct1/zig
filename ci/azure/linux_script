@@ -71,4 +71,3 @@ ls -l ../zig-cache/
 # Look for HTML errors.
 tidy -qe ../zig-cache/langref.html
 
-release/bin/zig build docs
