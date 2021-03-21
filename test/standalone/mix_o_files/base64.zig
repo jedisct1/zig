@@ -5,7 +5,7 @@ export fn decode_base_64(dest_ptr: [*]u8, dest_len: usize, source_ptr: [*]const 
     const dest = dest_ptr[0..dest_len];
     const base64_decoder = base64.standard.DecoderUnsafe;
     const decoded_size = base64_decoder.calcSizeForSlice(src) catch unreachable;
-    base64_decoder.decode(dest[0..decoded_size], src) catch unreachable;
+    base64_decoder.decode(dest[0..decoded_size], src);
     return decoded_size;
 }
 
