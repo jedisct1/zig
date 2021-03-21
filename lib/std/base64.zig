@@ -370,12 +370,14 @@ test "base64" {
     @setEvalBranchQuota(20000);
     std.debug.print("base64 test\n", .{});
     testBase64() catch unreachable;
+    comptime try testAllApis(standard, "foobar", "Zm9vYmFy") catch unreachable;
 }
 
 test "base64 url_safe" {
     @setEvalBranchQuota(20000);
     std.debug.print("base64 url_safe test\n", .{});
     testBase64UrlSafe() catch unreachable;
+    comptime try testAllApis(url_safe, "foobar", "Zm9vYmFy") catch unreachable;
 }
 
 fn testBase64() !void {
