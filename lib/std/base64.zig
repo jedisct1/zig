@@ -367,13 +367,15 @@ pub const Base64DecoderUnsafe = struct {
 };
 
 test "base64" {
-    @setEvalBranchQuota(20000);
-    testBase64() catch unreachable;
+    @setEvalBranchQuota(100000);
+    std.debug.print("base64 test\n", .{});
+    comptime testBase64() catch unreachable;
 }
 
 test "base64 url_safe" {
-    @setEvalBranchQuota(20000);
-    testBase64UrlSafe() catch unreachable;
+    @setEvalBranchQuota(100000);
+    std.debug.print("base64 url_safe test\n", .{});
+    comptime testBase64UrlSafe() catch unreachable;
 }
 
 fn testBase64() !void {
