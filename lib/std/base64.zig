@@ -368,12 +368,12 @@ pub const Base64DecoderUnsafe = struct {
 
 test "base64" {
     @setEvalBranchQuota(15000);
-    testBase64() catch unreachable;
+    comptime testBase64() catch unreachable;
 }
 
 test "base64 url_safe" {
     @setEvalBranchQuota(15000);
-    testBase64UrlSafe() catch unreachable;
+    comptime testBase64UrlSafe() catch unreachable;
 }
 
 fn testBase64() !void {
