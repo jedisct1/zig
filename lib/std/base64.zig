@@ -367,17 +367,17 @@ pub const Base64DecoderUnsafe = struct {
 };
 
 test "base64" {
-    @setEvalBranchQuota(20000);
+    @setEvalBranchQuota(8000);
     std.debug.print("base64 test\n", .{});
     testBase64() catch unreachable;
-    comptime testAllApis(standard, "foobar", "Zm9vYmFy") catch unreachable;
+    comptime testAllApis(standard, "comptime", "Y29tcHRpbWU=") catch unreachable;
 }
 
 test "base64 url_safe" {
-    @setEvalBranchQuota(20000);
+    @setEvalBranchQuota(8000);
     std.debug.print("base64 url_safe test\n", .{});
     testBase64UrlSafe() catch unreachable;
-    comptime testAllApis(url_safe, "foobar", "Zm9vYmFy") catch unreachable;
+    comptime testAllApis(url_safe, "comptime", "Y29tcHRpbWU") catch unreachable;
 }
 
 fn testBase64() !void {
