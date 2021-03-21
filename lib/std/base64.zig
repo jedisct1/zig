@@ -381,7 +381,7 @@ test "base64" {
 test "base64 url_safe" {
     @setEvalBranchQuota(8000);
     testBase64UrlSafe() catch unreachable;
-    comptime testAllApis(standard, "comptime", "Y29tcHRpbWU") catch unreachable;
+    comptime testAllApis(url_safe, "comptime", "Y29tcHRpbWU") catch unreachable;
 }
 
 fn testBase64() !void {
