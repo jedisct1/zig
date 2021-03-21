@@ -64,7 +64,7 @@ make $JOBS install
 cmake .. -DZIG_EXECUTABLE="$(pwd)/release/bin/zig"
 make $JOBS install
 
-release/bin/zig build test -Dskip-release 
+release/bin/zig build test -Dskip-release -Dskip-non-native
 
 ls -l ../zig-cache/
 
