@@ -65,7 +65,10 @@ make $JOBS install
 cmake .. -DZIG_EXECUTABLE="$(pwd)/release/bin/zig"
 make $JOBS install
 
-release/bin/zig build test -Denable-qemu -Denable-wasmtime
+#release/bin/zig build test -Denable-qemu -Denable-wasmtime
+
+release/bin/zig build test \
+  -Dskip-non-native -Dskip-release -Dskip-stage2-tests
 
 # Look for HTML errors.
 tidy -qe ../zig-cache/langref.html
