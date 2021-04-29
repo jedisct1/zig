@@ -129,6 +129,10 @@ test {
         _ = zig;
         _ = start;
     } else {
-        testing.refAllDecls(@This());
+        inline for (meta.declarations(@This())) |decl, i| {
+            if (i % 4 == 0) {
+                _ = decl;
+            }
+        }
     }
 }
