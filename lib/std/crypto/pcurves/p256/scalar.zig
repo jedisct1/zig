@@ -74,18 +74,18 @@ pub const Scalar = struct {
     /// One.
     pub const one = Scalar{ .fe = Fe.one };
 
-    /// Unpack a 32-byte representation of a scalar.
+    /// Unpack a serialized representation of a scalar.
     pub fn fromBytes(s: CompressedScalar, endian: builtin.Endian) NonCanonicalError!Scalar {
         return Scalar{ .fe = try Fe.fromBytes(s, endian) };
     }
 
-    /// Unpack a 48-byte representation of a scalar.
+    /// Reduce a 384 bit input to the field size.
     pub fn fromBytes48(s: [48]u8, endian: builtin.Endian) Scalar {
         const t = ScalarDouble.fromBytes(384, s, endian);
         return t.reduce(384);
     }
 
-    /// Unpack a 64-byte representation of a scalar.
+    /// Reduce a 512 bit input to the field size.
     pub fn fromBytes64(s: [64]u8, endian: builtin.Endian) Scalar {
         const t = ScalarDouble.fromBytes(512, s, endian);
         return t.reduce(512);

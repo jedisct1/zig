@@ -30,20 +30,16 @@ pub const P256 = struct {
 
     /// The P256 base point.
     pub const basePoint = P256{
-        .x = Fe{ .limbs = .{ 8784043285714375740, 8483257759279461889, 8789745728267363600, 1770019616739251654 } },
-        .y = Fe{ .limbs = .{ 15992936863339206154, 10037038012062884956, 15197544864945402661, 9615747158586711429 } },
+        .x = try Fe.fromInt(48439561293906451759052585252797914202762949526041747995844080717082404635286),
+        .y = try Fe.fromInt(36134250956749795798585127919587881956611106672985015071877198253568414405109),
         .z = Fe.one,
         .is_base = true,
     };
 
     /// The P256 neutral element.
-    pub const identityElement = P256{
-        .x = Fe.zero,
-        .y = Fe.one,
-        .z = Fe.zero,
-    };
+    pub const identityElement = P256{ .x = Fe.zero, .y = Fe.one, .z = Fe.zero };
 
-    const B = Fe{ .limbs = .{ 15608596021259845087, 12461466548982526096, 16546823903870267094, 15866188208926050356 } };
+    pub const B = try Fe.fromInt(41058363725152142129326129780047268409114441015993725554835256314039467401291);
 
     /// Reject the neutral element.
     pub fn rejectIdentity(p: P256) IdentityElementError!void {
@@ -386,14 +382,14 @@ pub const P256 = struct {
         return pc;
     }
 
-    /// Multiply an elliptic curve point by a scalar without clamping it.
-    /// Return error.WeakPublicKey if the base generates a small-order group,
-    /// and error.IdentityElement if the result is the identity element.
-    pub fn mul(p: P256, s_: [32]u8, endian: builtin.Endian) IdentityElementError!P256 {
-        const basePointPc = pc: {
-            break :pc precompute(P256.basePoint, 15);
-        };
+    const basePointPc = comptime pc: {
+        @setEvalBranchQuota(50000);
+        break :pc precompute(P256.basePoint, 15);
+    };
 
+    /// Multiply an elliptic curve point by a scalar.
+    /// Return error.IdentityElement if the result is the identity element.
+    pub fn mul(p: P256, s_: [32]u8, endian: builtin.Endian) IdentityElementError!P256 {
         const s = if (endian == .Little) s_ else Fe.orderSwap(s_);
         const pc = if (p.is_base) basePointPc else pc: {
             try p.rejectIdentity();
@@ -406,10 +402,6 @@ pub const P256 = struct {
     /// Multiply an elliptic curve point by a *PUBLIC* scalar *IN VARIABLE TIME*
     /// This can be used for signature verification.
     pub fn mulPublic(p: P256, s_: [32]u8, endian: builtin.Endian) IdentityElementError!P256 {
-        const basePointPc = pc: {
-            break :pc precompute(P256.basePoint, 15);
-        };
-
         const s = if (endian == .Little) s_ else Fe.orderSwap(s_);
         if (p.is_base) {
             return pcMul16(basePointPc, s, true);

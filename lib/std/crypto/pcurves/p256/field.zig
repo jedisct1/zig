@@ -87,7 +87,7 @@ pub const Fe = struct {
 
     /// Return the field element as an integer.
     pub fn toInt(fe: Fe) u256 {
-        const s = fe.toBytes();
+        const s = fe.toBytes(.Little);
         return mem.readIntLittle(u256, &s);
     }
 
