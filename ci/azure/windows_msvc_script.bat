@@ -26,7 +26,7 @@ cd %ZIGBUILDDIR%
 cmake.exe .. -Thost=x64 -G"Visual Studio 16 2019" -A x64 "-DCMAKE_INSTALL_PREFIX=%ZIGINSTALLDIR%" "-DCMAKE_PREFIX_PATH=%ZIGPREFIXPATH%" -DCMAKE_BUILD_TYPE=Release -DZIG_OMIT_STAGE2=ON || exit /b
 msbuild /maxcpucount /p:Configuration=Release INSTALL.vcxproj || exit /b
 
-"%ZIGINSTALLDIR%\bin\zig.exe" build test-toolchain -Dskip-non-native -Dskip_stage2_tests || exit /b
+"%ZIGINSTALLDIR%\bin\zig.exe" build test-toolchain -Dskip-non-native -Dskip-stage2-tests || exit /b
 "%ZIGINSTALLDIR%\bin\zig.exe" build test-std -Dskip-non-native || exit /b
 "%ZIGINSTALLDIR%\bin\zig.exe" build docs || exit /b
 
