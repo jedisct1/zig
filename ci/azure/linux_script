@@ -65,15 +65,15 @@ make $JOBS install
 cmake .. -DZIG_EXECUTABLE="$(pwd)/release/bin/zig"
 make $JOBS install
 
-release/bin/zig build test-toolchain -Denable-qemu -Denable-wasmtime
-release/bin/zig build test-std -Denable-qemu -Denable-wasmtime
-release/bin/zig build docs -Denable-qemu -Denable-wasmtime
-
-#for step in test-stage2 test-fmt test-behavior test-std test-compiler-rt test-minilibc test-compare-output test-standalone test-stack-traces test-cli test-asm-link test-runtime-safety test-translate-c test-run-translated-c test-compile-errors; do
-#  echo "* Step: [$step]"
-#  release/bin/zig build "$step" \
-#    -Dskip-non-native -Dskip-release -Dskip-stage2-tests
-#done
+LOG=$(mktemp)
+for step in test-toolchain test-std docs; do
+  echo "* Running step: [$step]"
+  if ! release/bin/zig build $step -Denable-qemu -Denable-wasmtime 2>"$LOG" >&2; then
+    cat "$LOG" >&2
+    exit 1
+  fi
+  echo "  Done."
+done
 
 # Look for HTML errors.
 tidy -qe ../zig-cache/langref.html
