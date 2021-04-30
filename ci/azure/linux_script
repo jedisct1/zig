@@ -67,7 +67,7 @@ make $JOBS install
 
 #release/bin/zig build test -Denable-qemu -Denable-wasmtime
 
-release/bin/zig build test \
+release/bin/zig build test-std \
   -Dskip-non-native -Dskip-release -Dskip-stage2-tests
 
 # Look for HTML errors.
@@ -103,7 +103,7 @@ if [ "${BUILD_REASON}" != "PullRequest" ]; then
   s3cmd put -P --add-header="cache-control: public, max-age=31536000, immutable" "$TARBALL" s3://ziglang.org/builds/
 
   SHASUM=$(sha256sum $TARBALL | cut '-d ' -f1)
-  BYTESIZE=$(wc -c < $TARBALL)
+  BYTESIZE=$(wc -c <$TARBALL)
 
   JSONFILE="linux-$GITBRANCH.json"
   touch $JSONFILE
