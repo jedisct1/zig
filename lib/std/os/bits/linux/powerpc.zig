@@ -562,6 +562,15 @@ pub const kernel_stat = extern struct {
     ctim: timespec,
     __unused: [2]u32,
 
+    fn eql(self: @This(), other: @This()) bool {
+        inline for (@typeInfo(@This()).Struct.fields) |field| {
+            if (!std.mem.startsWith(u8, field.name, "__")) {
+                if (@field(self, field.name) != @field(other, field.name)) return false;
+            }
+        }
+        return true;
+    }
+
     pub fn atime(self: @This()) timespec {
         return self.atim;
     }

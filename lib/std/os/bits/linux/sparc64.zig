@@ -510,6 +510,15 @@ pub const libc_stat = extern struct {
     ctim: timespec,
     __unused: [2]isize,
 
+    fn eql(self: @This(), other: @This()) bool {
+        inline for (@typeInfo(@This()).Struct.fields) |field| {
+            if (!std.mem.startsWith(u8, field.name, "__")) {
+                if (@field(self, field.name) != @field(other, field.name)) return false;
+            }
+        }
+        return true;
+    }
+
     pub fn atime(self: libc_stat) timespec {
         return self.atim;
     }
@@ -543,6 +552,15 @@ pub const kernel_stat = extern struct {
     mtim: timespec,
     ctim: timespec,
     __unused: [3]u64,
+
+    fn eql(self: @This(), other: @This()) bool {
+        inline for (@typeInfo(@This()).Struct.fields) |field| {
+            if (!std.mem.startsWith(u8, field.name, "__")) {
+                if (@field(self, field.name) != @field(other, field.name)) return false;
+            }
+        }
+        return true;
+    }
 
     pub fn atime(self: @This()) timespec {
         return self.atim;

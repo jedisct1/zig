@@ -173,6 +173,19 @@ pub const libc_stat = extern struct {
     lspare: i32,
     qspare1: i64,
     qspare2: i64,
+
+    fn eql(self: @This(), other: @This()) bool {
+        inline for (@typeInfo(@This()).Struct.fields) |field| {
+            if (!std.mem.startsWith(u8, field.name, "padding") and
+                !std.mem.startsWith(u8, field.name, "qspare") and
+                !std.mem.startsWith(u8, field.name, "lspare"))
+            {
+                if (@field(self, field.name) != @field(other, field.name)) return false;
+            }
+        }
+        return true;
+    }
+
     pub fn atime(self: @This()) timespec {
         return self.atim;
     }
