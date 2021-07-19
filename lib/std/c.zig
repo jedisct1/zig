@@ -31,6 +31,7 @@ pub usingnamespace switch (std.Target.current.os.tag) {
     .fuchsia => @import("c/fuchsia.zig"),
     .minix => @import("c/minix.zig"),
     .emscripten => @import("c/emscripten.zig"),
+    .wasi => @import("c/wasi.zig"),
     else => struct {},
 };
 
@@ -68,58 +69,116 @@ pub fn versionCheck(glibc_version: builtin.Version) type {
     };
 }
 
-pub extern "c" var environ: [*:null]?[*:0]u8;
+pub usingnamespace if (std.Target.current.os.tag == .wasi)
+    struct {
+        pub extern var environ: [*:null]?[*:0]u8;
 
-pub extern "c" fn fopen(noalias filename: [*:0]const u8, noalias modes: [*:0]const u8) ?*FILE;
-pub extern "c" fn fclose(stream: *FILE) c_int;
-pub extern "c" fn fwrite(noalias ptr: [*]const u8, size_of_type: usize, item_count: usize, noalias stream: *FILE) usize;
-pub extern "c" fn fread(noalias ptr: [*]u8, size_of_type: usize, item_count: usize, noalias stream: *FILE) usize;
+        pub extern fn fopen(noalias filename: [*:0]const u8, noalias modes: [*:0]const u8) ?*FILE;
+        pub extern fn fclose(stream: *FILE) c_int;
+        pub extern fn fwrite(noalias ptr: [*]const u8, size_of_type: usize, item_count: usize, noalias stream: *FILE) usize;
+        pub extern fn fread(noalias ptr: [*]u8, size_of_type: usize, item_count: usize, noalias stream: *FILE) usize;
 
-pub extern "c" fn printf(format: [*:0]const u8, ...) c_int;
-pub extern "c" fn abort() noreturn;
-pub extern "c" fn exit(code: c_int) noreturn;
-pub extern "c" fn _exit(code: c_int) noreturn;
-pub extern "c" fn isatty(fd: fd_t) c_int;
-pub extern "c" fn close(fd: fd_t) c_int;
-pub extern "c" fn lseek(fd: fd_t, offset: off_t, whence: c_int) off_t;
-pub extern "c" fn open(path: [*:0]const u8, oflag: c_uint, ...) c_int;
-pub extern "c" fn openat(fd: c_int, path: [*:0]const u8, oflag: c_uint, ...) c_int;
-pub extern "c" fn ftruncate(fd: c_int, length: off_t) c_int;
-pub extern "c" fn raise(sig: c_int) c_int;
-pub extern "c" fn read(fd: fd_t, buf: [*]u8, nbyte: usize) isize;
-pub extern "c" fn readv(fd: c_int, iov: [*]const iovec, iovcnt: c_uint) isize;
-pub extern "c" fn pread(fd: fd_t, buf: [*]u8, nbyte: usize, offset: off_t) isize;
-pub extern "c" fn preadv(fd: c_int, iov: [*]const iovec, iovcnt: c_uint, offset: off_t) isize;
-pub extern "c" fn writev(fd: c_int, iov: [*]const iovec_const, iovcnt: c_uint) isize;
-pub extern "c" fn pwritev(fd: c_int, iov: [*]const iovec_const, iovcnt: c_uint, offset: off_t) isize;
-pub extern "c" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;
-pub extern "c" fn pwrite(fd: fd_t, buf: [*]const u8, nbyte: usize, offset: off_t) isize;
-pub extern "c" fn mmap(addr: ?*align(page_size) c_void, len: usize, prot: c_uint, flags: c_uint, fd: fd_t, offset: off_t) *c_void;
-pub extern "c" fn munmap(addr: *align(page_size) const c_void, len: usize) c_int;
-pub extern "c" fn mprotect(addr: *align(page_size) c_void, len: usize, prot: c_uint) c_int;
-pub extern "c" fn link(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: c_int) c_int;
-pub extern "c" fn linkat(oldfd: fd_t, oldpath: [*:0]const u8, newfd: fd_t, newpath: [*:0]const u8, flags: c_int) c_int;
-pub extern "c" fn unlink(path: [*:0]const u8) c_int;
-pub extern "c" fn unlinkat(dirfd: fd_t, path: [*:0]const u8, flags: c_uint) c_int;
-pub extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*]u8;
-pub extern "c" fn waitpid(pid: pid_t, stat_loc: ?*c_int, options: c_int) pid_t;
-pub extern "c" fn fork() c_int;
-pub extern "c" fn access(path: [*:0]const u8, mode: c_uint) c_int;
-pub extern "c" fn faccessat(dirfd: fd_t, path: [*:0]const u8, mode: c_uint, flags: c_uint) c_int;
-pub extern "c" fn pipe(fds: *[2]fd_t) c_int;
-pub extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
-pub extern "c" fn mkdirat(dirfd: fd_t, path: [*:0]const u8, mode: u32) c_int;
-pub extern "c" fn symlink(existing: [*:0]const u8, new: [*:0]const u8) c_int;
-pub extern "c" fn symlinkat(oldpath: [*:0]const u8, newdirfd: fd_t, newpath: [*:0]const u8) c_int;
-pub extern "c" fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
-pub extern "c" fn renameat(olddirfd: fd_t, old: [*:0]const u8, newdirfd: fd_t, new: [*:0]const u8) c_int;
-pub extern "c" fn chdir(path: [*:0]const u8) c_int;
-pub extern "c" fn fchdir(fd: fd_t) c_int;
-pub extern "c" fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;
-pub extern "c" fn dup(fd: fd_t) c_int;
-pub extern "c" fn dup2(old_fd: fd_t, new_fd: fd_t) c_int;
-pub extern "c" fn readlink(noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
-pub extern "c" fn readlinkat(dirfd: fd_t, noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
+        pub extern fn printf(format: [*:0]const u8, ...) c_int;
+        pub extern fn abort() noreturn;
+        pub extern fn exit(code: c_int) noreturn;
+        pub extern fn _exit(code: c_int) noreturn;
+        pub extern fn isatty(fd: fd_t) c_int;
+        pub extern fn close(fd: fd_t) c_int;
+        pub extern fn lseek(fd: fd_t, offset: off_t, whence: c_int) off_t;
+        pub extern fn open(path: [*:0]const u8, oflag: c_uint, ...) c_int;
+        pub extern fn openat(fd: c_int, path: [*:0]const u8, oflag: c_uint, ...) c_int;
+        pub extern fn ftruncate(fd: c_int, length: off_t) c_int;
+        pub extern fn raise(sig: c_int) c_int;
+        pub extern fn read(fd: fd_t, buf: [*]u8, nbyte: usize) isize;
+        pub extern fn readv(fd: c_int, iov: [*]const iovec, iovcnt: c_uint) isize;
+        pub extern fn pread(fd: fd_t, buf: [*]u8, nbyte: usize, offset: off_t) isize;
+        pub extern fn preadv(fd: c_int, iov: [*]const iovec, iovcnt: c_uint, offset: off_t) isize;
+        pub extern fn writev(fd: c_int, iov: [*]const iovec_const, iovcnt: c_uint) isize;
+        pub extern fn pwritev(fd: c_int, iov: [*]const iovec_const, iovcnt: c_uint, offset: off_t) isize;
+        pub extern fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;
+        pub extern fn pwrite(fd: fd_t, buf: [*]const u8, nbyte: usize, offset: off_t) isize;
+        pub extern fn mmap(addr: ?*align(page_size) c_void, len: usize, prot: c_uint, flags: c_uint, fd: fd_t, offset: off_t) *c_void;
+        pub extern fn munmap(addr: *align(page_size) const c_void, len: usize) c_int;
+        pub extern fn mprotect(addr: *align(page_size) c_void, len: usize, prot: c_uint) c_int;
+        pub extern fn link(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: c_int) c_int;
+        pub extern fn linkat(oldfd: fd_t, oldpath: [*:0]const u8, newfd: fd_t, newpath: [*:0]const u8, flags: c_int) c_int;
+        pub extern fn unlink(path: [*:0]const u8) c_int;
+        pub extern fn unlinkat(dirfd: fd_t, path: [*:0]const u8, flags: c_uint) c_int;
+        pub extern fn getcwd(buf: [*]u8, size: usize) ?[*]u8;
+        pub extern fn waitpid(pid: pid_t, stat_loc: ?*c_int, options: c_int) pid_t;
+        pub extern fn fork() c_int;
+        pub extern fn access(path: [*:0]const u8, mode: c_uint) c_int;
+        pub extern fn faccessat(dirfd: fd_t, path: [*:0]const u8, mode: c_uint, flags: c_uint) c_int;
+        pub extern fn pipe(fds: *[2]fd_t) c_int;
+        pub extern fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+        pub extern fn mkdirat(dirfd: fd_t, path: [*:0]const u8, mode: u32) c_int;
+        pub extern fn symlink(existing: [*:0]const u8, new: [*:0]const u8) c_int;
+        pub extern fn symlinkat(oldpath: [*:0]const u8, newdirfd: fd_t, newpath: [*:0]const u8) c_int;
+        pub extern fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
+        pub extern fn renameat(olddirfd: fd_t, old: [*:0]const u8, newdirfd: fd_t, new: [*:0]const u8) c_int;
+        pub extern fn chdir(path: [*:0]const u8) c_int;
+        pub extern fn fchdir(fd: fd_t) c_int;
+        pub extern fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;
+        pub extern fn dup(fd: fd_t) c_int;
+        pub extern fn dup2(old_fd: fd_t, new_fd: fd_t) c_int;
+        pub extern fn readlink(noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
+        pub extern fn readlinkat(dirfd: fd_t, noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
+    }
+else
+    struct {
+        pub extern "c" var environ: [*:null]?[*:0]u8;
+
+        pub extern "c" fn fopen(noalias filename: [*:0]const u8, noalias modes: [*:0]const u8) ?*FILE;
+        pub extern "c" fn fclose(stream: *FILE) c_int;
+        pub extern "c" fn fwrite(noalias ptr: [*]const u8, size_of_type: usize, item_count: usize, noalias stream: *FILE) usize;
+        pub extern "c" fn fread(noalias ptr: [*]u8, size_of_type: usize, item_count: usize, noalias stream: *FILE) usize;
+
+        pub extern "c" fn printf(format: [*:0]const u8, ...) c_int;
+        pub extern "c" fn abort() noreturn;
+        pub extern "c" fn exit(code: c_int) noreturn;
+        pub extern "c" fn _exit(code: c_int) noreturn;
+        pub extern "c" fn isatty(fd: fd_t) c_int;
+        pub extern "c" fn close(fd: fd_t) c_int;
+        pub extern "c" fn lseek(fd: fd_t, offset: off_t, whence: c_int) off_t;
+        pub extern "c" fn open(path: [*:0]const u8, oflag: c_uint, ...) c_int;
+        pub extern "c" fn openat(fd: c_int, path: [*:0]const u8, oflag: c_uint, ...) c_int;
+        pub extern "c" fn ftruncate(fd: c_int, length: off_t) c_int;
+        pub extern "c" fn raise(sig: c_int) c_int;
+        pub extern "c" fn read(fd: fd_t, buf: [*]u8, nbyte: usize) isize;
+        pub extern "c" fn readv(fd: c_int, iov: [*]const iovec, iovcnt: c_uint) isize;
+        pub extern "c" fn pread(fd: fd_t, buf: [*]u8, nbyte: usize, offset: off_t) isize;
+        pub extern "c" fn preadv(fd: c_int, iov: [*]const iovec, iovcnt: c_uint, offset: off_t) isize;
+        pub extern "c" fn writev(fd: c_int, iov: [*]const iovec_const, iovcnt: c_uint) isize;
+        pub extern "c" fn pwritev(fd: c_int, iov: [*]const iovec_const, iovcnt: c_uint, offset: off_t) isize;
+        pub extern "c" fn write(fd: fd_t, buf: [*]const u8, nbyte: usize) isize;
+        pub extern "c" fn pwrite(fd: fd_t, buf: [*]const u8, nbyte: usize, offset: off_t) isize;
+        pub extern "c" fn mmap(addr: ?*align(page_size) c_void, len: usize, prot: c_uint, flags: c_uint, fd: fd_t, offset: off_t) *c_void;
+        pub extern "c" fn munmap(addr: *align(page_size) const c_void, len: usize) c_int;
+        pub extern "c" fn mprotect(addr: *align(page_size) c_void, len: usize, prot: c_uint) c_int;
+        pub extern "c" fn link(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: c_int) c_int;
+        pub extern "c" fn linkat(oldfd: fd_t, oldpath: [*:0]const u8, newfd: fd_t, newpath: [*:0]const u8, flags: c_int) c_int;
+        pub extern "c" fn unlink(path: [*:0]const u8) c_int;
+        pub extern "c" fn unlinkat(dirfd: fd_t, path: [*:0]const u8, flags: c_uint) c_int;
+        pub extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*]u8;
+        pub extern "c" fn waitpid(pid: pid_t, stat_loc: ?*c_int, options: c_int) pid_t;
+        pub extern "c" fn fork() c_int;
+        pub extern "c" fn access(path: [*:0]const u8, mode: c_uint) c_int;
+        pub extern "c" fn faccessat(dirfd: fd_t, path: [*:0]const u8, mode: c_uint, flags: c_uint) c_int;
+        pub extern "c" fn pipe(fds: *[2]fd_t) c_int;
+        pub extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
+        pub extern "c" fn mkdirat(dirfd: fd_t, path: [*:0]const u8, mode: u32) c_int;
+        pub extern "c" fn symlink(existing: [*:0]const u8, new: [*:0]const u8) c_int;
+        pub extern "c" fn symlinkat(oldpath: [*:0]const u8, newdirfd: fd_t, newpath: [*:0]const u8) c_int;
+        pub extern "c" fn rename(old: [*:0]const u8, new: [*:0]const u8) c_int;
+        pub extern "c" fn renameat(olddirfd: fd_t, old: [*:0]const u8, newdirfd: fd_t, new: [*:0]const u8) c_int;
+        pub extern "c" fn chdir(path: [*:0]const u8) c_int;
+        pub extern "c" fn fchdir(fd: fd_t) c_int;
+        pub extern "c" fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) c_int;
+        pub extern "c" fn dup(fd: fd_t) c_int;
+        pub extern "c" fn dup2(old_fd: fd_t, new_fd: fd_t) c_int;
+        pub extern "c" fn readlink(noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
+        pub extern "c" fn readlinkat(dirfd: fd_t, noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
+    };
 
 pub usingnamespace switch (builtin.os.tag) {
     .macos, .ios, .watchos, .tvos => struct {
