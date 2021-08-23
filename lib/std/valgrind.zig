@@ -35,10 +35,23 @@ pub fn doClientRequest(default: usize, request: usize, a1: usize, a2: usize, a3:
                 : "cc", "memory"
             );
         },
+        .arm64 => {
+            return asm volatile (
+                \\ mov x3, %1
+                \\ mov x4, %2
+                \\ ror x12, x12, #3  ;  ror x12, x12, #1
+                \\ ror x12, x12, #51 ;  ror x12, x12, #61
+                \\ orr x10, x10, x10
+                \\ mov %0, x3
+                : [_] "=r" (-> usize)
+                : [_] "r" (default),
+                  [_] "{rax}" (&[_]usize{ request, a1, a2, a3, a4, a5 })
+                : "cc", "memory", "x3", "x4"
+            );
+        },
         // ppc32
         // ppc64
         // arm
-        // arm64
         // s390x
         // mips32
         // mips64
