@@ -3,7 +3,7 @@ const crypto = std.crypto;
 const mem = std.mem;
 
 /// CMAC with AES-128 - RFC 4493 https://www.rfc-editor.org/rfc/rfc4493
-pub const CmacAes128 = Cmac(crypto.core.aes.Aes128);
+pub const AesCmac = Cmac(crypto.core.aes.Aes128);
 
 /// NIST Special Publication 800-38B - The CMAC Mode for Authentication
 /// https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-38b.pdf
@@ -92,7 +92,7 @@ pub fn Cmac(comptime BlockCipher: type) type {
 
 const testing = std.testing;
 
-test "CmacAes128 - Example 1: len = 0" {
+test "AesCmac - Example 1: len = 0" {
     const key = [_]u8{
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
     };
@@ -100,12 +100,12 @@ test "CmacAes128 - Example 1: len = 0" {
     const exp = [_]u8{
         0xbb, 0x1d, 0x69, 0x29, 0xe9, 0x59, 0x37, 0x28, 0x7f, 0xa3, 0x7d, 0x12, 0x9b, 0x75, 0x67, 0x46,
     };
-    var out: [CmacAes128.mac_length]u8 = undefined;
-    CmacAes128.create(&out, &msg, &key);
+    var out: [AesCmac.mac_length]u8 = undefined;
+    AesCmac.create(&out, &msg, &key);
     try testing.expectEqualSlices(u8, &out, &exp);
 }
 
-test "CmacAes128 - Example 2: len = 16" {
+test "AesCmac - Example 2: len = 16" {
     const key = [_]u8{
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
     };
@@ -115,12 +115,12 @@ test "CmacAes128 - Example 2: len = 16" {
     const exp = [_]u8{
         0x07, 0x0a, 0x16, 0xb4, 0x6b, 0x4d, 0x41, 0x44, 0xf7, 0x9b, 0xdd, 0x9d, 0xd0, 0x4a, 0x28, 0x7c,
     };
-    var out: [CmacAes128.mac_length]u8 = undefined;
-    CmacAes128.create(&out, &msg, &key);
+    var out: [AesCmac.mac_length]u8 = undefined;
+    AesCmac.create(&out, &msg, &key);
     try testing.expectEqualSlices(u8, &out, &exp);
 }
 
-test "CmacAes128 - Example 3: len = 40" {
+test "AesCmac - Example 3: len = 40" {
     const key = [_]u8{
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
     };
@@ -132,12 +132,12 @@ test "CmacAes128 - Example 3: len = 40" {
     const exp = [_]u8{
         0xdf, 0xa6, 0x67, 0x47, 0xde, 0x9a, 0xe6, 0x30, 0x30, 0xca, 0x32, 0x61, 0x14, 0x97, 0xc8, 0x27,
     };
-    var out: [CmacAes128.mac_length]u8 = undefined;
-    CmacAes128.create(&out, &msg, &key);
+    var out: [AesCmac.mac_length]u8 = undefined;
+    AesCmac.create(&out, &msg, &key);
     try testing.expectEqualSlices(u8, &out, &exp);
 }
 
-test "CmacAes128 - Example 4: len = 64" {
+test "AesCmac - Example 4: len = 64" {
     const key = [_]u8{
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f, 0x3c,
     };
@@ -150,7 +150,7 @@ test "CmacAes128 - Example 4: len = 64" {
     const exp = [_]u8{
         0x51, 0xf0, 0xbe, 0xbf, 0x7e, 0x3b, 0x9d, 0x92, 0xfc, 0x49, 0x74, 0x17, 0x79, 0x36, 0x3c, 0xfe,
     };
-    var out: [CmacAes128.mac_length]u8 = undefined;
-    CmacAes128.create(&out, &msg, &key);
+    var out: [AesCmac.mac_length]u8 = undefined;
+    AesCmac.create(&out, &msg, &key);
     try testing.expectEqualSlices(u8, &out, &exp);
 }
