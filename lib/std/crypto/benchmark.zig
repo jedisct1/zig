@@ -209,6 +209,7 @@ const aeads = [_]Crypto{
     Crypto{ .ty = crypto.aead.chacha_poly.XChaCha8Poly1305, .name = "xchacha8Poly1305" },
     Crypto{ .ty = crypto.aead.salsa_poly.XSalsa20Poly1305, .name = "xsalsa20Poly1305" },
     Crypto{ .ty = crypto.aead.Gimli, .name = "gimli-aead" },
+    Crypto{ .ty = crypto.aead.aegis.Aegis128X, .name = "aegis-128x" },
     Crypto{ .ty = crypto.aead.aegis.Aegis128L, .name = "aegis-128l" },
     Crypto{ .ty = crypto.aead.aegis.Aegis256, .name = "aegis-256" },
     Crypto{ .ty = crypto.aead.aes_gcm.Aes128Gcm, .name = "aes128-gcm" },

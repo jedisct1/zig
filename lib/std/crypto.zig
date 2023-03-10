@@ -3,6 +3,7 @@ pub const aead = struct {
     pub const aegis = struct {
         pub const Aegis128L = @import("crypto/aegis.zig").Aegis128L;
         pub const Aegis256 = @import("crypto/aegis.zig").Aegis256;
+        pub const Aegis128X = @import("crypto/aegis128x.zig").Aegis128X;
     };
 
     pub const aes_gcm = struct {
