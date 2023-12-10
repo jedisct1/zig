@@ -1475,6 +1475,7 @@ fn runOneCase(
     const enable_wine = build_options.enable_wine;
     const enable_wasmtime = build_options.enable_wasmtime;
     const enable_darling = build_options.enable_darling;
+    const enable_valgrind = build_options.enable_valgrind;
     const glibc_runtimes_dir: ?[]const u8 = build_options.glibc_runtimes_dir;
 
     const target_info = try std.zig.system.NativeTargetInfo.detect(case.target);
@@ -1784,6 +1785,14 @@ fn runOneCase(
                             try argv.append(exe_path);
                         } else {
                             continue :update; // Darling not available; pass test.
+                        },
+
+                        .valgrind => |valgrind_bin_name| if (enable_valgrind) {
+                            try argv.append(valgrind_bin_name);
+                            try argv.append("valgrind");
+                            try argv.append(exe_path);
+                        } else {
+                            continue :update; // Valgrind not available; pass test.
                         },
                     }
 

@@ -113,6 +113,8 @@ enable_darling: bool = false,
 enable_qemu: bool = false,
 /// Darwin. Use Rosetta to run x86_64 macOS build artifacts on arm64 macOS.
 enable_rosetta: bool = false,
+/// Valgrind
+enable_valgrind: bool = false,
 /// Use system Wasmtime installation to run cross compiled wasm/wasi build artifacts.
 enable_wasmtime: bool = false,
 /// Use system Wine installation to run cross compiled Windows build artifacts.
@@ -393,6 +395,7 @@ fn createChildOnly(parent: *Build, dep_name: []const u8, build_root: Cache.Direc
         .enable_darling = parent.enable_darling,
         .enable_qemu = parent.enable_qemu,
         .enable_rosetta = parent.enable_rosetta,
+        .enable_valgrind = parent.enable_valgrind,        
         .enable_wasmtime = parent.enable_wasmtime,
         .enable_wine = parent.enable_wine,
         .glibc_runtimes_dir = parent.glibc_runtimes_dir,

@@ -994,6 +994,7 @@ pub const Executor = union(enum) {
     wine: []const u8,
     wasmtime: []const u8,
     darling: []const u8,
+    valgrind: []const u8,
     bad_dl: []const u8,
     bad_os_or_cpu,
 };
@@ -1002,6 +1003,7 @@ pub const GetExternalExecutorOptions = struct {
     allow_darling: bool = true,
     allow_qemu: bool = true,
     allow_rosetta: bool = true,
+    allow_valgrind: bool = true,
     allow_wasmtime: bool = true,
     allow_wine: bool = true,
     qemu_fixes_dl: bool = false,

@@ -6677,7 +6677,7 @@ fn warnAboutForeignBinaries(
     const host_target_info = try detectNativeTargetInfo(host_cross_target);
 
     switch (host_target_info.getExternalExecutor(target_info, .{ .link_libc = link_libc })) {
-        .native => return,
+        .native, .valgrind => return,
         .rosetta => {
             const host_name = try host_target_info.target.zigTriple(arena);
             const foreign_name = try target_info.target.zigTriple(arena);

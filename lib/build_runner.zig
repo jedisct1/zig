@@ -257,6 +257,10 @@ pub fn main() !void {
                 builder.enable_rosetta = false;
             } else if (mem.eql(u8, arg, "-fdarling")) {
                 builder.enable_darling = true;
+            } else if (mem.eql(u8, arg, "-fvalgrind")) {
+                builder.enable_valgrind = true;
+            } else if (mem.eql(u8, arg, "-fno-valgrind")) {
+                builder.enable_valgrind = false;
             } else if (mem.eql(u8, arg, "-fno-darling")) {
                 builder.enable_darling = false;
             } else if (mem.eql(u8, arg, "-freference-trace")) {
@@ -1018,6 +1022,8 @@ fn usage(builder: *std.Build, already_ran_build: bool, out_stream: anytype) !voi
         \\                               execution of non-native programs that link with glibc.
         \\  -frosetta,  -fno-rosetta     Rely on Rosetta to execute x86_64 programs on
         \\                               ARM64 macOS hosts. (default: no)
+        \\  -fvalgrind, -fno-valgrind    Integration with Valgrind
+        \\
         \\  -fwasmtime, -fno-wasmtime    Integration with system-installed wasmtime to
         \\                               execute WASI binaries. (default: no)
         \\  -fwine,     -fno-wine        Integration with system-installed Wine to execute

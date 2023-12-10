@@ -742,6 +742,14 @@ fn runCommand(
                         return failForeign(self, "-fdarling", argv[0], exe);
                     }
                 },
+                .valgrind => |bin_name| {
+                    if (b.enable_valgrind) {
+                        try interp_argv.append(bin_name);
+                        try interp_argv.appendSlice(argv);
+                    } else {
+                        return failForeign(self, "-fvalgrind", argv[0], exe);
+                    }
+                },
                 .wasmtime => |bin_name| {
                     if (b.enable_wasmtime) {
                         try interp_argv.append(bin_name);
