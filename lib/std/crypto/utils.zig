@@ -138,6 +138,59 @@ pub inline fn secureZero(comptime T: type, s: []T) void {
     @memset(@as([]volatile T, s), 0);
 }
 
+const valgrind_support = @import("builtin").valgrind_support;
+
+fn markSecret(ptr: anytype, comptime action: enum { classify, declassify }) void {
+    if (@inComptime()) return;
+
+    const t = @typeInfo(@TypeOf(ptr));
+    if (t != .Pointer) @compileError("Pointer expected - Found: " ++ @typeName(@TypeOf(ptr)));
+    const p = t.Pointer;
+    if (p.is_allowzero) @compileError("A nullable pointer is always assumed to leak information via side channels");
+    const child = @typeInfo(p.child);
+
+    switch (child) {
+        .Void, .Null, .ComptimeInt, .ComptimeFloat => return,
+        .Pointer => {
+            if (child.Pointer.size == std.builtin.Type.Pointer.Size.Slice) {
+                @compileError("Found pointer to pointer. If the intent was to pass a slice, maybe remove the leading & in the function call");
+            }
+            @compileError("A pointer value is always assumed leak information via side channels");
+        },
+        else => {
+            var mem8_p: [*]u8 = @constCast(@ptrCast(&ptr));
+            const mem8 = mem8_p[0..@sizeOf(@TypeOf(ptr))];
+            if (action == .classify) {
+                std.valgrind.memcheck.makeMemUndefined(mem8);
+            } else {
+                std.valgrind.memcheck.makeMemDefined(mem8);
+            }
+        },
+    }
+}
+
+/// Classify a value as secret.
+///
+/// This function is a no-op if Valgrind is not enabled.
+/// However, with Valgrind enabled, conditional jumps or lookups based on secrets or secret-derived data
+/// will be detected and reported.
+///
+/// This function is useful to verify that a function does not leak information via side channels.
+pub fn classify(ptr: anytype) void {
+    if (valgrind_support) {
+        markSecret(ptr, .classify);
+    }
+}
+
+/// Declassify a value.
+///
+/// Record that a value is no longer secret, and that side channels are no longer a concern.
+pub fn declassify(ptr: anytype) void {
+    if (valgrind_support) {
+        markSecret(ptr, .declassify);
+    }
+}
+
 test "crypto.utils.timingSafeEql" {
     var a: [100]u8 = undefined;
     var b: [100]u8 = undefined;
@@ -203,4 +256,18 @@ test "crypto.utils.secureZero" {
     secureZero(u8, b[0..]);
 
     try testing.expectEqualSlices(u8, a[0..], b[0..]);
+}
+
+test "classify/declassify" {
+    var a: [100]u8 = undefined;
+    std.crypto.random.bytes(&a);
+    classify(&a);
+    var b: [100]u8 = undefined;
+    std.crypto.random.bytes(&b);
+    classify(&b);
+    try testing.expect(!std.crypto.utils.timingSafeEql([100]u8, a, b));
+    declassify(&a);
+    try testing.expect(!std.crypto.utils.timingSafeEql([100]u8, a, b));
+    declassify(&b);
+    try testing.expect(!std.mem.eql(u8, &a, &b));
 }
