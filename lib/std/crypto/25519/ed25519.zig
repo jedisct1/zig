@@ -482,9 +482,12 @@ pub const Ed25519 = struct {
     };
 };
 
+const classify = std.crypto.utils.classify;
+
 test "ed25519 key pair creation" {
     var seed: [32]u8 = undefined;
     _ = try fmt.hexToBytes(seed[0..], "8052030376d47112be7f73ed7a019293dd12ad910b654455798b4667d73de166");
+    classify(&seed);
     const key_pair = try Ed25519.KeyPair.create(seed);
     var buf: [256]u8 = undefined;
     try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&key_pair.secret_key.toBytes())}), "8052030376D47112BE7F73ED7A019293DD12AD910B654455798B4667D73DE1662D6F7455D97B4A3A10D7293909D1A4F2058CB9A370E43FA8154BB280DB839083");
@@ -494,6 +497,7 @@ test "ed25519 key pair creation" {
 test "ed25519 signature" {
     var seed: [32]u8 = undefined;
     _ = try fmt.hexToBytes(seed[0..], "8052030376d47112be7f73ed7a019293dd12ad910b654455798b4667d73de166");
+    classify(&seed);
     const key_pair = try Ed25519.KeyPair.create(seed);
 
     const sig = try key_pair.sign("test", null);

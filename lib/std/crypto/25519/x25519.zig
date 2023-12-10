@@ -80,6 +80,7 @@ pub const X25519 = struct {
 };
 
 const htest = @import("../test.zig");
+const classify = std.crypto.utils.classify;
 
 test "x25519 public key calculation from secret key" {
     var sk: [32]u8 = undefined;

@@ -844,8 +844,11 @@ const ScalarDouble = struct {
     }
 };
 
+const classify = std.crypto.utils.classify;
+
 test "scalar25519" {
     const bytes: [32]u8 = .{ 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 255 };
+    classify(&bytes);
     var x = Scalar.fromBytes(bytes);
     var y = x.toBytes();
     try rejectNonCanonical(y);
@@ -865,6 +868,9 @@ test "mulAdd overflow check" {
     const a: [32]u8 = [_]u8{0xff} ** 32;
     const b: [32]u8 = [_]u8{0xff} ** 32;
     const c: [32]u8 = [_]u8{0xff} ** 32;
+    classify(&a);
+    classify(&b);
+    classify(&c);
     const x = mulAdd(a, b, c);
     var buf: [128]u8 = undefined;
     try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&x)}), "D14DF91389432C25AD60FF9791B9FD1D67BEF517D273ECCE3D9A307C1B419903");
@@ -872,6 +878,7 @@ test "mulAdd overflow check" {
 
 test "scalar field inversion" {
     const bytes: [32]u8 = .{ 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 };
+    classify(&bytes);
     const x = Scalar.fromBytes(bytes);
     const inv = x.invert();
     const recovered_x = inv.invert();
@@ -886,6 +893,7 @@ test "random scalar" {
 
 test "64-bit reduction" {
     const bytes = field_order_s ++ [_]u8{0} ** 32;
+    classify(&bytes);
     const x = Scalar.fromBytes64(bytes);
     try std.testing.expect(x.isZero());
 }

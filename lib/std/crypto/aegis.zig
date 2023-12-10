@@ -511,12 +511,15 @@ fn AegisMac(comptime T: type) type {
 
 const htest = @import("test.zig");
 const testing = std.testing;
+const classify = std.crypto.utils.classify;
 
 test "Aegis128L test vector 1" {
     const key: [Aegis128L.key_length]u8 = [_]u8{ 0x10, 0x01 } ++ [_]u8{0x00} ** 14;
+    classify(&key);
     const nonce: [Aegis128L.nonce_length]u8 = [_]u8{ 0x10, 0x00, 0x02 } ++ [_]u8{0x00} ** 13;
     const ad = [8]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07 };
     const m = [32]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
+    classify(&m);
     var c: [m.len]u8 = undefined;
     var m2: [m.len]u8 = undefined;
     var tag: [Aegis128L.tag_length]u8 = undefined;
@@ -537,9 +540,11 @@ test "Aegis128L test vector 1" {
 
 test "Aegis128L test vector 2" {
     const key: [Aegis128L.key_length]u8 = [_]u8{0x00} ** 16;
+    classify(&key);
     const nonce: [Aegis128L.nonce_length]u8 = [_]u8{0x00} ** 16;
     const ad = [_]u8{};
     const m = [_]u8{0x00} ** 16;
+    classify(&m);
     var c: [m.len]u8 = undefined;
     var m2: [m.len]u8 = undefined;
     var tag: [Aegis128L.tag_length]u8 = undefined;
@@ -554,9 +559,11 @@ test "Aegis128L test vector 2" {
 
 test "Aegis128L test vector 3" {
     const key: [Aegis128L.key_length]u8 = [_]u8{0x00} ** 16;
+    classify(&key);
     const nonce: [Aegis128L.nonce_length]u8 = [_]u8{0x00} ** 16;
     const ad = [_]u8{};
     const m = [_]u8{};
+    classify(&m);
     var c: [m.len]u8 = undefined;
     var m2: [m.len]u8 = undefined;
     var tag: [Aegis128L.tag_length]u8 = undefined;
@@ -570,9 +577,11 @@ test "Aegis128L test vector 3" {
 
 test "Aegis256 test vector 1" {
     const key: [Aegis256.key_length]u8 = [_]u8{ 0x10, 0x01 } ++ [_]u8{0x00} ** 30;
+    classify(&key);
     const nonce: [Aegis256.nonce_length]u8 = [_]u8{ 0x10, 0x00, 0x02 } ++ [_]u8{0x00} ** 29;
     const ad = [8]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07 };
     const m = [32]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
+    classify(&m);
     var c: [m.len]u8 = undefined;
     var m2: [m.len]u8 = undefined;
     var tag: [Aegis256.tag_length]u8 = undefined;
@@ -593,9 +602,11 @@ test "Aegis256 test vector 1" {
 
 test "Aegis256 test vector 2" {
     const key: [Aegis256.key_length]u8 = [_]u8{0x00} ** 32;
+    classify(&key);
     const nonce: [Aegis256.nonce_length]u8 = [_]u8{0x00} ** 32;
     const ad = [_]u8{};
     const m = [_]u8{0x00} ** 16;
+    classify(&m);
     var c: [m.len]u8 = undefined;
     var m2: [m.len]u8 = undefined;
     var tag: [Aegis256.tag_length]u8 = undefined;
@@ -610,9 +621,11 @@ test "Aegis256 test vector 2" {
 
 test "Aegis256 test vector 3" {
     const key: [Aegis256.key_length]u8 = [_]u8{0x00} ** 32;
+    classify(&key);
     const nonce: [Aegis256.nonce_length]u8 = [_]u8{0x00} ** 32;
     const ad = [_]u8{};
     const m = [_]u8{};
+    classify(&m);
     var c: [m.len]u8 = undefined;
     var m2: [m.len]u8 = undefined;
     var tag: [Aegis256.tag_length]u8 = undefined;

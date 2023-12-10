@@ -111,8 +111,11 @@ pub const Curve25519 = struct {
     }
 };
 
+const classify = std.crypto.utils.classify;
+
 test "curve25519" {
     var s = [32]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8, 1, 2, 3, 4, 5, 6, 7, 8 };
+    classify(&s);
     const p = try Curve25519.basePoint.clampedMul(s);
     try p.rejectIdentity();
     var buf: [128]u8 = undefined;
@@ -129,6 +132,7 @@ test "non-affine edwards25519 to curve25519 projection" {
     const skh = "90e7595fc89e52fdfddce9c6a43d74dbf6047025ee0462d2d172e8b6a2841d6e";
     var sk: [32]u8 = undefined;
     _ = std.fmt.hexToBytes(&sk, skh) catch unreachable;
+    classify(&sk);
     const edp = try crypto.ecc.Edwards25519.basePoint.mul(sk);
     const xp = try Curve25519.fromEdwards25519(edp);
     const expected_hex = "cc4f2cdb695dd766f34118eb67b98652fed1d8bc49c330b119bbfa8a64989378";

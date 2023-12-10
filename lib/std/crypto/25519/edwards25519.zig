@@ -492,6 +492,7 @@ pub const Edwards25519 = struct {
 };
 
 const htest = @import("../test.zig");
+const classify = std.crypto.utils.classify;
 
 test "edwards25519 packing/unpacking" {
     const s = [_]u8{170} ++ [_]u8{0} ** 31;
@@ -534,6 +535,8 @@ test "edwards25519 point addition/subtraction" {
     var s2: [32]u8 = undefined;
     crypto.random.bytes(&s1);
     crypto.random.bytes(&s2);
+    classify(&s1);
+    classify(&s2);
     const p = try Edwards25519.basePoint.clampedMul(s1);
     const q = try Edwards25519.basePoint.clampedMul(s2);
     const r = p.add(q).add(q).sub(q).sub(q);
@@ -545,6 +548,7 @@ test "edwards25519 point addition/subtraction" {
 
 test "edwards25519 uniform-to-point" {
     var r = [32]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
+    classify(&r);
     var p = Edwards25519.fromUniform(r);
     try htest.assertEqual("0691eee3cf70a0056df6bfa03120635636581b5c4ea571dfc680f78c7e0b4137", p.toBytes()[0..]);
 
@@ -564,6 +568,7 @@ test "edwards25519 hash-to-curve operation" {
 
 test "edwards25519 implicit reduction of invalid scalars" {
     const s = [_]u8{0} ** 31 ++ [_]u8{255};
+    classify(&s);
     const p1 = try Edwards25519.basePoint.mulPublic(s);
     const p2 = try Edwards25519.basePoint.mul(s);
     const p3 = try p1.mulPublic(s);
