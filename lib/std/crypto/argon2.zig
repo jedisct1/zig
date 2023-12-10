@@ -621,11 +621,16 @@ pub fn strVerify(
     return PhcFormatHasher.verify(allocator, str, password);
 }
 
+const classify = std.crypto.utils.classify;
+
 test "argon2d" {
     const password = [_]u8{0x01} ** 32;
     const salt = [_]u8{0x02} ** 16;
     const secret = [_]u8{0x03} ** 8;
     const ad = [_]u8{0x04} ** 12;
+
+    classify(&password);
+    classify(&secret);
 
     var dk: [32]u8 = undefined;
     try kdf(
@@ -652,6 +657,9 @@ test "argon2i" {
     const secret = [_]u8{0x03} ** 8;
     const ad = [_]u8{0x04} ** 12;
 
+    classify(&password);
+    classify(&secret);
+
     var dk: [32]u8 = undefined;
     try kdf(
         std.testing.allocator,
@@ -677,6 +685,9 @@ test "argon2id" {
     const secret = [_]u8{0x03} ** 8;
     const ad = [_]u8{0x04} ** 12;
 
+    classify(&password);
+    classify(&secret);
+
     var dk: [32]u8 = undefined;
     try kdf(
         std.testing.allocator,
@@ -699,6 +710,8 @@ test "argon2id" {
 test "kdf" {
     const password = "password";
     const salt = "somesalt";
+
+    classify(password);
 
     const TestVector = struct {
         mode: Mode,
@@ -930,6 +943,8 @@ test "kdf derived key length" {
     const salt = "saltsalt";
     const params = Params{ .t = 3, .m = 32, .p = 4 };
     const mode = Mode.argon2id;
+
+    classify(password);
 
     var dk1: [11]u8 = undefined;
     try kdf(allocator, &dk1, password, salt, params, mode);
