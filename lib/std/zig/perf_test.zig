@@ -18,9 +18,9 @@ pub fn main() !void {
     }
     const end = timer.read();
     memory_used /= iterations;
-    const elapsed_s = @intToFloat(f64, end - start) / std.time.ns_per_s;
-    const bytes_per_sec_float = @intToFloat(f64, source.len * iterations) / elapsed_s;
-    const bytes_per_sec = @floatToInt(u64, @floor(bytes_per_sec_float));
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / std.time.ns_per_s;
+    const bytes_per_sec_float = @as(f64, @floatFromInt(source.len * iterations)) / elapsed_s;
+    const bytes_per_sec = @as(u64, @intFromFloat(@floor(bytes_per_sec_float)));
 
     var stdout_file = std.io.getStdOut();
     const stdout = stdout_file.writer();
@@ -32,7 +32,7 @@ pub fn main() !void {
 
 fn testOnce() usize {
     var fixed_buf_alloc = std.heap.FixedBufferAllocator.init(fixed_buffer_mem[0..]);
-    var allocator = fixed_buf_alloc.allocator();
+    const allocator = fixed_buf_alloc.allocator();
     _ = std.zig.Ast.parse(allocator, source, .zig) catch @panic("parse failure");
     return fixed_buf_alloc.end_index;
 }

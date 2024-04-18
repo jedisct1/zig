@@ -4,7 +4,7 @@
 b: *std.Build,
 step: *std.Build.Step,
 test_index: usize,
-test_filter: ?[]const u8,
+test_filters: []const []const u8,
 optimize_modes: []const OptimizeMode,
 
 const Special = enum {
@@ -82,7 +82,7 @@ pub fn addCase(self: *CompareOutput, case: TestCase) void {
 
     const write_src = b.addWriteFiles();
     for (case.sources.items) |src_file| {
-        write_src.add(src_file.filename, src_file.source);
+        _ = write_src.add(src_file.filename, src_file.source);
     }
 
     switch (case.special) {
@@ -90,16 +90,16 @@ pub fn addCase(self: *CompareOutput, case: TestCase) void {
             const annotated_case_name = fmt.allocPrint(self.b.allocator, "run assemble-and-link {s}", .{
                 case.name,
             }) catch @panic("OOM");
-            if (self.test_filter) |filter| {
-                if (mem.indexOf(u8, annotated_case_name, filter) == null) return;
-            }
+            for (self.test_filters) |test_filter| {
+                if (mem.indexOf(u8, annotated_case_name, test_filter)) |_| break;
+            } else if (self.test_filters.len > 0) return;
 
             const exe = b.addExecutable(.{
                 .name = "test",
-                .target = .{},
+                .target = b.host,
                 .optimize = .Debug,
             });
-            exe.addAssemblyFileSource(write_src.getFileSource(case.sources.items[0].filename).?);
+            exe.addAssemblyFile(write_src.files.items[0].getPath());
 
             const run = b.addRunArtifact(exe);
             run.setName(annotated_case_name);
@@ -113,16 +113,15 @@ pub fn addCase(self: *CompareOutput, case: TestCase) void {
                 const annotated_case_name = fmt.allocPrint(self.b.allocator, "run compare-output {s} ({s})", .{
                     case.name, @tagName(optimize),
                 }) catch @panic("OOM");
-                if (self.test_filter) |filter| {
-                    if (mem.indexOf(u8, annotated_case_name, filter) == null) continue;
-                }
+                for (self.test_filters) |test_filter| {
+                    if (mem.indexOf(u8, annotated_case_name, test_filter)) |_| break;
+                } else if (self.test_filters.len > 0) return;
 
-                const basename = case.sources.items[0].filename;
                 const exe = b.addExecutable(.{
                     .name = "test",
-                    .root_source_file = write_src.getFileSource(basename).?,
+                    .root_source_file = write_src.files.items[0].getPath(),
                     .optimize = optimize,
-                    .target = .{},
+                    .target = b.host,
                 });
                 if (case.link_libc) {
                     exe.linkSystemLibrary("c");
@@ -140,15 +139,14 @@ pub fn addCase(self: *CompareOutput, case: TestCase) void {
             // TODO iterate over self.optimize_modes and test this in both
             // debug and release safe mode
             const annotated_case_name = fmt.allocPrint(self.b.allocator, "run safety {s}", .{case.name}) catch @panic("OOM");
-            if (self.test_filter) |filter| {
-                if (mem.indexOf(u8, annotated_case_name, filter) == null) return;
-            }
+            for (self.test_filters) |test_filter| {
+                if (mem.indexOf(u8, annotated_case_name, test_filter)) |_| break;
+            } else if (self.test_filters.len > 0) return;
 
-            const basename = case.sources.items[0].filename;
             const exe = b.addExecutable(.{
                 .name = "test",
-                .root_source_file = write_src.getFileSource(basename).?,
-                .target = .{},
+                .root_source_file = write_src.files.items[0].getPath(),
+                .target = b.host,
                 .optimize = .Debug,
             });
             if (case.link_libc) {

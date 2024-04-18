@@ -40,14 +40,17 @@ pub fn MemoryPoolExtra(comptime Item: type, comptime pool_options: Options) type
 
         /// Size of the memory pool items. This is not necessarily the same
         /// as `@sizeOf(Item)` as the pool also uses the items for internal means.
-        pub const item_size = std.math.max(@sizeOf(Node), @sizeOf(Item));
+        pub const item_size = @max(@sizeOf(Node), @sizeOf(Item));
+
+        // This needs to be kept in sync with Node.
+        const node_alignment = @alignOf(*anyopaque);
 
         /// Alignment of the memory pool items. This is not necessarily the same
         /// as `@alignOf(Item)` as the pool also uses the items for internal means.
-        pub const item_alignment = std.math.max(@alignOf(Node), pool_options.alignment orelse 0);
+        pub const item_alignment = @max(node_alignment, pool_options.alignment orelse @alignOf(Item));
 
         const Node = struct {
-            next: ?*@This(),
+            next: ?*align(item_alignment) @This(),
         };
         const NodePtr = *align(item_alignment) Node;
         const ItemPtr = *align(item_alignment) Item;
@@ -70,7 +73,7 @@ pub fn MemoryPoolExtra(comptime Item: type, comptime pool_options: Options) type
             var i: usize = 0;
             while (i < initial_size) : (i += 1) {
                 const raw_mem = try pool.allocNew();
-                const free_node = @ptrCast(NodePtr, raw_mem);
+                const free_node = @as(NodePtr, @ptrCast(raw_mem));
                 free_node.* = Node{
                     .next = pool.free_list,
                 };
@@ -86,18 +89,26 @@ pub fn MemoryPoolExtra(comptime Item: type, comptime pool_options: Options) type
             pool.* = undefined;
         }
 
+        pub const ResetMode = std.heap.ArenaAllocator.ResetMode;
+
         /// Resets the memory pool and destroys all allocated items.
         /// This can be used to batch-destroy all objects without invalidating the memory pool.
-        pub fn reset(pool: *Pool) void {
+        ///
+        /// The function will return whether the reset operation was successful or not.
+        /// If the reallocation  failed `false` is returned. The pool will still be fully
+        /// functional in that case, all memory is released. Future allocations just might
+        /// be slower.
+        ///
+        /// NOTE: If `mode` is `free_all`, the function will always return `true`.
+        pub fn reset(pool: *Pool, mode: ResetMode) bool {
             // TODO: Potentially store all allocated objects in a list as well, allowing to
             //       just move them into the free list instead of actually releasing the memory.
-            const allocator = pool.arena.child_allocator;
 
-            // TODO: Replace with "pool.arena.reset()" when implemented.
-            pool.arena.deinit();
-            pool.arena = std.heap.ArenaAllocator.init(allocator);
+            const reset_successful = pool.arena.reset(mode);
 
             pool.free_list = null;
+
+            return reset_successful;
         }
 
         /// Creates a new item and adds it to the memory pool.
@@ -106,11 +117,11 @@ pub fn MemoryPoolExtra(comptime Item: type, comptime pool_options: Options) type
                 pool.free_list = item.next;
                 break :blk item;
             } else if (pool_options.growable)
-                @ptrCast(NodePtr, try pool.allocNew())
+                @as(NodePtr, @ptrCast(try pool.allocNew()))
             else
                 return error.OutOfMemory;
 
-            const ptr = @ptrCast(ItemPtr, node);
+            const ptr = @as(ItemPtr, @ptrCast(node));
             ptr.* = undefined;
             return ptr;
         }
@@ -120,7 +131,7 @@ pub fn MemoryPoolExtra(comptime Item: type, comptime pool_options: Options) type
         pub fn destroy(pool: *Pool, ptr: ItemPtr) void {
             ptr.* = undefined;
 
-            const node = @ptrCast(NodePtr, ptr);
+            const node = @as(NodePtr, @ptrCast(ptr));
             node.* = Node{
                 .next = pool.free_list,
             };
@@ -134,7 +145,7 @@ pub fn MemoryPoolExtra(comptime Item: type, comptime pool_options: Options) type
     };
 }
 
-test "memory pool: basic" {
+test "basic" {
     var pool = MemoryPool(u32).init(std.testing.allocator);
     defer pool.deinit();
 
@@ -154,7 +165,7 @@ test "memory pool: basic" {
     try std.testing.expect(p2 == p4);
 }
 
-test "memory pool: preheating (success)" {
+test "preheating (success)" {
     var pool = try MemoryPool(u32).initPreheated(std.testing.allocator, 4);
     defer pool.deinit();
 
@@ -163,12 +174,12 @@ test "memory pool: preheating (success)" {
     _ = try pool.create();
 }
 
-test "memory pool: preheating (failure)" {
-    var failer = std.testing.FailingAllocator.init(std.testing.allocator, 0);
-    try std.testing.expectError(error.OutOfMemory, MemoryPool(u32).initPreheated(failer.allocator(), 5));
+test "preheating (failure)" {
+    const failer = std.testing.failing_allocator;
+    try std.testing.expectError(error.OutOfMemory, MemoryPool(u32).initPreheated(failer, 5));
 }
 
-test "memory pool: growable" {
+test "growable" {
     var pool = try MemoryPoolExtra(u32, .{ .growable = false }).initPreheated(std.testing.allocator, 4);
     defer pool.deinit();
 
@@ -178,4 +189,28 @@ test "memory pool: growable" {
     _ = try pool.create();
 
     try std.testing.expectError(error.OutOfMemory, pool.create());
+}
+
+test "greater than pointer default alignment" {
+    const Foo = struct {
+        data: u64 align(16),
+    };
+
+    var pool = MemoryPool(Foo).init(std.testing.allocator);
+    defer pool.deinit();
+
+    const foo: *Foo = try pool.create();
+    _ = foo;
+}
+
+test "greater than pointer manual alignment" {
+    const Foo = struct {
+        data: u64,
+    };
+
+    var pool = MemoryPoolAligned(Foo, 16).init(std.testing.allocator);
+    defer pool.deinit();
+
+    const foo: *align(16) Foo = try pool.create();
+    _ = foo;
 }

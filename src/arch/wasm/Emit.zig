@@ -6,6 +6,7 @@ const std = @import("std");
 const Mir = @import("Mir.zig");
 const link = @import("../../link.zig");
 const Module = @import("../../Module.zig");
+const InternPool = @import("../../InternPool.zig");
 const codegen = @import("../../codegen.zig");
 const leb128 = std.leb;
 
@@ -21,7 +22,7 @@ code: *std.ArrayList(u8),
 /// List of allocated locals.
 locals: []const u8,
 /// The declaration that code is being generated for.
-decl_index: Module.Decl.Index,
+decl_index: InternPool.DeclIndex,
 
 // Debug information
 /// Holds the debug information for this emission
@@ -45,7 +46,7 @@ pub fn emitMir(emit: *Emit) InnerError!void {
     try emit.emitLocals();
 
     for (mir_tags, 0..) |tag, index| {
-        const inst = @intCast(u32, index);
+        const inst = @as(u32, @intCast(index));
         switch (tag) {
             // block instructions
             .block => try emit.emitBlock(tag, inst),
@@ -247,20 +248,22 @@ pub fn emitMir(emit: *Emit) InnerError!void {
 }
 
 fn offset(self: Emit) u32 {
-    return @intCast(u32, self.code.items.len);
+    return @as(u32, @intCast(self.code.items.len));
 }
 
 fn fail(emit: *Emit, comptime format: []const u8, args: anytype) InnerError {
     @setCold(true);
     std.debug.assert(emit.error_msg == null);
-    const mod = emit.bin_file.base.options.module.?;
-    emit.error_msg = try Module.ErrorMsg.create(emit.bin_file.base.allocator, mod.declPtr(emit.decl_index).srcLoc(), format, args);
+    const comp = emit.bin_file.base.comp;
+    const zcu = comp.module.?;
+    const gpa = comp.gpa;
+    emit.error_msg = try Module.ErrorMsg.create(gpa, zcu.declPtr(emit.decl_index).srcLoc(zcu), format, args);
     return error.EmitFail;
 }
 
 fn emitLocals(emit: *Emit) !void {
     const writer = emit.code.writer();
-    try leb128.writeULEB128(writer, @intCast(u32, emit.locals.len));
+    try leb128.writeULEB128(writer, @as(u32, @intCast(emit.locals.len)));
     // emit the actual locals amount
     for (emit.locals) |local| {
         try leb128.writeULEB128(writer, @as(u32, 1));
@@ -269,12 +272,12 @@ fn emitLocals(emit: *Emit) !void {
 }
 
 fn emitTag(emit: *Emit, tag: Mir.Inst.Tag) !void {
-    try emit.code.append(@enumToInt(tag));
+    try emit.code.append(@intFromEnum(tag));
 }
 
 fn emitBlock(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) !void {
     const block_type = emit.mir.instructions.items(.data)[inst].block_type;
-    try emit.code.append(@enumToInt(tag));
+    try emit.code.append(@intFromEnum(tag));
     try emit.code.append(block_type);
 }
 
@@ -293,21 +296,23 @@ fn emitBrTable(emit: *Emit, inst: Mir.Inst.Index) !void {
 
 fn emitLabel(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) !void {
     const label = emit.mir.instructions.items(.data)[inst].label;
-    try emit.code.append(@enumToInt(tag));
+    try emit.code.append(@intFromEnum(tag));
     try leb128.writeULEB128(emit.code.writer(), label);
 }
 
 fn emitGlobal(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) !void {
+    const comp = emit.bin_file.base.comp;
+    const gpa = comp.gpa;
     const label = emit.mir.instructions.items(.data)[inst].label;
-    try emit.code.append(@enumToInt(tag));
+    try emit.code.append(@intFromEnum(tag));
     var buf: [5]u8 = undefined;
     leb128.writeUnsignedFixed(5, &buf, label);
     const global_offset = emit.offset();
     try emit.code.appendSlice(&buf);
 
-    const atom_index = emit.bin_file.decls.get(emit.decl_index).?;
+    const atom_index = emit.bin_file.zigObjectPtr().?.decls_map.get(emit.decl_index).?.atom;
     const atom = emit.bin_file.getAtomPtr(atom_index);
-    try atom.relocs.append(emit.bin_file.base.allocator, .{
+    try atom.relocs.append(gpa, .{
         .index = label,
         .offset = global_offset,
         .relocation_type = .R_WASM_GLOBAL_INDEX_LEB,
@@ -324,26 +329,26 @@ fn emitImm64(emit: *Emit, inst: Mir.Inst.Index) !void {
     const extra_index = emit.mir.instructions.items(.data)[inst].payload;
     const value = emit.mir.extraData(Mir.Imm64, extra_index);
     try emit.code.append(std.wasm.opcode(.i64_const));
-    try leb128.writeILEB128(emit.code.writer(), @bitCast(i64, value.data.toU64()));
+    try leb128.writeILEB128(emit.code.writer(), @as(i64, @bitCast(value.data.toU64())));
 }
 
 fn emitFloat32(emit: *Emit, inst: Mir.Inst.Index) !void {
     const value: f32 = emit.mir.instructions.items(.data)[inst].float32;
     try emit.code.append(std.wasm.opcode(.f32_const));
-    try emit.code.writer().writeIntLittle(u32, @bitCast(u32, value));
+    try emit.code.writer().writeInt(u32, @bitCast(value), .little);
 }
 
 fn emitFloat64(emit: *Emit, inst: Mir.Inst.Index) !void {
     const extra_index = emit.mir.instructions.items(.data)[inst].payload;
     const value = emit.mir.extraData(Mir.Float64, extra_index);
     try emit.code.append(std.wasm.opcode(.f64_const));
-    try emit.code.writer().writeIntLittle(u64, value.data.toU64());
+    try emit.code.writer().writeInt(u64, value.data.toU64(), .little);
 }
 
 fn emitMemArg(emit: *Emit, tag: Mir.Inst.Tag, inst: Mir.Inst.Index) !void {
     const extra_index = emit.mir.instructions.items(.data)[inst].payload;
     const mem_arg = emit.mir.extraData(Mir.MemArg, extra_index).data;
-    try emit.code.append(@enumToInt(tag));
+    try emit.code.append(@intFromEnum(tag));
     try encodeMemArg(mem_arg, emit.code.writer());
 }
 
@@ -355,6 +360,8 @@ fn encodeMemArg(mem_arg: Mir.MemArg, writer: anytype) !void {
 }
 
 fn emitCall(emit: *Emit, inst: Mir.Inst.Index) !void {
+    const comp = emit.bin_file.base.comp;
+    const gpa = comp.gpa;
     const label = emit.mir.instructions.items(.data)[inst].label;
     try emit.code.append(std.wasm.opcode(.call));
     const call_offset = emit.offset();
@@ -363,9 +370,9 @@ fn emitCall(emit: *Emit, inst: Mir.Inst.Index) !void {
     try emit.code.appendSlice(&buf);
 
     if (label != 0) {
-        const atom_index = emit.bin_file.decls.get(emit.decl_index).?;
+        const atom_index = emit.bin_file.zigObjectPtr().?.decls_map.get(emit.decl_index).?.atom;
         const atom = emit.bin_file.getAtomPtr(atom_index);
-        try atom.relocs.append(emit.bin_file.base.allocator, .{
+        try atom.relocs.append(gpa, .{
             .offset = call_offset,
             .index = label,
             .relocation_type = .R_WASM_FUNCTION_INDEX_LEB,
@@ -378,11 +385,25 @@ fn emitCallIndirect(emit: *Emit, inst: Mir.Inst.Index) !void {
     try emit.code.append(std.wasm.opcode(.call_indirect));
     // NOTE: If we remove unused function types in the future for incremental
     // linking, we must also emit a relocation for this `type_index`
-    try leb128.writeULEB128(emit.code.writer(), type_index);
+    const call_offset = emit.offset();
+    var buf: [5]u8 = undefined;
+    leb128.writeUnsignedFixed(5, &buf, type_index);
+    try emit.code.appendSlice(&buf);
+    if (type_index != 0) {
+        const atom_index = emit.bin_file.zigObjectPtr().?.decls_map.get(emit.decl_index).?.atom;
+        const atom = emit.bin_file.getAtomPtr(atom_index);
+        try atom.relocs.append(emit.bin_file.base.comp.gpa, .{
+            .offset = call_offset,
+            .index = type_index,
+            .relocation_type = .R_WASM_TYPE_INDEX_LEB,
+        });
+    }
     try leb128.writeULEB128(emit.code.writer(), @as(u32, 0)); // TODO: Emit relocation for table index
 }
 
 fn emitFunctionIndex(emit: *Emit, inst: Mir.Inst.Index) !void {
+    const comp = emit.bin_file.base.comp;
+    const gpa = comp.gpa;
     const symbol_index = emit.mir.instructions.items(.data)[inst].label;
     try emit.code.append(std.wasm.opcode(.i32_const));
     const index_offset = emit.offset();
@@ -391,9 +412,9 @@ fn emitFunctionIndex(emit: *Emit, inst: Mir.Inst.Index) !void {
     try emit.code.appendSlice(&buf);
 
     if (symbol_index != 0) {
-        const atom_index = emit.bin_file.decls.get(emit.decl_index).?;
+        const atom_index = emit.bin_file.zigObjectPtr().?.decls_map.get(emit.decl_index).?.atom;
         const atom = emit.bin_file.getAtomPtr(atom_index);
-        try atom.relocs.append(emit.bin_file.base.allocator, .{
+        try atom.relocs.append(gpa, .{
             .offset = index_offset,
             .index = symbol_index,
             .relocation_type = .R_WASM_TABLE_INDEX_SLEB,
@@ -405,7 +426,10 @@ fn emitMemAddress(emit: *Emit, inst: Mir.Inst.Index) !void {
     const extra_index = emit.mir.instructions.items(.data)[inst].payload;
     const mem = emit.mir.extraData(Mir.Memory, extra_index).data;
     const mem_offset = emit.offset() + 1;
-    const is_wasm32 = emit.bin_file.base.options.target.cpu.arch == .wasm32;
+    const comp = emit.bin_file.base.comp;
+    const gpa = comp.gpa;
+    const target = comp.root_mod.resolved_target.result;
+    const is_wasm32 = target.cpu.arch == .wasm32;
     if (is_wasm32) {
         try emit.code.append(std.wasm.opcode(.i32_const));
         var buf: [5]u8 = undefined;
@@ -419,13 +443,13 @@ fn emitMemAddress(emit: *Emit, inst: Mir.Inst.Index) !void {
     }
 
     if (mem.pointer != 0) {
-        const atom_index = emit.bin_file.decls.get(emit.decl_index).?;
+        const atom_index = emit.bin_file.zigObjectPtr().?.decls_map.get(emit.decl_index).?.atom;
         const atom = emit.bin_file.getAtomPtr(atom_index);
-        try atom.relocs.append(emit.bin_file.base.allocator, .{
+        try atom.relocs.append(gpa, .{
             .offset = mem_offset,
             .index = mem.pointer,
             .relocation_type = if (is_wasm32) .R_WASM_MEMORY_ADDR_LEB else .R_WASM_MEMORY_ADDR_LEB64,
-            .addend = @intCast(i32, mem.offset),
+            .addend = @as(i32, @intCast(mem.offset)),
         });
     }
 }
@@ -436,7 +460,7 @@ fn emitExtended(emit: *Emit, inst: Mir.Inst.Index) !void {
     const writer = emit.code.writer();
     try emit.code.append(std.wasm.opcode(.misc_prefix));
     try leb128.writeULEB128(writer, opcode);
-    switch (@intToEnum(std.wasm.MiscOpcode, opcode)) {
+    switch (@as(std.wasm.MiscOpcode, @enumFromInt(opcode))) {
         // bulk-memory opcodes
         .data_drop => {
             const segment = emit.mir.extra[extra_index + 1];
@@ -475,7 +499,7 @@ fn emitSimd(emit: *Emit, inst: Mir.Inst.Index) !void {
     const writer = emit.code.writer();
     try emit.code.append(std.wasm.opcode(.simd_prefix));
     try leb128.writeULEB128(writer, opcode);
-    switch (@intToEnum(std.wasm.SimdOpcode, opcode)) {
+    switch (@as(std.wasm.SimdOpcode, @enumFromInt(opcode))) {
         .v128_store,
         .v128_load,
         .v128_load8_splat,
@@ -507,7 +531,7 @@ fn emitSimd(emit: *Emit, inst: Mir.Inst.Index) !void {
         .f64x2_extract_lane,
         .f64x2_replace_lane,
         => {
-            try writer.writeByte(@intCast(u8, emit.mir.extra[extra_index + 1]));
+            try writer.writeByte(@as(u8, @intCast(emit.mir.extra[extra_index + 1])));
         },
         .i8x16_splat,
         .i16x8_splat,
@@ -526,7 +550,7 @@ fn emitAtomic(emit: *Emit, inst: Mir.Inst.Index) !void {
     const writer = emit.code.writer();
     try emit.code.append(std.wasm.opcode(.atomics_prefix));
     try leb128.writeULEB128(writer, opcode);
-    switch (@intToEnum(std.wasm.AtomicsOpcode, opcode)) {
+    switch (@as(std.wasm.AtomicsOpcode, @enumFromInt(opcode))) {
         .i32_atomic_load,
         .i64_atomic_load,
         .i32_atomic_load8_u,
@@ -623,7 +647,7 @@ fn emitDbgLine(emit: *Emit, inst: Mir.Inst.Index) !void {
 fn dbgAdvancePCAndLine(emit: *Emit, line: u32, column: u32) !void {
     if (emit.dbg_output != .dwarf) return;
 
-    const delta_line = @intCast(i32, line) - @intCast(i32, emit.prev_di_line);
+    const delta_line = @as(i32, @intCast(line)) - @as(i32, @intCast(emit.prev_di_line));
     const delta_pc = emit.offset() - emit.prev_di_offset;
     // TODO: This must emit a relocation to calculate the offset relative
     // to the code section start.

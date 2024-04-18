@@ -36,7 +36,9 @@ pub const P256 = struct {
 
     /// Reject the neutral element.
     pub fn rejectIdentity(p: P256) IdentityElementError!void {
-        if (p.x.isZero()) {
+        const affine_0 = @intFromBool(p.x.equivalent(AffineCoordinates.identityElement.x)) & (@intFromBool(p.y.isZero()) | @intFromBool(p.y.equivalent(AffineCoordinates.identityElement.y)));
+        const is_identity = @intFromBool(p.z.isZero()) | affine_0;
+        if (is_identity != 0) {
             return error.IdentityElement;
         }
     }
@@ -47,8 +49,8 @@ pub const P256 = struct {
         const y = p.y;
         const x3AxB = x.sq().mul(x).sub(x).sub(x).sub(x).add(B);
         const yy = y.sq();
-        const on_curve = @boolToInt(x3AxB.equivalent(yy));
-        const is_identity = @boolToInt(x.equivalent(AffineCoordinates.identityElement.x)) & @boolToInt(y.equivalent(AffineCoordinates.identityElement.y));
+        const on_curve = @intFromBool(x3AxB.equivalent(yy));
+        const is_identity = @intFromBool(x.equivalent(AffineCoordinates.identityElement.x)) & @intFromBool(y.equivalent(AffineCoordinates.identityElement.y));
         if ((on_curve | is_identity) == 0) {
             return error.InvalidEncoding;
         }
@@ -69,7 +71,7 @@ pub const P256 = struct {
         const x3AxB = x.sq().mul(x).sub(x).sub(x).sub(x).add(B);
         var y = try x3AxB.sqrt();
         const yn = y.neg();
-        y.cMov(yn, @boolToInt(is_odd) ^ @boolToInt(y.isOdd()));
+        y.cMov(yn, @intFromBool(is_odd) ^ @intFromBool(y.isOdd()));
         return y;
     }
 
@@ -85,15 +87,15 @@ pub const P256 = struct {
             },
             2, 3 => {
                 if (encoded.len != 32) return error.InvalidEncoding;
-                const x = try Fe.fromBytes(encoded[0..32].*, .Big);
+                const x = try Fe.fromBytes(encoded[0..32].*, .big);
                 const y_is_odd = (encoding_type == 3);
                 const y = try recoverY(x, y_is_odd);
                 return P256{ .x = x, .y = y };
             },
             4 => {
                 if (encoded.len != 64) return error.InvalidEncoding;
-                const x = try Fe.fromBytes(encoded[0..32].*, .Big);
-                const y = try Fe.fromBytes(encoded[32..64].*, .Big);
+                const x = try Fe.fromBytes(encoded[0..32].*, .big);
+                const y = try Fe.fromBytes(encoded[32..64].*, .big);
                 return P256.fromAffineCoordinates(.{ .x = x, .y = y });
             },
             else => return error.InvalidEncoding,
@@ -105,7 +107,7 @@ pub const P256 = struct {
         var out: [33]u8 = undefined;
         const xy = p.affineCoordinates();
         out[0] = if (xy.y.isOdd()) 3 else 2;
-        out[1..].* = xy.x.toBytes(.Big);
+        out[1..].* = xy.x.toBytes(.big);
         return out;
     }
 
@@ -114,15 +116,15 @@ pub const P256 = struct {
         var out: [65]u8 = undefined;
         out[0] = 4;
         const xy = p.affineCoordinates();
-        out[1..33].* = xy.x.toBytes(.Big);
-        out[33..65].* = xy.y.toBytes(.Big);
+        out[1..33].* = xy.x.toBytes(.big);
+        out[33..65].* = xy.y.toBytes(.big);
         return out;
     }
 
     /// Return a random point.
     pub fn random() P256 {
-        const n = scalar.random(.Little);
-        return basePoint.mul(n, .Little) catch unreachable;
+        const n = scalar.random(.little);
+        return basePoint.mul(n, .little) catch unreachable;
     }
 
     /// Flip the sign of the X coordinate.
@@ -217,7 +219,7 @@ pub const P256 = struct {
             .y = Y3,
             .z = Z3,
         };
-        ret.cMov(p, @boolToInt(q.x.isZero()));
+        ret.cMov(p, @intFromBool(q.x.isZero()));
         return ret;
     }
 
@@ -286,12 +288,14 @@ pub const P256 = struct {
 
     /// Return affine coordinates.
     pub fn affineCoordinates(p: P256) AffineCoordinates {
+        const affine_0 = @intFromBool(p.x.equivalent(AffineCoordinates.identityElement.x)) & (@intFromBool(p.y.isZero()) | @intFromBool(p.y.equivalent(AffineCoordinates.identityElement.y)));
+        const is_identity = @intFromBool(p.z.isZero()) | affine_0;
         const zinv = p.z.invert();
         var ret = AffineCoordinates{
             .x = p.x.mul(zinv),
             .y = p.y.mul(zinv),
         };
-        ret.cMov(AffineCoordinates.identityElement, @boolToInt(p.x.isZero()));
+        ret.cMov(AffineCoordinates.identityElement, is_identity);
         return ret;
     }
 
@@ -314,7 +318,7 @@ pub const P256 = struct {
         var t = P256.identityElement;
         comptime var i: u8 = 1;
         inline while (i < pc.len) : (i += 1) {
-            t.cMov(pc[i], @truncate(u1, (@as(usize, b ^ i) -% 1) >> 8));
+            t.cMov(pc[i], @as(u1, @truncate((@as(usize, b ^ i) -% 1) >> 8)));
         }
         return t;
     }
@@ -322,8 +326,8 @@ pub const P256 = struct {
     fn slide(s: [32]u8) [2 * 32 + 1]i8 {
         var e: [2 * 32 + 1]i8 = undefined;
         for (s, 0..) |x, i| {
-            e[i * 2 + 0] = @as(i8, @truncate(u4, x));
-            e[i * 2 + 1] = @as(i8, @truncate(u4, x >> 4));
+            e[i * 2 + 0] = @as(i8, @as(u4, @truncate(x)));
+            e[i * 2 + 1] = @as(i8, @as(u4, @truncate(x >> 4)));
         }
         // Now, e[0..63] is between 0 and 15, e[63] is between 0 and 7
         var carry: i8 = 0;
@@ -347,9 +351,9 @@ pub const P256 = struct {
         while (true) : (pos -= 1) {
             const slot = e[pos];
             if (slot > 0) {
-                q = q.add(pc[@intCast(usize, slot)]);
+                q = q.add(pc[@as(usize, @intCast(slot))]);
             } else if (slot < 0) {
-                q = q.sub(pc[@intCast(usize, -slot)]);
+                q = q.sub(pc[@as(usize, @intCast(-slot))]);
             }
             if (pos == 0) break;
             q = q.dbl().dbl().dbl().dbl();
@@ -362,7 +366,7 @@ pub const P256 = struct {
         var q = P256.identityElement;
         var pos: usize = 252;
         while (true) : (pos -= 4) {
-            const slot = @truncate(u4, (s[pos >> 3] >> @truncate(u3, pos)));
+            const slot = @as(u4, @truncate((s[pos >> 3] >> @as(u3, @truncate(pos)))));
             if (vartime) {
                 if (slot != 0) {
                     q = q.add(pc[slot]);
@@ -396,7 +400,7 @@ pub const P256 = struct {
     /// Multiply an elliptic curve point by a scalar.
     /// Return error.IdentityElement if the result is the identity element.
     pub fn mul(p: P256, s_: [32]u8, endian: std.builtin.Endian) IdentityElementError!P256 {
-        const s = if (endian == .Little) s_ else Fe.orderSwap(s_);
+        const s = if (endian == .little) s_ else Fe.orderSwap(s_);
         if (p.is_base) {
             return pcMul16(&basePointPc, s, false);
         }
@@ -408,7 +412,7 @@ pub const P256 = struct {
     /// Multiply an elliptic curve point by a *PUBLIC* scalar *IN VARIABLE TIME*
     /// This can be used for signature verification.
     pub fn mulPublic(p: P256, s_: [32]u8, endian: std.builtin.Endian) IdentityElementError!P256 {
-        const s = if (endian == .Little) s_ else Fe.orderSwap(s_);
+        const s = if (endian == .little) s_ else Fe.orderSwap(s_);
         if (p.is_base) {
             return pcMul16(&basePointPc, s, true);
         }
@@ -420,8 +424,8 @@ pub const P256 = struct {
     /// Double-base multiplication of public parameters - Compute (p1*s1)+(p2*s2) *IN VARIABLE TIME*
     /// This can be used for signature verification.
     pub fn mulDoubleBasePublic(p1: P256, s1_: [32]u8, p2: P256, s2_: [32]u8, endian: std.builtin.Endian) IdentityElementError!P256 {
-        const s1 = if (endian == .Little) s1_ else Fe.orderSwap(s1_);
-        const s2 = if (endian == .Little) s2_ else Fe.orderSwap(s2_);
+        const s1 = if (endian == .little) s1_ else Fe.orderSwap(s1_);
+        const s2 = if (endian == .little) s2_ else Fe.orderSwap(s2_);
         try p1.rejectIdentity();
         var pc1_array: [9]P256 = undefined;
         const pc1 = if (p1.is_base) basePointPc[0..9] else pc: {
@@ -441,15 +445,15 @@ pub const P256 = struct {
         while (true) : (pos -= 1) {
             const slot1 = e1[pos];
             if (slot1 > 0) {
-                q = q.add(pc1[@intCast(usize, slot1)]);
+                q = q.add(pc1[@as(usize, @intCast(slot1))]);
             } else if (slot1 < 0) {
-                q = q.sub(pc1[@intCast(usize, -slot1)]);
+                q = q.sub(pc1[@as(usize, @intCast(-slot1))]);
             }
             const slot2 = e2[pos];
             if (slot2 > 0) {
-                q = q.add(pc2[@intCast(usize, slot2)]);
+                q = q.add(pc2[@as(usize, @intCast(slot2))]);
             } else if (slot2 < 0) {
-                q = q.sub(pc2[@intCast(usize, -slot2)]);
+                q = q.sub(pc2[@as(usize, @intCast(-slot2))]);
             }
             if (pos == 0) break;
             q = q.dbl().dbl().dbl().dbl();

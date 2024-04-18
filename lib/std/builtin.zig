@@ -1,3 +1,5 @@
+//! Types and values provided by the Zig language.
+
 const builtin = @import("builtin");
 
 /// `explicit_subsystem` is missing when the subsystem is automatically detected,
@@ -51,22 +53,21 @@ pub const StackTrace = struct {
         const debug_info = std.debug.getSelfDebugInfo() catch |err| {
             return writer.print("\nUnable to print stack trace: Unable to open debug info: {s}\n", .{@errorName(err)});
         };
-        const tty_config = std.debug.detectTTYConfig(std.io.getStdErr());
+        const tty_config = std.io.tty.detectConfig(std.io.getStdErr());
         try writer.writeAll("\n");
         std.debug.writeStackTrace(self, writer, arena.allocator(), debug_info, tty_config) catch |err| {
             try writer.print("Unable to print stack trace: {s}\n", .{@errorName(err)});
         };
-        try writer.writeAll("\n");
     }
 };
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
 pub const GlobalLinkage = enum {
-    Internal,
-    Strong,
-    Weak,
-    LinkOnce,
+    internal,
+    strong,
+    weak,
+    link_once,
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -80,12 +81,12 @@ pub const SymbolVisibility = enum {
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
 pub const AtomicOrder = enum {
-    Unordered,
-    Monotonic,
-    Acquire,
-    Release,
-    AcqRel,
-    SeqCst,
+    unordered,
+    monotonic,
+    acquire,
+    release,
+    acq_rel,
+    seq_cst,
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -103,14 +104,34 @@ pub const ReduceOp = enum {
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
 pub const AtomicRmwOp = enum {
+    /// Exchange - store the operand unmodified.
+    /// Supports enums, integers, and floats.
     Xchg,
+    /// Add operand to existing value.
+    /// Supports integers and floats.
+    /// For integers, two's complement wraparound applies.
     Add,
+    /// Subtract operand from existing value.
+    /// Supports integers and floats.
+    /// For integers, two's complement wraparound applies.
     Sub,
+    /// Perform bitwise AND on existing value with operand.
+    /// Supports integers.
     And,
+    /// Perform bitwise NAND on existing value with operand.
+    /// Supports integers.
     Nand,
+    /// Perform bitwise OR on existing value with operand.
+    /// Supports integers.
     Or,
+    /// Perform bitwise XOR on existing value with operand.
+    /// Supports integers.
     Xor,
+    /// Store operand if it is larger than the existing value.
+    /// Supports integers and floats.
     Max,
+    /// Store operand if it is smaller than the existing value.
+    /// Supports integers and floats.
     Min,
 };
 
@@ -143,7 +164,7 @@ pub const Mode = OptimizeMode;
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
-pub const CallingConvention = enum {
+pub const CallingConvention = enum(u8) {
     /// This is the default Zig calling convention used when not using `export` on `fn`
     /// and no other calling convention is specified.
     Unspecified,
@@ -186,21 +207,29 @@ pub const CallingConvention = enum {
     Win64,
     /// AMD GPU, NVPTX, or SPIR-V kernel
     Kernel,
+    // Vulkan-only
+    Fragment,
+    Vertex,
 };
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
-pub const AddressSpace = enum {
+pub const AddressSpace = enum(u5) {
+    // CPU address spaces.
     generic,
     gs,
     fs,
     ss,
+
     // GPU address spaces.
     global,
     constant,
     param,
     shared,
     local,
+    input,
+    output,
+    uniform,
 
     // AVR address spaces.
     flash,
@@ -221,7 +250,6 @@ pub const SourceLocation = struct {
 };
 
 pub const TypeId = std.meta.Tag(Type);
-pub const TypeInfo = @compileError("deprecated; use Type");
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
@@ -283,7 +311,7 @@ pub const Type = union(enum) {
 
         /// This data structure is used by the Zig language code generation and
         /// therefore must be kept in sync with the compiler implementation.
-        pub const Size = enum {
+        pub const Size = enum(u2) {
             One,
             Many,
             Slice,
@@ -306,15 +334,15 @@ pub const Type = union(enum) {
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const ContainerLayout = enum(u2) {
-        Auto,
-        Extern,
-        Packed,
+        auto,
+        @"extern",
+        @"packed",
     };
 
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const StructField = struct {
-        name: []const u8,
+        name: [:0]const u8,
         type: type,
         default_value: ?*const anyopaque,
         is_comptime: bool,
@@ -325,7 +353,7 @@ pub const Type = union(enum) {
     /// therefore must be kept in sync with the compiler implementation.
     pub const Struct = struct {
         layout: ContainerLayout,
-        /// Only valid if layout is .Packed
+        /// Only valid if layout is .@"packed"
         backing_integer: ?type = null,
         fields: []const StructField,
         decls: []const Declaration,
@@ -348,7 +376,7 @@ pub const Type = union(enum) {
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const Error = struct {
-        name: []const u8,
+        name: [:0]const u8,
     };
 
     /// This data structure is used by the Zig language code generation and
@@ -358,7 +386,7 @@ pub const Type = union(enum) {
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const EnumField = struct {
-        name: []const u8,
+        name: [:0]const u8,
         value: comptime_int,
     };
 
@@ -374,7 +402,7 @@ pub const Type = union(enum) {
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const UnionField = struct {
-        name: []const u8,
+        name: [:0]const u8,
         type: type,
         alignment: comptime_int,
     };
@@ -388,13 +416,10 @@ pub const Type = union(enum) {
         decls: []const Declaration,
     };
 
-    pub const FnArg = @compileError("deprecated; use Fn.Param");
-
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const Fn = struct {
         calling_convention: CallingConvention,
-        alignment: comptime_int,
         is_generic: bool,
         is_var_args: bool,
         /// TODO change the language spec to make this not optional.
@@ -438,23 +463,22 @@ pub const Type = union(enum) {
     /// This data structure is used by the Zig language code generation and
     /// therefore must be kept in sync with the compiler implementation.
     pub const Declaration = struct {
-        name: []const u8,
-        is_pub: bool,
+        name: [:0]const u8,
     };
 };
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
 pub const FloatMode = enum {
-    Strict,
-    Optimized,
+    strict,
+    optimized,
 };
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
 pub const Endian = enum {
-    Big,
-    Little,
+    big,
+    little,
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -475,8 +499,8 @@ pub const OutputMode = enum {
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
 pub const LinkMode = enum {
-    Static,
-    Dynamic,
+    static,
+    dynamic,
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -485,139 +509,6 @@ pub const WasiExecModel = enum {
     command,
     reactor,
 };
-
-/// This data structure is used by the Zig language code generation and
-/// therefore must be kept in sync with the compiler implementation.
-pub const Version = struct {
-    major: u32,
-    minor: u32,
-    patch: u32 = 0,
-
-    pub const Range = struct {
-        min: Version,
-        max: Version,
-
-        pub fn includesVersion(self: Range, ver: Version) bool {
-            if (self.min.order(ver) == .gt) return false;
-            if (self.max.order(ver) == .lt) return false;
-            return true;
-        }
-
-        /// Checks if system is guaranteed to be at least `version` or older than `version`.
-        /// Returns `null` if a runtime check is required.
-        pub fn isAtLeast(self: Range, ver: Version) ?bool {
-            if (self.min.order(ver) != .lt) return true;
-            if (self.max.order(ver) == .lt) return false;
-            return null;
-        }
-    };
-
-    pub fn order(lhs: Version, rhs: Version) std.math.Order {
-        if (lhs.major < rhs.major) return .lt;
-        if (lhs.major > rhs.major) return .gt;
-        if (lhs.minor < rhs.minor) return .lt;
-        if (lhs.minor > rhs.minor) return .gt;
-        if (lhs.patch < rhs.patch) return .lt;
-        if (lhs.patch > rhs.patch) return .gt;
-        return .eq;
-    }
-
-    pub fn parse(text: []const u8) !Version {
-        var end: usize = 0;
-        while (end < text.len) : (end += 1) {
-            const c = text[end];
-            if (!std.ascii.isDigit(c) and c != '.') break;
-        }
-        // found no digits or '.' before unexpected character
-        if (end == 0) return error.InvalidVersion;
-
-        var it = std.mem.split(u8, text[0..end], ".");
-        // substring is not empty, first call will succeed
-        const major = it.first();
-        if (major.len == 0) return error.InvalidVersion;
-        const minor = it.next() orelse "0";
-        // ignore 'patch' if 'minor' is invalid
-        const patch = if (minor.len == 0) "0" else (it.next() orelse "0");
-
-        return Version{
-            .major = try std.fmt.parseUnsigned(u32, major, 10),
-            .minor = try std.fmt.parseUnsigned(u32, if (minor.len == 0) "0" else minor, 10),
-            .patch = try std.fmt.parseUnsigned(u32, if (patch.len == 0) "0" else patch, 10),
-        };
-    }
-
-    pub fn format(
-        self: Version,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        out_stream: anytype,
-    ) !void {
-        _ = options;
-        if (fmt.len == 0) {
-            if (self.patch == 0) {
-                if (self.minor == 0) {
-                    return std.fmt.format(out_stream, "{d}", .{self.major});
-                } else {
-                    return std.fmt.format(out_stream, "{d}.{d}", .{ self.major, self.minor });
-                }
-            } else {
-                return std.fmt.format(out_stream, "{d}.{d}.{d}", .{ self.major, self.minor, self.patch });
-            }
-        } else {
-            std.fmt.invalidFmtError(fmt, self);
-        }
-    }
-};
-
-test "Version.parse" {
-    @setEvalBranchQuota(3000);
-    try testVersionParse();
-    comptime (try testVersionParse());
-}
-
-fn testVersionParse() !void {
-    const f = struct {
-        fn eql(text: []const u8, v1: u32, v2: u32, v3: u32) !void {
-            const v = try Version.parse(text);
-            try std.testing.expect(v.major == v1 and v.minor == v2 and v.patch == v3);
-        }
-
-        fn err(text: []const u8, expected_err: anyerror) !void {
-            _ = Version.parse(text) catch |actual_err| {
-                if (actual_err == expected_err) return;
-                return actual_err;
-            };
-            return error.Unreachable;
-        }
-    };
-
-    try f.eql("2.6.32.11-svn21605", 2, 6, 32); // Debian PPC
-    try f.eql("2.11.2(0.329/5/3)", 2, 11, 2); // MinGW
-    try f.eql("5.4.0-1018-raspi", 5, 4, 0); // Ubuntu
-    try f.eql("5.7.12_3", 5, 7, 12); // Void
-    try f.eql("2.13-DEVELOPMENT", 2, 13, 0); // DragonFly
-    try f.eql("2.3-35", 2, 3, 0);
-    try f.eql("1a.4", 1, 0, 0);
-    try f.eql("3.b1.0", 3, 0, 0);
-    try f.eql("1.4beta", 1, 4, 0);
-    try f.eql("2.7.pre", 2, 7, 0);
-    try f.eql("0..3", 0, 0, 0);
-    try f.eql("8.008.", 8, 8, 0);
-    try f.eql("01...", 1, 0, 0);
-    try f.eql("55", 55, 0, 0);
-    try f.eql("4294967295.0.1", 4294967295, 0, 1);
-    try f.eql("429496729_6", 429496729, 0, 0);
-
-    try f.err("foobar", error.InvalidVersion);
-    try f.err("", error.InvalidVersion);
-    try f.err("-1", error.InvalidVersion);
-    try f.err("+4", error.InvalidVersion);
-    try f.err(".", error.InvalidVersion);
-    try f.err("....3", error.InvalidVersion);
-    try f.err("4294967296", error.Overflow);
-    try f.err("5000877755", error.Overflow);
-    // error.InvalidCharacter is not possible anymore
-}
 
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
@@ -704,7 +595,7 @@ pub const VaListX86_64 = extern struct {
 /// This data structure is used by the Zig language code generation and
 /// therefore must be kept in sync with the compiler implementation.
 pub const VaList = switch (builtin.cpu.arch) {
-    .aarch64 => switch (builtin.os.tag) {
+    .aarch64, .aarch64_be => switch (builtin.os.tag) {
         .windows => *u8,
         .ios, .macos, .tvos, .watchos => *u8,
         else => @compileError("disabled due to miscompilations"), // VaListAarch64,
@@ -767,7 +658,7 @@ pub const PrefetchOptions = struct {
 /// therefore must be kept in sync with the compiler implementation.
 pub const ExportOptions = struct {
     name: []const u8,
-    linkage: GlobalLinkage = .Strong,
+    linkage: GlobalLinkage = .strong,
     section: ?[]const u8 = null,
     visibility: SymbolVisibility = .default,
 };
@@ -777,7 +668,7 @@ pub const ExportOptions = struct {
 pub const ExternOptions = struct {
     name: []const u8,
     library_name: ?[]const u8 = null,
-    linkage: GlobalLinkage = .Strong,
+    linkage: GlobalLinkage = .strong,
     is_thread_local: bool = false,
 };
 
@@ -848,7 +739,6 @@ pub const CompilerBackend = enum(u64) {
 pub const TestFn = struct {
     name: []const u8,
     func: *const fn () anyerror!void,
-    async_frame_size: ?usize,
 };
 
 /// This function type is used by the Zig language code generation and
@@ -874,10 +764,11 @@ pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace, ret_addr
     if (builtin.zig_backend == .stage2_wasm or
         builtin.zig_backend == .stage2_arm or
         builtin.zig_backend == .stage2_aarch64 or
-        builtin.zig_backend == .stage2_x86_64 or
         builtin.zig_backend == .stage2_x86 or
+        (builtin.zig_backend == .stage2_x86_64 and (builtin.target.ofmt != .elf and builtin.target.ofmt != .macho)) or
         builtin.zig_backend == .stage2_riscv64 or
-        builtin.zig_backend == .stage2_sparc64)
+        builtin.zig_backend == .stage2_sparc64 or
+        builtin.zig_backend == .stage2_spirv64)
     {
         while (true) {
             @breakpoint();
@@ -891,7 +782,7 @@ pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace, ret_addr
         },
         .wasi => {
             std.debug.print("{s}", .{msg});
-            std.os.abort();
+            std.posix.abort();
         },
         .uefi => {
             const uefi = std.os.uefi;
@@ -912,26 +803,25 @@ pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace, ret_addr
                     }
 
                     var fmt: [256]u8 = undefined;
-                    var slice = try std.fmt.bufPrint(&fmt, "\r\nerr: {s}\r\n", .{exit_msg});
-
-                    var len = try std.unicode.utf8ToUtf16Le(utf16, slice);
+                    const slice = try std.fmt.bufPrint(&fmt, "\r\nerr: {s}\r\n", .{exit_msg});
+                    const len = try std.unicode.utf8ToUtf16Le(utf16, slice);
 
                     utf16[len] = 0;
 
                     exit_size.* = 256;
 
-                    return @ptrCast([*:0]u16, utf16.ptr);
+                    return @as([*:0]u16, @ptrCast(utf16.ptr));
                 }
             };
 
             var exit_size: usize = 0;
-            var exit_data = ExitData.create_exit_data(msg, &exit_size) catch null;
+            const exit_data = ExitData.create_exit_data(msg, &exit_size) catch null;
 
             if (exit_data) |data| {
                 if (uefi.system_table.std_err) |out| {
-                    _ = out.setAttribute(uefi.protocols.SimpleTextOutputProtocol.red);
+                    _ = out.setAttribute(uefi.protocol.SimpleTextOutput.red);
                     _ = out.outputString(data);
-                    _ = out.setAttribute(uefi.protocols.SimpleTextOutputProtocol.white);
+                    _ = out.setAttribute(uefi.protocol.SimpleTextOutput.white);
                 }
             }
 
@@ -940,9 +830,16 @@ pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace, ret_addr
             }
 
             // Didn't have boot_services, just fallback to whatever.
-            std.os.abort();
+            std.posix.abort();
         },
-        .cuda => std.os.abort(),
+        .cuda, .amdhsa => std.posix.abort(),
+        .plan9 => {
+            var status: [std.os.plan9.ERRMAX]u8 = undefined;
+            const len = @min(msg.len, status.len - 1);
+            @memcpy(status[0..len], msg[0..len]);
+            status[len] = 0;
+            std.os.plan9.exits(status[0..len :0]);
+        },
         else => {
             const first_trace_addr = ret_addr orelse @returnAddress();
             std.debug.panicImpl(error_return_trace, first_trace_addr, msg);
@@ -1006,6 +903,7 @@ pub const panic_messages = struct {
     pub const for_len_mismatch = "for loop over objects with non-equal lengths";
     pub const memcpy_len_mismatch = "@memcpy arguments have non-equal lengths";
     pub const memcpy_alias = "@memcpy arguments alias";
+    pub const noreturn_returned = "'noreturn' function returned";
 };
 
 pub noinline fn returnError(st: *StackTrace) void {

@@ -32,7 +32,7 @@ const MultiArch = union(enum) {
     specific: Arch,
 
     fn eql(a: MultiArch, b: MultiArch) bool {
-        if (@enumToInt(a) != @enumToInt(b))
+        if (@intFromEnum(a) != @intFromEnum(b))
             return false;
         if (a != .specific)
             return true;
@@ -45,7 +45,7 @@ const MultiAbi = union(enum) {
     specific: Abi,
 
     fn eql(a: MultiAbi, b: MultiAbi) bool {
-        if (@enumToInt(a) != @enumToInt(b))
+        if (@intFromEnum(a) != @intFromEnum(b))
             return false;
         if (std.meta.Tag(MultiAbi)(a) != .specific)
             return true;
@@ -169,13 +169,14 @@ const glibc_targets = [_]LibCTarget{
         .arch = MultiArch{ .specific = Arch.s390x },
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
+    // It's unclear which zig target this glibc sparcv9 target maps to.
+    //LibCTarget{
+    //    .name = "sparcv9-linux-gnu",
+    //    .arch = MultiArch{ .specific = Arch.sparc },
+    //    .abi = MultiAbi{ .specific = Abi.gnu },
+    //},
     LibCTarget{
-        .name = "sparc-linux-gnu",
-        .arch = MultiArch{ .specific = Arch.sparc },
-        .abi = MultiAbi{ .specific = Abi.gnu },
-    },
-    LibCTarget{
-        .name = "sparcv9-linux-gnu",
+        .name = "sparc64-linux-gnu",
         .arch = MultiArch{ .specific = Arch.sparc64 },
         .abi = MultiAbi{ .specific = Abi.gnu },
     },
@@ -208,7 +209,7 @@ const musl_targets = [_]LibCTarget{
         .abi = MultiAbi.musl,
     },
     LibCTarget{
-        .name = "x86",
+        .name = "i386",
         .arch = MultiArch{ .specific = .x86 },
         .abi = MultiAbi.musl,
     },
@@ -262,9 +263,9 @@ const DestTarget = struct {
     const HashContext = struct {
         pub fn hash(self: @This(), a: DestTarget) u32 {
             _ = self;
-            return @enumToInt(a.arch) +%
-                (@enumToInt(a.os) *% @as(u32, 4202347608)) +%
-                (@enumToInt(a.abi) *% @as(u32, 4082223418));
+            return @intFromEnum(a.arch) +%
+                (@intFromEnum(a.os) *% @as(u32, 4202347608)) +%
+                (@intFromEnum(a.abi) *% @as(u32, 4082223418));
         }
 
         pub fn eql(self: @This(), a: DestTarget, b: DestTarget, b_index: usize) bool {
@@ -381,20 +382,20 @@ pub fn main() !void {
             try dir_stack.append(target_include_dir);
 
             while (dir_stack.popOrNull()) |full_dir_name| {
-                var iterable_dir = std.fs.cwd().openIterableDir(full_dir_name, .{}) catch |err| switch (err) {
+                var dir = std.fs.cwd().openDir(full_dir_name, .{ .iterate = true }) catch |err| switch (err) {
                     error.FileNotFound => continue :search,
                     error.AccessDenied => continue :search,
                     else => return err,
                 };
-                defer iterable_dir.close();
+                defer dir.close();
 
-                var dir_it = iterable_dir.iterate();
+                var dir_it = dir.iterate();
 
                 while (try dir_it.next()) |entry| {
                     const full_path = try std.fs.path.join(allocator, &[_][]const u8{ full_dir_name, entry.name });
                     switch (entry.kind) {
-                        .Directory => try dir_stack.append(full_path),
-                        .File => {
+                        .directory => try dir_stack.append(full_path),
+                        .file => {
                             const rel_path = try std.fs.path.relative(allocator, target_include_dir, full_path);
                             const max_size = 2 * 1024 * 1024 * 1024;
                             const raw_bytes = try std.fs.cwd().readFileAlloc(allocator, full_path, max_size);
@@ -460,7 +461,7 @@ pub fn main() !void {
                 try contents_list.append(contents);
             }
         }
-        std.sort.sort(*Contents, contents_list.items, {}, Contents.hitCountLessThan);
+        std.mem.sort(*Contents, contents_list.items, {}, Contents.hitCountLessThan);
         const best_contents = contents_list.popOrNull().?;
         if (best_contents.hit_count > 1) {
             // worth it to make it generic

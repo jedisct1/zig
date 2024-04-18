@@ -6,7 +6,7 @@ set -e
 ZIGDIR="$(pwd)"
 TARGET="$ARCH-macos-none"
 MCPU="baseline"
-CACHE_BASENAME="zig+llvm+lld+clang-$TARGET-0.11.0-dev.2441+eb19f73af"
+CACHE_BASENAME="zig+llvm+lld+clang-$TARGET-0.12.0-dev.467+0345d7866"
 PREFIX="$HOME/$CACHE_BASENAME"
 JOBS="-j3"
 
@@ -22,9 +22,16 @@ cd $ZIGDIR
 
 # Make the `zig version` number consistent.
 # This will affect the cmake command below.
-git config core.abbrev 9
 git fetch --unshallow || true
 git fetch --tags
+
+# Test building from source without LLVM.
+git clean -fd
+rm -rf zig-out
+cc -o bootstrap bootstrap.c
+./bootstrap
+./zig2 build -Dno-lib
+./zig-out/bin/zig test test/behavior.zig
 
 rm -rf build
 mkdir build
@@ -43,7 +50,8 @@ cmake .. \
   -DCMAKE_CXX_COMPILER="$ZIG;c++;-target;$TARGET;-mcpu=$MCPU" \
   -DZIG_TARGET_TRIPLE="$TARGET" \
   -DZIG_TARGET_MCPU="$MCPU" \
-  -DZIG_STATIC=ON
+  -DZIG_STATIC=ON \
+  -DZIG_NO_LIB=ON
 
 make $JOBS install
 
@@ -53,9 +61,6 @@ stage3/bin/zig build test docs \
   -Dstatic-llvm \
   -Dskip-non-native \
   --search-prefix "$PREFIX"
-
-# Produce the experimental std lib documentation.
-stage3/bin/zig test ../lib/std/std.zig -femit-docs -fno-emit-bin --zig-lib-dir ../lib
 
 # Ensure that stage3 and stage4 are byte-for-byte identical.
 stage3/bin/zig build \
@@ -68,8 +73,7 @@ stage3/bin/zig build \
   -Duse-zig-libcxx \
   -Dversion-string="$(stage3/bin/zig version)"
 
-# Disabled due to https://github.com/ziglang/zig/issues/15197
-## diff returns an error code if the files differ.
-#echo "If the following command fails, it means nondeterminism has been"
-#echo "introduced, making stage3 and stage4 no longer byte-for-byte identical."
-#diff stage3/bin/zig stage4/bin/zig
+# diff returns an error code if the files differ.
+echo "If the following command fails, it means nondeterminism has been"
+echo "introduced, making stage3 and stage4 no longer byte-for-byte identical."
+diff stage3/bin/zig stage4/bin/zig

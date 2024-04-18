@@ -74,7 +74,7 @@ const SpinlockTable = struct {
                         : "memory"
                     );
                 } else flag: {
-                    break :flag @atomicRmw(@TypeOf(self.v), &self.v, .Xchg, .Locked, .Acquire);
+                    break :flag @atomicRmw(@TypeOf(self.v), &self.v, .Xchg, .Locked, .acquire);
                 };
 
                 switch (flag) {
@@ -91,7 +91,7 @@ const SpinlockTable = struct {
                     : "memory"
                 );
             } else {
-                @atomicStore(@TypeOf(self.v), &self.v, .Unlocked, .Release);
+                @atomicStore(@TypeOf(self.v), &self.v, .Unlocked, .release);
             }
         }
     };
@@ -119,21 +119,21 @@ var spinlocks: SpinlockTable = SpinlockTable{};
 
 fn __atomic_load(size: u32, src: [*]u8, dest: [*]u8, model: i32) callconv(.C) void {
     _ = model;
-    var sl = spinlocks.get(@ptrToInt(src));
+    var sl = spinlocks.get(@intFromPtr(src));
     defer sl.release();
     @memcpy(dest[0..size], src);
 }
 
 fn __atomic_store(size: u32, dest: [*]u8, src: [*]u8, model: i32) callconv(.C) void {
     _ = model;
-    var sl = spinlocks.get(@ptrToInt(dest));
+    var sl = spinlocks.get(@intFromPtr(dest));
     defer sl.release();
     @memcpy(dest[0..size], src);
 }
 
 fn __atomic_exchange(size: u32, ptr: [*]u8, val: [*]u8, old: [*]u8, model: i32) callconv(.C) void {
     _ = model;
-    var sl = spinlocks.get(@ptrToInt(ptr));
+    var sl = spinlocks.get(@intFromPtr(ptr));
     defer sl.release();
     @memcpy(old[0..size], ptr);
     @memcpy(ptr[0..size], val);
@@ -149,7 +149,7 @@ fn __atomic_compare_exchange(
 ) callconv(.C) i32 {
     _ = success;
     _ = failure;
-    var sl = spinlocks.get(@ptrToInt(ptr));
+    var sl = spinlocks.get(@intFromPtr(ptr));
     defer sl.release();
     for (ptr[0..size], 0..) |b, i| {
         if (expected[i] != b) break;
@@ -168,11 +168,11 @@ fn __atomic_compare_exchange(
 inline fn atomic_load_N(comptime T: type, src: *T, model: i32) T {
     _ = model;
     if (@sizeOf(T) > largest_atomic_size) {
-        var sl = spinlocks.get(@ptrToInt(src));
+        var sl = spinlocks.get(@intFromPtr(src));
         defer sl.release();
         return src.*;
     } else {
-        return @atomicLoad(T, src, .SeqCst);
+        return @atomicLoad(T, src, .seq_cst);
     }
 }
 
@@ -199,11 +199,11 @@ fn __atomic_load_16(src: *u128, model: i32) callconv(.C) u128 {
 inline fn atomic_store_N(comptime T: type, dst: *T, value: T, model: i32) void {
     _ = model;
     if (@sizeOf(T) > largest_atomic_size) {
-        var sl = spinlocks.get(@ptrToInt(dst));
+        var sl = spinlocks.get(@intFromPtr(dst));
         defer sl.release();
         dst.* = value;
     } else {
-        @atomicStore(T, dst, value, .SeqCst);
+        @atomicStore(T, dst, value, .seq_cst);
     }
 }
 
@@ -230,21 +230,21 @@ fn __atomic_store_16(dst: *u128, value: u128, model: i32) callconv(.C) void {
 fn wideUpdate(comptime T: type, ptr: *T, val: T, update: anytype) T {
     const WideAtomic = std.meta.Int(.unsigned, smallest_atomic_fetch_exch_size * 8);
 
-    const addr = @ptrToInt(ptr);
+    const addr = @intFromPtr(ptr);
     const wide_addr = addr & ~(@as(T, smallest_atomic_fetch_exch_size) - 1);
-    const wide_ptr = @alignCast(smallest_atomic_fetch_exch_size, @intToPtr(*WideAtomic, wide_addr));
+    const wide_ptr: *align(smallest_atomic_fetch_exch_size) WideAtomic = @alignCast(@as(*WideAtomic, @ptrFromInt(wide_addr)));
 
     const inner_offset = addr & (@as(T, smallest_atomic_fetch_exch_size) - 1);
-    const inner_shift = @intCast(std.math.Log2Int(T), inner_offset * 8);
+    const inner_shift = @as(std.math.Log2Int(T), @intCast(inner_offset * 8));
 
     const mask = @as(WideAtomic, std.math.maxInt(T)) << inner_shift;
 
-    var wide_old = @atomicLoad(WideAtomic, wide_ptr, .SeqCst);
+    var wide_old = @atomicLoad(WideAtomic, wide_ptr, .seq_cst);
     while (true) {
-        const old = @truncate(T, (wide_old & mask) >> inner_shift);
+        const old = @as(T, @truncate((wide_old & mask) >> inner_shift));
         const new = update(val, old);
         const wide_new = wide_old & ~mask | (@as(WideAtomic, new) << inner_shift);
-        if (@cmpxchgWeak(WideAtomic, wide_ptr, wide_old, wide_new, .SeqCst, .SeqCst)) |new_wide_old| {
+        if (@cmpxchgWeak(WideAtomic, wide_ptr, wide_old, wide_new, .seq_cst, .seq_cst)) |new_wide_old| {
             wide_old = new_wide_old;
         } else {
             return old;
@@ -255,7 +255,7 @@ fn wideUpdate(comptime T: type, ptr: *T, val: T, update: anytype) T {
 inline fn atomic_exchange_N(comptime T: type, ptr: *T, val: T, model: i32) T {
     _ = model;
     if (@sizeOf(T) > largest_atomic_size) {
-        var sl = spinlocks.get(@ptrToInt(ptr));
+        var sl = spinlocks.get(@intFromPtr(ptr));
         defer sl.release();
         const value = ptr.*;
         ptr.* = val;
@@ -270,7 +270,7 @@ inline fn atomic_exchange_N(comptime T: type, ptr: *T, val: T, model: i32) T {
         };
         return wideUpdate(T, ptr, val, Updater.update);
     } else {
-        return @atomicRmw(T, ptr, .Xchg, val, .SeqCst);
+        return @atomicRmw(T, ptr, .Xchg, val, .seq_cst);
     }
 }
 
@@ -305,7 +305,7 @@ inline fn atomic_compare_exchange_N(
     _ = success;
     _ = failure;
     if (@sizeOf(T) > largest_atomic_size) {
-        var sl = spinlocks.get(@ptrToInt(ptr));
+        var sl = spinlocks.get(@intFromPtr(ptr));
         defer sl.release();
         const value = ptr.*;
         if (value == expected.*) {
@@ -315,7 +315,7 @@ inline fn atomic_compare_exchange_N(
         expected.* = value;
         return 0;
     } else {
-        if (@cmpxchgStrong(T, ptr, expected.*, desired, .SeqCst, .SeqCst)) |old_value| {
+        if (@cmpxchgStrong(T, ptr, expected.*, desired, .seq_cst, .seq_cst)) |old_value| {
             expected.* = old_value;
             return 0;
         }
@@ -362,7 +362,7 @@ inline fn fetch_op_N(comptime T: type, comptime op: std.builtin.AtomicRmwOp, ptr
     };
 
     if (@sizeOf(T) > largest_atomic_size) {
-        var sl = spinlocks.get(@ptrToInt(ptr));
+        var sl = spinlocks.get(@intFromPtr(ptr));
         defer sl.release();
 
         const value = ptr.*;
@@ -373,7 +373,7 @@ inline fn fetch_op_N(comptime T: type, comptime op: std.builtin.AtomicRmwOp, ptr
         return wideUpdate(T, ptr, val, Updater.update);
     }
 
-    return @atomicRmw(T, ptr, op, val, .SeqCst);
+    return @atomicRmw(T, ptr, op, val, .seq_cst);
 }
 
 fn __atomic_fetch_add_1(ptr: *u8, val: u8, model: i32) callconv(.C) u8 {

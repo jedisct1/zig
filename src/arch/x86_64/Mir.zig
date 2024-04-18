@@ -6,20 +6,6 @@
 //! The main purpose of MIR is to postpone the assignment of offsets until Isel,
 //! so that, for example, the smaller encodings of jump instructions can be used.
 
-const Mir = @This();
-const std = @import("std");
-const builtin = @import("builtin");
-const assert = std.debug.assert;
-
-const bits = @import("bits.zig");
-const encoder = @import("encoder.zig");
-
-const Air = @import("../../Air.zig");
-const CodeGen = @import("CodeGen.zig");
-const IntegerBitSet = std.bit_set.IntegerBitSet;
-const Memory = bits.Memory;
-const Register = bits.Register;
-
 instructions: std.MultiArrayList(Inst).Slice,
 /// The meaning of this data is determined by `Inst.Tag` value.
 extra: []const u32,
@@ -244,6 +230,8 @@ pub const Inst = struct {
         v_d,
         /// VEX-Encoded ___ QuadWord
         v_q,
+        /// VEX-Encoded ___ Integer Data
+        v_i128,
         /// VEX-Encoded Packed ___
         vp_,
         /// VEX-Encoded Packed ___ Byte
@@ -317,6 +305,8 @@ pub const Inst = struct {
         cdq,
         /// Convert doubleword to quadword
         cdqe,
+        /// Flush cache line
+        clflush,
         /// Conditional move
         cmov,
         /// Logical compare
@@ -327,12 +317,16 @@ pub const Inst = struct {
         /// Compare and exchange
         /// Compare and exchange bytes
         cmpxchg,
+        /// CPU identification
+        cpuid,
         /// Convert doubleword to quadword
         cqo,
         /// Convert word to doubleword
         cwd,
         /// Convert word to doubleword
         cwde,
+        /// Decrement by 1
+        dec,
         /// Unsigned division
         /// Signed division
         /// Divide packed single-precision floating-point values
@@ -340,16 +334,14 @@ pub const Inst = struct {
         /// Divide packed double-precision floating-point values
         /// Divide scalar double-precision floating-point values
         div,
-        ///
+        /// Increment by 1
+        inc,
+        /// Call to interrupt procedure
         int3,
-        /// Store integer with truncation
-        istt,
         /// Conditional jump
         j,
         /// Jump
         jmp,
-        /// Load floating-point value
-        ld,
         /// Load effective address
         lea,
         /// Load string
@@ -390,12 +382,18 @@ pub const Inst = struct {
         /// Bitwise logical or of packed single-precision floating-point values
         /// Bitwise logical or of packed double-precision floating-point values
         @"or",
+        /// Spin loop hint
+        pause,
         /// Pop
         pop,
         /// Return the count of number of bits set to 1
         popcnt,
+        /// Pop stack into EFLAGS register
+        popfq,
         /// Push
         push,
+        /// Push EFLAGS register onto the stack
+        pushfq,
         /// Rotate left through carry
         /// Rotate right through carry
         rc,
@@ -441,10 +439,31 @@ pub const Inst = struct {
         xadd,
         /// Exchange register/memory with register
         xchg,
+        /// Get value of extended control register
+        xgetbv,
         /// Logical exclusive-or
         /// Bitwise logical xor of packed single-precision floating-point values
         /// Bitwise logical xor of packed double-precision floating-point values
         xor,
+
+        /// Absolute value
+        abs,
+        /// Change sign
+        chs,
+        /// Free floating-point register
+        free,
+        /// Store integer with truncation
+        istt,
+        /// Load floating-point value
+        ld,
+        /// Load x87 FPU environment
+        ldenv,
+        /// Store x87 FPU environment
+        nstenv,
+        /// Store floating-point value
+        st,
+        /// Store x87 FPU environment
+        stenv,
 
         /// Pack with signed saturation
         ackssw,
@@ -459,6 +478,10 @@ pub const Inst = struct {
         /// Bitwise logical and not of packed single-precision floating-point values
         /// Bitwise logical and not of packed double-precision floating-point values
         andn,
+        /// Compare packed data for equal
+        cmpeq,
+        /// Compare packed data for greater than
+        cmpgt,
         /// Maximum of packed signed integers
         maxs,
         /// Maximum of packed unsigned integers
@@ -467,14 +490,29 @@ pub const Inst = struct {
         mins,
         /// Minimum of packed unsigned integers
         minu,
+        /// Move byte mask
+        /// Extract packed single precision floating-point sign mask
+        /// Extract packed double precision floating-point sign mask
+        movmsk,
         /// Multiply packed signed integers and store low result
         mull,
         /// Multiply packed signed integers and store high result
         mulh,
+        /// Shift packed data left logical
+        sll,
+        /// Shift packed data right arithmetic
+        sra,
+        /// Shift packed data right logical
+        srl,
         /// Subtract packed signed integers with signed saturation
         subs,
         /// Subtract packed unsigned integers with unsigned saturation
         subus,
+
+        /// Load MXCSR register
+        ldmxcsr,
+        /// Store MXCSR register state
+        stmxcsr,
 
         /// Convert packed doubleword integers to packed single-precision floating-point values
         /// Convert packed doubleword integers to packed double-precision floating-point values
@@ -569,15 +607,13 @@ pub const Inst = struct {
         movdqu,
         /// Packed interleave shuffle of quadruplets of single-precision floating-point values
         /// Packed interleave shuffle of pairs of double-precision floating-point values
+        /// Shuffle packed doublewords
+        /// Shuffle packed words
         shuf,
         /// Shuffle packed high words
         shufh,
         /// Shuffle packed low words
         shufl,
-        /// Shift packed data right logical
-        /// Shift packed data right logical
-        /// Shift packed data right logical
-        srl,
         /// Unpack high data
         unpckhbw,
         /// Unpack high data
@@ -602,6 +638,9 @@ pub const Inst = struct {
         /// Replicate single floating-point values
         movsldup,
 
+        /// Packed align right
+        alignr,
+
         /// Pack with unsigned saturation
         ackusd,
         /// Blend packed single-precision floating-point values
@@ -615,17 +654,50 @@ pub const Inst = struct {
         /// Variable blend scalar double-precision floating-point values
         blendv,
         /// Extract packed floating-point values
+        /// Extract packed integer values
         extract,
         /// Insert scalar single-precision floating-point value
         /// Insert packed floating-point values
         insert,
+        /// Packed move with sign extend
+        movsxb,
+        movsxd,
+        movsxw,
+        /// Packed move with zero extend
+        movzxb,
+        movzxd,
+        movzxw,
         /// Round packed single-precision floating-point values
         /// Round scalar single-precision floating-point value
         /// Round packed double-precision floating-point values
         /// Round scalar double-precision floating-point value
         round,
 
+        /// Carry-less multiplication quadword
+        clmulq,
+
+        /// Perform one round of an AES decryption flow
+        aesdec,
+        /// Perform last round of an AES decryption flow
+        aesdeclast,
+        /// Perform one round of an AES encryption flow
+        aesenc,
+        /// Perform last round of an AES encryption flow
+        aesenclast,
+        /// Perform the AES InvMixColumn transformation
+        aesimc,
+        /// AES round key generation assist
+        aeskeygenassist,
+
+        /// Perform an intermediate calculation for the next four SHA256 message dwords
+        sha256msg1,
+        /// Perform a final calculation for the next four SHA256 message dwords
+        sha256msg2,
+        /// Perform two rounds of SHA256 operation
+        sha256rnds2,
+
         /// Load with broadcast floating-point data
+        /// Load integer and broadcast
         broadcast,
 
         /// Convert 16-bit floating-point values to single-precision floating-point values
@@ -699,72 +771,48 @@ pub const Inst = struct {
         /// Relative displacement operand.
         /// Uses `imm` payload.
         rel,
-        /// Register, memory (SIB) operands.
-        /// Uses `rx` payload.
-        rm_sib,
-        /// Register, memory (RIP) operands.
-        /// Uses `rx` payload.
-        rm_rip,
-        /// Register, memory (SIB), immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemorySib`.
-        rmi_sib,
-        /// Register, register, memory (RIP).
-        /// Uses `rrix` payload with extra data of type `MemoryRip`.
-        rrm_rip,
-        /// Register, register, memory (SIB).
-        /// Uses `rrix` payload with extra data of type `MemorySib`.
-        rrm_sib,
-        /// Register, register, memory (RIP), immediate (byte) operands.
-        /// Uses `rrix` payload with extra data of type `MemoryRip`.
-        rrmi_rip,
-        /// Register, register, memory (SIB), immediate (byte) operands.
-        /// Uses `rrix` payload with extra data of type `MemorySib`.
-        rrmi_sib,
-        /// Register, memory (RIP), immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemoryRip`.
-        rmi_rip,
-        /// Single memory (SIB) operand.
-        /// Uses `x` with extra data of type `MemorySib`.
-        m_sib,
-        /// Single memory (RIP) operand.
-        /// Uses `x` with extra data of type `MemoryRip`.
-        m_rip,
-        /// Memory (SIB), immediate (unsigned) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemorySib`.
-        mi_sib_u,
-        /// Memory (RIP), immediate (unsigned) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemoryRip`.
-        mi_rip_u,
-        /// Memory (SIB), immediate (sign-extend) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemorySib`.
-        mi_sib_s,
-        /// Memory (RIP), immediate (sign-extend) operands.
-        /// Uses `x` payload with extra data of type `Imm32` followed by `MemoryRip`.
-        mi_rip_s,
-        /// Memory (SIB), register operands.
-        /// Uses `rx` payload with extra data of type `MemorySib`.
-        mr_sib,
-        /// Memory (RIP), register operands.
-        /// Uses `rx` payload with extra data of type `MemoryRip`.
-        mr_rip,
-        /// Memory (SIB), register, register operands.
-        /// Uses `rrx` payload with extra data of type `MemorySib`.
-        mrr_sib,
-        /// Memory (RIP), register, register operands.
-        /// Uses `rrx` payload with extra data of type `MemoryRip`.
-        mrr_rip,
-        /// Memory (SIB), register, immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemorySib`.
-        mri_sib,
-        /// Memory (RIP), register, immediate (byte) operands.
-        /// Uses `rix` payload with extra data of type `MemoryRip`.
-        mri_rip,
-        /// Rax, Memory moffs.
-        /// Uses `x` with extra data of type `MemoryMoffs`.
-        rax_moffs,
-        /// Memory moffs, rax.
-        /// Uses `x` with extra data of type `MemoryMoffs`.
-        moffs_rax,
+        /// Register, memory operands.
+        /// Uses `rx` payload with extra data of type `Memory`.
+        rm,
+        /// Register, memory, register operands.
+        /// Uses `rrx` payload with extra data of type `Memory`.
+        rmr,
+        /// Register, memory, immediate (word) operands.
+        /// Uses `rix` payload with extra data of type `Memory`.
+        rmi,
+        /// Register, memory, immediate (signed) operands.
+        /// Uses `rx` payload with extra data of type `Imm32` followed by `Memory`.
+        rmi_s,
+        /// Register, memory, immediate (unsigned) operands.
+        /// Uses `rx` payload with extra data of type `Imm32` followed by `Memory`.
+        rmi_u,
+        /// Register, register, memory.
+        /// Uses `rrix` payload with extra data of type `Memory`.
+        rrm,
+        /// Register, register, memory, register.
+        /// Uses `rrrx` payload with extra data of type `Memory`.
+        rrmr,
+        /// Register, register, memory, immediate (byte) operands.
+        /// Uses `rrix` payload with extra data of type `Memory`.
+        rrmi,
+        /// Single memory operand.
+        /// Uses `x` with extra data of type `Memory`.
+        m,
+        /// Memory, immediate (sign-extend) operands.
+        /// Uses `x` payload with extra data of type `Imm32` followed by `Memory`.
+        mi_s,
+        /// Memory, immediate (unsigned) operands.
+        /// Uses `x` payload with extra data of type `Imm32` followed by `Memory`.
+        mi_u,
+        /// Memory, register operands.
+        /// Uses `rx` payload with extra data of type `Memory`.
+        mr,
+        /// Memory, register, register operands.
+        /// Uses `rrx` payload with extra data of type `Memory`.
+        mrr,
+        /// Memory, register, immediate (word) operands.
+        /// Uses `rix` payload with extra data of type `Memory`.
+        mri,
         /// References another Mir instruction directly.
         /// Uses `inst` payload.
         inst,
@@ -772,16 +820,16 @@ pub const Inst = struct {
         /// Uses `reloc` payload.
         extern_fn_reloc,
         /// Linker relocation - GOT indirection.
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.Symbol`.
         got_reloc,
         /// Linker relocation - direct reference.
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.Symbol`.
         direct_reloc,
         /// Linker relocation - imports table indirection (binding).
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.Symbol`.
         import_reloc,
         /// Linker relocation - threadlocal variable via GOT indirection.
-        /// Uses `rx` payload with extra data of type `Reloc`.
+        /// Uses `rx` payload with extra data of type `bits.Symbol`.
         tlv_reloc,
 
         // Pseudo instructions:
@@ -795,10 +843,7 @@ pub const Inst = struct {
         pseudo_cmov_nz_or_p_rr,
         /// Conditional move if zero flag not set or parity flag set
         /// Uses `rx` payload.
-        pseudo_cmov_nz_or_p_rm_sib,
-        /// Conditional move if zero flag not set or parity flag set
-        /// Uses `rx` payload.
-        pseudo_cmov_nz_or_p_rm_rip,
+        pseudo_cmov_nz_or_p_rm,
         /// Set byte if zero flag set and parity flag not set
         /// Requires a scratch register!
         /// Uses `rr` payload.
@@ -806,11 +851,7 @@ pub const Inst = struct {
         /// Set byte if zero flag set and parity flag not set
         /// Requires a scratch register!
         /// Uses `rx` payload.
-        pseudo_set_z_and_np_m_sib,
-        /// Set byte if zero flag set and parity flag not set
-        /// Requires a scratch register!
-        /// Uses `rx` payload.
-        pseudo_set_z_and_np_m_rip,
+        pseudo_set_z_and_np_m,
         /// Set byte if zero flag not set or parity flag set
         /// Requires a scratch register!
         /// Uses `rr` payload.
@@ -818,11 +859,7 @@ pub const Inst = struct {
         /// Set byte if zero flag not set or parity flag set
         /// Requires a scratch register!
         /// Uses `rx` payload.
-        pseudo_set_nz_or_p_m_sib,
-        /// Set byte if zero flag not set or parity flag set
-        /// Requires a scratch register!
-        /// Uses `rx` payload.
-        pseudo_set_nz_or_p_m_rip,
+        pseudo_set_nz_or_p_m,
         /// Jump if zero flag set and parity flag not set
         /// Uses `inst` payload.
         pseudo_j_z_and_np_inst,
@@ -856,6 +893,8 @@ pub const Inst = struct {
         pseudo_dbg_line_line_column,
         /// Start of epilogue
         pseudo_dbg_epilogue_begin_none,
+        /// Start or end of inline function
+        pseudo_dbg_inline_func,
 
         /// Tombstone
         /// Emitter should skip this instruction.
@@ -930,11 +969,19 @@ pub const Inst = struct {
             r2: Register,
             payload: u32,
         },
+        /// Register, register, register, followed by Custom payload found in extra.
+        rrrx: struct {
+            fixes: Fixes = ._,
+            r1: Register,
+            r2: Register,
+            r3: Register,
+            payload: u32,
+        },
         /// Register, byte immediate, followed by Custom payload found in extra.
         rix: struct {
             fixes: Fixes = ._,
             r1: Register,
-            i: u8,
+            i: u16,
             payload: u32,
         },
         /// Register, register, byte immediate, followed by Custom payload found in extra.
@@ -953,31 +1000,24 @@ pub const Inst = struct {
         /// Relocation for the linker where:
         /// * `atom_index` is the index of the source
         /// * `sym_index` is the index of the target
-        reloc: Reloc,
+        reloc: bits.Symbol,
         /// Debug line and column position
         line_column: struct {
             line: u32,
             column: u32,
         },
+        func: InternPool.Index,
         /// Register list
         reg_list: RegisterList,
     };
 
     // Make sure we don't accidentally make instructions bigger than expected.
-    // Note that in Debug builds, Zig is allowed to insert a secret field for safety checks.
+    // Note that in safety builds, Zig is allowed to insert a secret field for safety checks.
     comptime {
-        if (builtin.mode != .Debug and builtin.mode != .ReleaseSafe) {
+        if (!std.debug.runtime_safety) {
             assert(@sizeOf(Data) == 8);
         }
     }
-};
-
-/// A linker symbol not yet allocated in VM.
-pub const Reloc = struct {
-    /// Index of the containing atom.
-    atom_index: u32,
-    /// Index into the linker's symbol table.
-    sym_index: u32,
 };
 
 /// Used in conjunction with payload to transfer a list of used registers in a compact manner.
@@ -989,7 +1029,7 @@ pub const RegisterList = struct {
 
     fn getIndexForReg(registers: []const Register, reg: Register) BitSet.MaskInt {
         for (registers, 0..) |cpreg, i| {
-            if (reg.id() == cpreg.id()) return @intCast(u32, i);
+            if (reg.id() == cpreg.id()) return @intCast(i);
         }
         unreachable; // register not in input register list!
     }
@@ -1008,8 +1048,12 @@ pub const RegisterList = struct {
         return self.bitset.iterator(options);
     }
 
-    pub fn count(self: Self) u32 {
-        return @intCast(u32, self.bitset.count());
+    pub fn count(self: Self) i32 {
+        return @intCast(self.bitset.count());
+    }
+
+    pub fn size(self: Self) i32 {
+        return @intCast(self.bitset.count() * 8);
     }
 };
 
@@ -1023,113 +1067,107 @@ pub const Imm64 = struct {
 
     pub fn encode(v: u64) Imm64 {
         return .{
-            .msb = @truncate(u32, v >> 32),
-            .lsb = @truncate(u32, v),
+            .msb = @truncate(v >> 32),
+            .lsb = @truncate(v),
         };
     }
 
     pub fn decode(imm: Imm64) u64 {
         var res: u64 = 0;
-        res |= (@intCast(u64, imm.msb) << 32);
-        res |= @intCast(u64, imm.lsb);
+        res |= @as(u64, @intCast(imm.msb)) << 32;
+        res |= @as(u64, @intCast(imm.lsb));
         return res;
     }
 };
 
-// TODO this can be further compacted using packed struct
-pub const MemorySib = struct {
-    /// Size of the pointer.
-    ptr_size: u32,
-    /// Base register tag of type Memory.Base.Tag
-    base_tag: u32,
-    /// Base register of type Register or FrameIndex
+pub const Memory = struct {
+    info: Info,
     base: u32,
-    /// Scale starting at bit 0 and index register starting at bit 4.
-    scale_index: u32,
-    /// Displacement value.
-    disp: i32,
+    off: u32,
+    extra: u32,
 
-    pub fn encode(mem: Memory) MemorySib {
-        const sib = mem.sib;
-        assert(sib.scale_index.scale == 0 or std.math.isPowerOfTwo(sib.scale_index.scale));
+    pub const Info = packed struct(u32) {
+        base: @typeInfo(bits.Memory.Base).Union.tag_type.?,
+        mod: @typeInfo(bits.Memory.Mod).Union.tag_type.?,
+        size: bits.Memory.Size,
+        index: Register,
+        scale: bits.Memory.Scale,
+        _: u16 = undefined,
+    };
+
+    pub fn encode(mem: bits.Memory) Memory {
+        assert(mem.base != .reloc or mem.mod != .off);
         return .{
-            .ptr_size = @enumToInt(sib.ptr_size),
-            .base_tag = @enumToInt(@as(Memory.Base.Tag, sib.base)),
-            .base = switch (sib.base) {
+            .info = .{
+                .base = mem.base,
+                .mod = mem.mod,
+                .size = switch (mem.mod) {
+                    .rm => |rm| rm.size,
+                    .off => undefined,
+                },
+                .index = switch (mem.mod) {
+                    .rm => |rm| rm.index,
+                    .off => undefined,
+                },
+                .scale = switch (mem.mod) {
+                    .rm => |rm| rm.scale,
+                    .off => undefined,
+                },
+            },
+            .base = switch (mem.base) {
                 .none => undefined,
-                .reg => |r| @enumToInt(r),
-                .frame => |fi| @enumToInt(fi),
+                .reg => |reg| @intFromEnum(reg),
+                .frame => |frame_index| @intFromEnum(frame_index),
+                .reloc => |symbol| symbol.sym_index,
             },
-            .scale_index = @as(u32, sib.scale_index.scale) << 0 |
-                @as(u32, if (sib.scale_index.scale > 0)
-                @enumToInt(sib.scale_index.index)
+            .off = switch (mem.mod) {
+                .rm => |rm| @bitCast(rm.disp),
+                .off => |off| @truncate(off),
+            },
+            .extra = if (mem.base == .reloc)
+                mem.base.reloc.atom_index
+            else if (mem.mod == .off)
+                @intCast(mem.mod.off >> 32)
             else
-                undefined) << 4,
-            .disp = sib.disp,
+                undefined,
         };
     }
 
-    pub fn decode(msib: MemorySib) Memory {
-        const scale = @truncate(u4, msib.scale_index);
-        assert(scale == 0 or std.math.isPowerOfTwo(scale));
-        return .{ .sib = .{
-            .ptr_size = @intToEnum(Memory.PtrSize, msib.ptr_size),
-            .base = switch (@intToEnum(Memory.Base.Tag, msib.base_tag)) {
-                .none => .none,
-                .reg => .{ .reg = @intToEnum(Register, msib.base) },
-                .frame => .{ .frame = @intToEnum(bits.FrameIndex, msib.base) },
+    pub fn decode(mem: Memory) encoder.Instruction.Memory {
+        switch (mem.info.mod) {
+            .rm => {
+                if (mem.info.base == .reg and @as(Register, @enumFromInt(mem.base)) == .rip) {
+                    assert(mem.info.index == .none and mem.info.scale == .@"1");
+                    return encoder.Instruction.Memory.rip(mem.info.size, @bitCast(mem.off));
+                }
+                return encoder.Instruction.Memory.sib(mem.info.size, .{
+                    .disp = @bitCast(mem.off),
+                    .base = switch (mem.info.base) {
+                        .none => .none,
+                        .reg => .{ .reg = @enumFromInt(mem.base) },
+                        .frame => .{ .frame = @enumFromInt(mem.base) },
+                        .reloc => .{ .reloc = .{ .atom_index = mem.extra, .sym_index = mem.base } },
+                    },
+                    .scale_index = switch (mem.info.index) {
+                        .none => null,
+                        else => |index| .{ .scale = switch (mem.info.scale) {
+                            inline else => |scale| comptime std.fmt.parseInt(
+                                u4,
+                                @tagName(scale),
+                                10,
+                            ) catch unreachable,
+                        }, .index = index },
+                    },
+                });
             },
-            .scale_index = .{
-                .scale = scale,
-                .index = if (scale > 0) @intToEnum(Register, msib.scale_index >> 4) else undefined,
+            .off => {
+                assert(mem.info.base == .reg);
+                return encoder.Instruction.Memory.moffs(
+                    @enumFromInt(mem.base),
+                    @as(u64, mem.extra) << 32 | mem.off,
+                );
             },
-            .disp = msib.disp,
-        } };
-    }
-};
-
-pub const MemoryRip = struct {
-    /// Size of the pointer.
-    ptr_size: u32,
-    /// Displacement value.
-    disp: i32,
-
-    pub fn encode(mem: Memory) MemoryRip {
-        return .{
-            .ptr_size = @enumToInt(mem.rip.ptr_size),
-            .disp = mem.rip.disp,
-        };
-    }
-
-    pub fn decode(mrip: MemoryRip) Memory {
-        return .{ .rip = .{
-            .ptr_size = @intToEnum(Memory.PtrSize, mrip.ptr_size),
-            .disp = mrip.disp,
-        } };
-    }
-};
-
-pub const MemoryMoffs = struct {
-    /// Segment register.
-    seg: u32,
-    /// Absolute offset wrt to the segment register split between MSB and LSB parts much like
-    /// `Imm64` payload.
-    msb: u32,
-    lsb: u32,
-
-    pub fn encode(seg: Register, offset: u64) MemoryMoffs {
-        return .{
-            .seg = @enumToInt(seg),
-            .msb = @truncate(u32, offset >> 32),
-            .lsb = @truncate(u32, offset >> 0),
-        };
-    }
-
-    pub fn decode(moffs: MemoryMoffs) Memory {
-        return .{ .moffs = .{
-            .seg = @intToEnum(Register, moffs.seg),
-            .offset = @as(u64, moffs.msb) << 32 | @as(u64, moffs.lsb) << 0,
-        } };
+        }
     }
 };
 
@@ -1147,8 +1185,8 @@ pub fn extraData(mir: Mir, comptime T: type, index: u32) struct { data: T, end: 
     inline for (fields) |field| {
         @field(result, field.name) = switch (field.type) {
             u32 => mir.extra[i],
-            i32 => @bitCast(i32, mir.extra[i]),
-            else => @compileError("bad field type"),
+            i32, Memory.Info => @bitCast(mir.extra[i]),
+            else => @compileError("bad field type: " ++ field.name ++ ": " ++ @typeName(field.type)),
         };
         i += 1;
     }
@@ -1164,15 +1202,30 @@ pub const FrameLoc = struct {
 };
 
 pub fn resolveFrameLoc(mir: Mir, mem: Memory) Memory {
-    return switch (mem) {
-        .sib => |sib| switch (sib.base) {
-            .none, .reg => mem,
-            .frame => |index| if (mir.frame_locs.len > 0) Memory.sib(sib.ptr_size, .{
-                .base = .{ .reg = mir.frame_locs.items(.base)[@enumToInt(index)] },
-                .disp = mir.frame_locs.items(.disp)[@enumToInt(index)] + sib.disp,
-                .scale_index = mem.scaleIndex(),
-            }) else mem,
-        },
-        .rip, .moffs => mem,
+    return switch (mem.info.base) {
+        .none, .reg, .reloc => mem,
+        .frame => if (mir.frame_locs.len > 0) Memory{
+            .info = .{
+                .base = .reg,
+                .mod = mem.info.mod,
+                .size = mem.info.size,
+                .index = mem.info.index,
+                .scale = mem.info.scale,
+            },
+            .base = @intFromEnum(mir.frame_locs.items(.base)[mem.base]),
+            .off = @bitCast(mir.frame_locs.items(.disp)[mem.base] + @as(i32, @bitCast(mem.off))),
+            .extra = mem.extra,
+        } else mem,
     };
 }
+
+const assert = std.debug.assert;
+const bits = @import("bits.zig");
+const builtin = @import("builtin");
+const encoder = @import("encoder.zig");
+const std = @import("std");
+
+const IntegerBitSet = std.bit_set.IntegerBitSet;
+const InternPool = @import("../../InternPool.zig");
+const Mir = @This();
+const Register = bits.Register;

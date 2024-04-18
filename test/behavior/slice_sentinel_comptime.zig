@@ -1,3 +1,5 @@
+const builtin = @import("builtin");
+
 test "comptime slice-sentinel in bounds (unterminated)" {
     // array
     comptime {
@@ -25,7 +27,7 @@ test "comptime slice-sentinel in bounds (unterminated)" {
     // vector_ConstPtrSpecialRef
     comptime {
         var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
-        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        var target: [*]u8 = @as([*]u8, @ptrCast(&buf));
         const slice = target[0..3 :'d'];
         _ = slice;
     }
@@ -41,7 +43,7 @@ test "comptime slice-sentinel in bounds (unterminated)" {
     // cvector_ConstPtrSpecialRef
     comptime {
         var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
-        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        var target: [*c]u8 = @as([*c]u8, @ptrCast(&buf));
         const slice = target[0..3 :'d'];
         _ = slice;
     }
@@ -82,7 +84,7 @@ test "comptime slice-sentinel in bounds (end,unterminated)" {
     // vector_ConstPtrSpecialRef
     comptime {
         var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{0xff} ** 10;
-        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        var target: [*]u8 = @as([*]u8, @ptrCast(&buf));
         const slice = target[0..13 :0xff];
         _ = slice;
     }
@@ -98,7 +100,7 @@ test "comptime slice-sentinel in bounds (end,unterminated)" {
     // cvector_ConstPtrSpecialRef
     comptime {
         var buf = [_]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{0xff} ** 10;
-        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        var target: [*c]u8 = @as([*c]u8, @ptrCast(&buf));
         const slice = target[0..13 :0xff];
         _ = slice;
     }
@@ -139,7 +141,7 @@ test "comptime slice-sentinel in bounds (terminated)" {
     // vector_ConstPtrSpecialRef
     comptime {
         var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
-        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        var target: [*]u8 = @as([*]u8, @ptrCast(&buf));
         const slice = target[0..3 :'d'];
         _ = slice;
     }
@@ -155,7 +157,7 @@ test "comptime slice-sentinel in bounds (terminated)" {
     // cvector_ConstPtrSpecialRef
     comptime {
         var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
-        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        var target: [*c]u8 = @as([*c]u8, @ptrCast(&buf));
         const slice = target[0..3 :'d'];
         _ = slice;
     }
@@ -196,7 +198,7 @@ test "comptime slice-sentinel in bounds (on target sentinel)" {
     // vector_ConstPtrSpecialRef
     comptime {
         var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
-        var target: [*]u8 = @ptrCast([*]u8, &buf);
+        var target: [*]u8 = @as([*]u8, @ptrCast(&buf));
         const slice = target[0..14 :0];
         _ = slice;
     }
@@ -212,7 +214,7 @@ test "comptime slice-sentinel in bounds (on target sentinel)" {
     // cvector_ConstPtrSpecialRef
     comptime {
         var buf = [_:0]u8{ 'a', 'b', 'c', 'd' } ++ [_]u8{undefined} ** 10;
-        var target: [*c]u8 = @ptrCast([*c]u8, &buf);
+        var target: [*c]u8 = @as([*c]u8, @ptrCast(&buf));
         const slice = target[0..14 :0];
         _ = slice;
     }

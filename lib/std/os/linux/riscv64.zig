@@ -1,6 +1,6 @@
 const std = @import("../../std.zig");
-const iovec = std.os.iovec;
-const iovec_const = std.os.iovec_const;
+const iovec = std.posix.iovec;
+const iovec_const = std.posix.iovec_const;
 const linux = std.os.linux;
 const SYS = linux.SYS;
 const uid_t = std.os.linux.uid_t;
@@ -13,7 +13,7 @@ const timespec = std.os.linux.timespec;
 pub fn syscall0(number: SYS) usize {
     return asm volatile ("ecall"
         : [ret] "={x10}" (-> usize),
-        : [number] "{x17}" (@enumToInt(number)),
+        : [number] "{x17}" (@intFromEnum(number)),
         : "memory"
     );
 }
@@ -21,7 +21,7 @@ pub fn syscall0(number: SYS) usize {
 pub fn syscall1(number: SYS, arg1: usize) usize {
     return asm volatile ("ecall"
         : [ret] "={x10}" (-> usize),
-        : [number] "{x17}" (@enumToInt(number)),
+        : [number] "{x17}" (@intFromEnum(number)),
           [arg1] "{x10}" (arg1),
         : "memory"
     );
@@ -30,7 +30,7 @@ pub fn syscall1(number: SYS, arg1: usize) usize {
 pub fn syscall2(number: SYS, arg1: usize, arg2: usize) usize {
     return asm volatile ("ecall"
         : [ret] "={x10}" (-> usize),
-        : [number] "{x17}" (@enumToInt(number)),
+        : [number] "{x17}" (@intFromEnum(number)),
           [arg1] "{x10}" (arg1),
           [arg2] "{x11}" (arg2),
         : "memory"
@@ -40,7 +40,7 @@ pub fn syscall2(number: SYS, arg1: usize, arg2: usize) usize {
 pub fn syscall3(number: SYS, arg1: usize, arg2: usize, arg3: usize) usize {
     return asm volatile ("ecall"
         : [ret] "={x10}" (-> usize),
-        : [number] "{x17}" (@enumToInt(number)),
+        : [number] "{x17}" (@intFromEnum(number)),
           [arg1] "{x10}" (arg1),
           [arg2] "{x11}" (arg2),
           [arg3] "{x12}" (arg3),
@@ -51,7 +51,7 @@ pub fn syscall3(number: SYS, arg1: usize, arg2: usize, arg3: usize) usize {
 pub fn syscall4(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize) usize {
     return asm volatile ("ecall"
         : [ret] "={x10}" (-> usize),
-        : [number] "{x17}" (@enumToInt(number)),
+        : [number] "{x17}" (@intFromEnum(number)),
           [arg1] "{x10}" (arg1),
           [arg2] "{x11}" (arg2),
           [arg3] "{x12}" (arg3),
@@ -63,7 +63,7 @@ pub fn syscall4(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize)
 pub fn syscall5(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) usize {
     return asm volatile ("ecall"
         : [ret] "={x10}" (-> usize),
-        : [number] "{x17}" (@enumToInt(number)),
+        : [number] "{x17}" (@intFromEnum(number)),
           [arg1] "{x10}" (arg1),
           [arg2] "{x11}" (arg2),
           [arg3] "{x12}" (arg3),
@@ -84,7 +84,7 @@ pub fn syscall6(
 ) usize {
     return asm volatile ("ecall"
         : [ret] "={x10}" (-> usize),
-        : [number] "{x17}" (@enumToInt(number)),
+        : [number] "{x17}" (@intFromEnum(number)),
           [arg1] "{x10}" (arg1),
           [arg2] "{x11}" (arg2),
           [arg3] "{x12}" (arg3),
@@ -101,36 +101,14 @@ pub extern fn clone(func: CloneFn, stack: usize, flags: u32, arg: usize, ptid: *
 
 pub const restore = restore_rt;
 
-pub fn restore_rt() callconv(.Naked) void {
-    return asm volatile ("ecall"
+pub fn restore_rt() callconv(.Naked) noreturn {
+    asm volatile (
+        \\ ecall
         :
-        : [number] "{x17}" (@enumToInt(SYS.rt_sigreturn)),
+        : [number] "{x17}" (@intFromEnum(SYS.rt_sigreturn)),
         : "memory"
     );
 }
-
-pub const O = struct {
-    pub const CREAT = 0o100;
-    pub const EXCL = 0o200;
-    pub const NOCTTY = 0o400;
-    pub const TRUNC = 0o1000;
-    pub const APPEND = 0o2000;
-    pub const NONBLOCK = 0o4000;
-    pub const DSYNC = 0o10000;
-    pub const SYNC = 0o4010000;
-    pub const RSYNC = 0o4010000;
-    pub const DIRECTORY = 0o200000;
-    pub const NOFOLLOW = 0o400000;
-    pub const CLOEXEC = 0o2000000;
-
-    pub const ASYNC = 0o20000;
-    pub const DIRECT = 0o40000;
-    pub const LARGEFILE = 0o100000;
-    pub const NOATIME = 0o1000000;
-    pub const PATH = 0o10000000;
-    pub const TMPFILE = 0o20200000;
-    pub const NDELAY = NONBLOCK;
-};
 
 pub const F = struct {
     pub const DUPFD = 0;
@@ -245,4 +223,3 @@ pub const Stat = extern struct {
 pub const Elf_Symndx = u32;
 
 pub const VDSO = struct {};
-pub const MAP = struct {};

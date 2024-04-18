@@ -5,8 +5,7 @@ const std = @import("std");
 const math = std.math;
 const mem = std.mem;
 const Allocator = mem.Allocator;
-const debug = std.debug;
-const assert = debug.assert;
+const assert = std.debug.assert;
 const testing = std.testing;
 
 pub const LinearFifoBufferType = union(enum) {
@@ -47,38 +46,41 @@ pub fn LinearFifo(
         // returned a slice into a copy on the stack
         const SliceSelfArg = if (buffer_type == .Static) *Self else Self;
 
-        pub usingnamespace switch (buffer_type) {
-            .Static => struct {
-                pub fn init() Self {
-                    return .{
-                        .allocator = {},
-                        .buf = undefined,
-                        .head = 0,
-                        .count = 0,
-                    };
-                }
-            },
-            .Slice => struct {
-                pub fn init(buf: []T) Self {
-                    return .{
-                        .allocator = {},
-                        .buf = buf,
-                        .head = 0,
-                        .count = 0,
-                    };
-                }
-            },
-            .Dynamic => struct {
-                pub fn init(allocator: Allocator) Self {
-                    return .{
-                        .allocator = allocator,
-                        .buf = &[_]T{},
-                        .head = 0,
-                        .count = 0,
-                    };
-                }
-            },
+        pub const init = switch (buffer_type) {
+            .Static => initStatic,
+            .Slice => initSlice,
+            .Dynamic => initDynamic,
         };
+
+        fn initStatic() Self {
+            comptime assert(buffer_type == .Static);
+            return .{
+                .allocator = {},
+                .buf = undefined,
+                .head = 0,
+                .count = 0,
+            };
+        }
+
+        fn initSlice(buf: []T) Self {
+            comptime assert(buffer_type == .Slice);
+            return .{
+                .allocator = {},
+                .buf = buf,
+                .head = 0,
+                .count = 0,
+            };
+        }
+
+        fn initDynamic(allocator: Allocator) Self {
+            comptime assert(buffer_type == .Dynamic);
+            return .{
+                .allocator = allocator,
+                .buf = &.{},
+                .head = 0,
+                .count = 0,
+            };
+        }
 
         pub fn deinit(self: Self) void {
             if (buffer_type == .Dynamic) self.allocator.free(self.buf);
@@ -117,8 +119,6 @@ pub fn LinearFifo(
             }
         }
 
-        pub const ensureCapacity = @compileError("deprecated; call `ensureUnusedCapacity` or `ensureTotalCapacity`");
-
         /// Ensure that the buffer can fit at least `size` items
         pub fn ensureTotalCapacity(self: *Self, size: usize) !void {
             if (self.buf.len >= size) return;
@@ -152,7 +152,7 @@ pub fn LinearFifo(
                 start -= self.buf.len;
                 return self.buf[start .. start + (self.count - offset)];
             } else {
-                const end = math.min(self.head + self.count, self.buf.len);
+                const end = @min(self.head + self.count, self.buf.len);
                 return self.buf[start..end];
             }
         }
@@ -245,7 +245,7 @@ pub fn LinearFifo(
             return self.buf.len - self.count;
         }
 
-        /// Returns the first section of writable buffer
+        /// Returns the first section of writable buffer.
         /// Note that this may be of length 0
         pub fn writableSlice(self: SliceSelfArg, offset: usize) []T {
             if (offset > self.buf.len) return &[_]T{};
@@ -374,8 +374,8 @@ pub fn LinearFifo(
             return self.buf[index];
         }
 
-        /// Pump data from a reader into a writer
-        /// stops when reader returns 0 bytes (EOF)
+        /// Pump data from a reader into a writer.
+        /// Stops when reader returns 0 bytes (EOF).
         /// Buffer size must be set before calling; a buffer length of 0 is invalid.
         pub fn pump(self: *Self, src_reader: anytype, dest_writer: anytype) !void {
             assert(self.buf.len > 0);
@@ -507,7 +507,7 @@ test "LinearFifo(u8, .Dynamic)" {
     }
 }
 
-test "LinearFifo" {
+test LinearFifo {
     inline for ([_]type{ u1, u8, u16, u64 }) |T| {
         inline for ([_]LinearFifoBufferType{ LinearFifoBufferType{ .Static = 32 }, .Slice, .Dynamic }) |bt| {
             const FifoType = LinearFifo(T, bt);

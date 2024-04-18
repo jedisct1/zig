@@ -23,19 +23,19 @@ pub fn log(comptime T: type, base: T, x: T) T {
         .ComptimeFloat => {
             return @as(comptime_float, @log(@as(f64, x)) / @log(float_base));
         },
+
         .ComptimeInt => {
-            return @as(comptime_int, @floor(@log(@as(f64, x)) / @log(float_base)));
+            return @as(comptime_int, math.log_int(comptime_int, base, x));
         },
 
-        // TODO implement integer log without using float math
         .Int => |IntType| switch (IntType.signedness) {
             .signed => @compileError("log not implemented for signed integers"),
-            .unsigned => return @floatToInt(T, @floor(@log(@intToFloat(f64, x)) / @log(float_base))),
+            .unsigned => return @as(T, math.log_int(T, base, x)),
         },
 
         .Float => {
             switch (T) {
-                f32 => return @floatCast(f32, @log(@as(f64, x)) / @log(float_base)),
+                f32 => return @as(f32, @floatCast(@log(@as(f64, x)) / @log(float_base))),
                 f64 => return @log(x) / @log(float_base),
                 else => @compileError("log not implemented for " ++ @typeName(T)),
             }
@@ -47,7 +47,7 @@ pub fn log(comptime T: type, base: T, x: T) T {
     }
 }
 
-test "math.log integer" {
+test "log integer" {
     try expect(log(u8, 2, 0x1) == 0);
     try expect(log(u8, 2, 0x2) == 1);
     try expect(log(u16, 2, 0x72) == 6);
@@ -55,7 +55,7 @@ test "math.log integer" {
     try expect(log(u64, 2, 0x7FF0123456789ABC) == 62);
 }
 
-test "math.log float" {
+test "log float" {
     const epsilon = 0.000001;
 
     try expect(math.approxEqAbs(f32, log(f32, 6, 0.23947), -0.797723, epsilon));
@@ -63,7 +63,7 @@ test "math.log float" {
     try expect(math.approxEqAbs(f64, log(f64, 123897, 12389216414), 1.981724596, epsilon));
 }
 
-test "math.log float_special" {
+test "log float_special" {
     try expect(log(f32, 2, 0.2301974) == math.log2(@as(f32, 0.2301974)));
     try expect(log(f32, 10, 0.2301974) == math.log10(@as(f32, 0.2301974)));
 

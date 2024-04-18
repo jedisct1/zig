@@ -11,8 +11,8 @@ const cmath = math.complex;
 const Complex = cmath.Complex;
 
 /// Returns the hyperbolic tangent of z.
-pub fn tanh(z: anytype) @TypeOf(z) {
-    const T = @TypeOf(z.re);
+pub fn tanh(z: anytype) Complex(@TypeOf(z.re, z.im)) {
+    const T = @TypeOf(z.re, z.im);
     return switch (T) {
         f32 => tanh32(z),
         f64 => tanh64(z),
@@ -24,7 +24,7 @@ fn tanh32(z: Complex(f32)) Complex(f32) {
     const x = z.re;
     const y = z.im;
 
-    const hx = @bitCast(u32, x);
+    const hx = @as(u32, @bitCast(x));
     const ix = hx & 0x7fffffff;
 
     if (ix >= 0x7f800000) {
@@ -32,7 +32,7 @@ fn tanh32(z: Complex(f32)) Complex(f32) {
             const r = if (y == 0) y else x * y;
             return Complex(f32).init(x, r);
         }
-        const xx = @bitCast(f32, hx - 0x40000000);
+        const xx = @as(f32, @bitCast(hx - 0x40000000));
         const r = if (math.isInf(y)) y else @sin(y) * @cos(y);
         return Complex(f32).init(xx, math.copysign(@as(f32, 0.0), r));
     }
@@ -44,7 +44,7 @@ fn tanh32(z: Complex(f32)) Complex(f32) {
 
     // x >= 11
     if (ix >= 0x41300000) {
-        const exp_mx = @exp(-@fabs(x));
+        const exp_mx = @exp(-@abs(x));
         return Complex(f32).init(math.copysign(@as(f32, 1.0), x), 4 * @sin(y) * @cos(y) * exp_mx * exp_mx);
     }
 
@@ -62,11 +62,11 @@ fn tanh64(z: Complex(f64)) Complex(f64) {
     const x = z.re;
     const y = z.im;
 
-    const fx = @bitCast(u64, x);
+    const fx: u64 = @bitCast(x);
     // TODO: zig should allow this conversion implicitly because it can notice that the value necessarily
     // fits in range.
-    const hx = @intCast(u32, fx >> 32);
-    const lx = @truncate(u32, fx);
+    const hx: u32 = @intCast(fx >> 32);
+    const lx: u32 = @truncate(fx);
     const ix = hx & 0x7fffffff;
 
     if (ix >= 0x7ff00000) {
@@ -75,7 +75,7 @@ fn tanh64(z: Complex(f64)) Complex(f64) {
             return Complex(f64).init(x, r);
         }
 
-        const xx = @bitCast(f64, (@as(u64, hx - 0x40000000) << 32) | lx);
+        const xx: f64 = @bitCast((@as(u64, hx - 0x40000000) << 32) | lx);
         const r = if (math.isInf(y)) y else @sin(y) * @cos(y);
         return Complex(f64).init(xx, math.copysign(@as(f64, 0.0), r));
     }
@@ -87,7 +87,7 @@ fn tanh64(z: Complex(f64)) Complex(f64) {
 
     // x >= 22
     if (ix >= 0x40360000) {
-        const exp_mx = @exp(-@fabs(x));
+        const exp_mx = @exp(-@abs(x));
         return Complex(f64).init(math.copysign(@as(f64, 1.0), x), 4 * @sin(y) * @cos(y) * exp_mx * exp_mx);
     }
 
@@ -103,7 +103,7 @@ fn tanh64(z: Complex(f64)) Complex(f64) {
 
 const epsilon = 0.0001;
 
-test "complex.ctanh32" {
+test tanh32 {
     const a = Complex(f32).init(5, 3);
     const c = tanh(a);
 
@@ -111,7 +111,7 @@ test "complex.ctanh32" {
     try testing.expect(math.approxEqAbs(f32, c.im, -0.000025, epsilon));
 }
 
-test "complex.ctanh64" {
+test tanh64 {
     const a = Complex(f64).init(5, 3);
     const c = tanh(a);
 

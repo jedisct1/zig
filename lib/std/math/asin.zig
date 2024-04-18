@@ -36,7 +36,7 @@ fn r32(z: f32) f32 {
 fn asin32(x: f32) f32 {
     const pio2 = 1.570796326794896558e+00;
 
-    const hx: u32 = @bitCast(u32, x);
+    const hx: u32 = @as(u32, @bitCast(x));
     const ix: u32 = hx & 0x7FFFFFFF;
 
     // |x| >= 1
@@ -60,7 +60,7 @@ fn asin32(x: f32) f32 {
     }
 
     // 1 > |x| >= 0.5
-    const z = (1 - @fabs(x)) * 0.5;
+    const z = (1 - @abs(x)) * 0.5;
     const s = @sqrt(z);
     const fx = pio2 - 2 * (s + s * r32(z));
 
@@ -92,13 +92,13 @@ fn asin64(x: f64) f64 {
     const pio2_hi: f64 = 1.57079632679489655800e+00;
     const pio2_lo: f64 = 6.12323399573676603587e-17;
 
-    const ux = @bitCast(u64, x);
-    const hx = @intCast(u32, ux >> 32);
+    const ux = @as(u64, @bitCast(x));
+    const hx = @as(u32, @intCast(ux >> 32));
     const ix = hx & 0x7FFFFFFF;
 
     // |x| >= 1 or nan
     if (ix >= 0x3FF00000) {
-        const lx = @intCast(u32, ux & 0xFFFFFFFF);
+        const lx = @as(u32, @intCast(ux & 0xFFFFFFFF));
 
         // asin(1) = +-pi/2 with inexact
         if ((ix - 0x3FF00000) | lx == 0) {
@@ -119,7 +119,7 @@ fn asin64(x: f64) f64 {
     }
 
     // 1 > |x| >= 0.5
-    const z = (1 - @fabs(x)) * 0.5;
+    const z = (1 - @abs(x)) * 0.5;
     const s = @sqrt(z);
     const r = r64(z);
     var fx: f64 = undefined;
@@ -128,8 +128,8 @@ fn asin64(x: f64) f64 {
     if (ix >= 0x3FEF3333) {
         fx = pio2_hi - 2 * (s + s * r);
     } else {
-        const jx = @bitCast(u64, s);
-        const df = @bitCast(f64, jx & 0xFFFFFFFF00000000);
+        const jx = @as(u64, @bitCast(s));
+        const df = @as(f64, @bitCast(jx & 0xFFFFFFFF00000000));
         const c = (z - df * df) / (s + df);
         fx = 0.5 * pio2_hi - (2 * s * r - (pio2_lo - 2 * c) - (0.5 * pio2_hi - 2 * df));
     }
@@ -141,12 +141,12 @@ fn asin64(x: f64) f64 {
     }
 }
 
-test "math.asin" {
+test asin {
     try expect(asin(@as(f32, 0.0)) == asin32(0.0));
     try expect(asin(@as(f64, 0.0)) == asin64(0.0));
 }
 
-test "math.asin32" {
+test asin32 {
     const epsilon = 0.000001;
 
     try expect(math.approxEqAbs(f32, asin32(0.0), 0.0, epsilon));
@@ -157,7 +157,7 @@ test "math.asin32" {
     try expect(math.approxEqAbs(f32, asin32(0.8923), 1.102415, epsilon));
 }
 
-test "math.asin64" {
+test asin64 {
     const epsilon = 0.000001;
 
     try expect(math.approxEqAbs(f64, asin64(0.0), 0.0, epsilon));
@@ -168,16 +168,16 @@ test "math.asin64" {
     try expect(math.approxEqAbs(f64, asin64(0.8923), 1.102415, epsilon));
 }
 
-test "math.asin32.special" {
-    try expect(asin32(0.0) == 0.0);
-    try expect(asin32(-0.0) == -0.0);
+test "asin32.special" {
+    try expect(math.isPositiveZero(asin32(0.0)));
+    try expect(math.isNegativeZero(asin32(-0.0)));
     try expect(math.isNan(asin32(-2)));
     try expect(math.isNan(asin32(1.5)));
 }
 
-test "math.asin64.special" {
-    try expect(asin64(0.0) == 0.0);
-    try expect(asin64(-0.0) == -0.0);
+test "asin64.special" {
+    try expect(math.isPositiveZero(asin64(0.0)));
+    try expect(math.isNegativeZero(asin64(-0.0)));
     try expect(math.isNan(asin64(-2)));
     try expect(math.isNan(asin64(1.5)));
 }

@@ -2,8 +2,8 @@ const std = @import("../std.zig");
 const assert = std.debug.assert;
 const maxInt = std.math.maxInt;
 const builtin = @import("builtin");
-const iovec = std.os.iovec;
-const iovec_const = std.os.iovec_const;
+const iovec = std.posix.iovec;
+const iovec_const = std.posix.iovec_const;
 
 extern "c" fn __errno() *c_int;
 pub const _errno = __errno;
@@ -14,20 +14,11 @@ pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*an
 pub extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
 
 pub extern "c" fn getthrid() pid_t;
-pub extern "c" fn pipe2(fds: *[2]fd_t, flags: u32) c_int;
+pub extern "c" fn pipe2(fds: *[2]fd_t, flags: std.c.O) c_int;
 
-pub extern "c" fn getdents(fd: c_int, buf_ptr: [*]u8, nbytes: usize) usize;
+pub extern "c" fn getdents(fd: c_int, buf_ptr: [*]u8, nbytes: usize) c_int;
 pub extern "c" fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) c_int;
 
-pub const pthread_mutex_t = extern struct {
-    inner: ?*anyopaque = null,
-};
-pub const pthread_cond_t = extern struct {
-    inner: ?*anyopaque = null,
-};
-pub const pthread_rwlock_t = extern struct {
-    ptr: ?*anyopaque = null,
-};
 pub const pthread_spinlock_t = extern struct {
     inner: ?*anyopaque = null,
 };
@@ -251,48 +242,36 @@ pub const EAI_MAX = 15;
 
 pub const msghdr = extern struct {
     /// optional address
-    msg_name: ?*sockaddr,
-
+    name: ?*sockaddr,
     /// size of address
-    msg_namelen: socklen_t,
-
+    namelen: socklen_t,
     /// scatter/gather array
-    msg_iov: [*]iovec,
-
-    /// # elements in msg_iov
-    msg_iovlen: c_uint,
-
+    iov: [*]iovec,
+    /// # elements in iov
+    iovlen: c_uint,
     /// ancillary data
-    msg_control: ?*anyopaque,
-
+    control: ?*anyopaque,
     /// ancillary data buffer len
-    msg_controllen: socklen_t,
-
+    controllen: socklen_t,
     /// flags on received message
-    msg_flags: c_int,
+    flags: c_int,
 };
 
 pub const msghdr_const = extern struct {
     /// optional address
-    msg_name: ?*const sockaddr,
-
+    name: ?*const sockaddr,
     /// size of address
-    msg_namelen: socklen_t,
-
+    namelen: socklen_t,
     /// scatter/gather array
-    msg_iov: [*]const iovec_const,
-
-    /// # elements in msg_iov
-    msg_iovlen: c_uint,
-
+    iov: [*]const iovec_const,
+    /// # elements in iov
+    iovlen: c_uint,
     /// ancillary data
-    msg_control: ?*const anyopaque,
-
+    control: ?*const anyopaque,
     /// ancillary data buffer len
-    msg_controllen: socklen_t,
-
+    controllen: socklen_t,
     /// flags on received message
-    msg_flags: c_int,
+    flags: c_int,
 };
 
 pub const Stat = extern struct {
@@ -348,17 +327,13 @@ pub const timezone = extern struct {
 pub const MAXNAMLEN = 255;
 
 pub const dirent = extern struct {
-    d_fileno: ino_t,
-    d_off: off_t,
-    d_reclen: u16,
-    d_type: u8,
-    d_namlen: u8,
-    __d_padding: [4]u8,
-    d_name: [MAXNAMLEN + 1]u8,
-
-    pub fn reclen(self: dirent) u16 {
-        return self.d_reclen;
-    }
+    fileno: ino_t,
+    off: off_t,
+    reclen: u16,
+    type: u8,
+    namlen: u8,
+    _: u32 align(1) = 0,
+    name: [MAXNAMLEN + 1]u8,
 };
 
 pub const in_port_t = u16;
@@ -413,6 +388,8 @@ pub const sockaddr = extern struct {
     };
 };
 
+pub const IFNAMESIZE = 16;
+
 pub const AI = struct {
     /// get address to use bind()
     pub const PASSIVE = 1;
@@ -448,24 +425,6 @@ pub const CLOCK = struct {
     pub const THREAD_CPUTIME_ID = 4;
 };
 
-pub const MAP = struct {
-    pub const FAILED = @intToPtr(*anyopaque, maxInt(usize));
-    pub const SHARED = 0x0001;
-    pub const PRIVATE = 0x0002;
-    pub const FIXED = 0x0010;
-    pub const RENAME = 0;
-    pub const NORESERVE = 0;
-    pub const INHERIT = 0;
-    pub const HASSEMAPHORE = 0;
-    pub const TRYFIXED = 0;
-
-    pub const FILE = 0;
-    pub const ANON = 0x1000;
-    pub const ANONYMOUS = ANON;
-    pub const STACK = 0x4000;
-    pub const CONCEAL = 0x8000;
-};
-
 pub const MSF = struct {
     pub const ASYNC = 1;
     pub const INVALIDATE = 2;
@@ -478,7 +437,7 @@ pub const W = struct {
     pub const CONTINUED = 8;
 
     pub fn EXITSTATUS(s: u32) u8 {
-        return @intCast(u8, (s >> 8) & 0xff);
+        return @as(u8, @intCast((s >> 8) & 0xff));
     }
     pub fn TERMSIG(s: u32) u32 {
         return (s & 0x7f);
@@ -518,47 +477,6 @@ pub const F_OK = 0; // test for existence of file
 pub const X_OK = 1; // test for execute or search permission
 pub const W_OK = 2; // test for write permission
 pub const R_OK = 4; // test for read permission
-
-pub const O = struct {
-    /// open for reading only
-    pub const RDONLY = 0x00000000;
-    /// open for writing only
-    pub const WRONLY = 0x00000001;
-    /// open for reading and writing
-    pub const RDWR = 0x00000002;
-    /// mask for above modes
-    pub const ACCMODE = 0x00000003;
-    /// no delay
-    pub const NONBLOCK = 0x00000004;
-    /// set append mode
-    pub const APPEND = 0x00000008;
-    /// open with shared file lock
-    pub const SHLOCK = 0x00000010;
-    /// open with exclusive file lock
-    pub const EXLOCK = 0x00000020;
-    /// signal pgrp when data ready
-    pub const ASYNC = 0x00000040;
-    /// synchronous writes
-    pub const SYNC = 0x00000080;
-    /// don't follow symlinks on the last
-    pub const NOFOLLOW = 0x00000100;
-    /// create if nonexistent
-    pub const CREAT = 0x00000200;
-    /// truncate to zero length
-    pub const TRUNC = 0x00000400;
-    /// error if already exists
-    pub const EXCL = 0x00000800;
-    /// don't assign controlling terminal
-    pub const NOCTTY = 0x00008000;
-    /// write: I/O data completion
-    pub const DSYNC = SYNC;
-    /// read: I/O completion as for write
-    pub const RSYNC = SYNC;
-    /// fail if not a directory
-    pub const DIRECTORY = 0x20000;
-    /// set close on exec
-    pub const CLOEXEC = 0x10000;
-};
 
 pub const F = struct {
     pub const DUPFD = 0;
@@ -852,125 +770,12 @@ pub const AUTH = struct {
     pub const ALLOW: c_int = (OKAY | ROOTOKAY | SECURE);
 };
 
-// Term
-pub const V = struct {
-    pub const EOF = 0; // ICANON
-    pub const EOL = 1; // ICANON
-    pub const EOL2 = 2; // ICANON
-    pub const ERASE = 3; // ICANON
-    pub const WERASE = 4; // ICANON
-    pub const KILL = 5; // ICANON
-    pub const REPRINT = 6; // ICANON
-    //  7    spare 1
-    pub const INTR = 8; // ISIG
-    pub const QUIT = 9; // ISIG
-    pub const SUSP = 10; // ISIG
-    pub const DSUSP = 11; // ISIG
-    pub const START = 12; // IXON, IXOFF
-    pub const STOP = 13; // IXON, IXOFF
-    pub const LNEXT = 14; // IEXTEN
-    pub const DISCARD = 15; // IEXTEN
-    pub const MIN = 16; // !ICANON
-    pub const TIME = 17; // !ICANON
-    pub const STATUS = 18; // ICANON
-    //  19      spare 2
+pub const TCSA = enum(c_uint) {
+    NOW,
+    DRAIN,
+    FLUSH,
+    _,
 };
-
-pub const tcflag_t = c_uint;
-pub const speed_t = c_uint;
-pub const cc_t = u8;
-
-pub const NCCS = 20;
-
-// Input flags - software input processing
-pub const IGNBRK: tcflag_t = 0x00000001; // ignore BREAK condition
-pub const BRKINT: tcflag_t = 0x00000002; // map BREAK to SIGINT
-pub const IGNPAR: tcflag_t = 0x00000004; // ignore (discard) parity errors
-pub const PARMRK: tcflag_t = 0x00000008; // mark parity and framing errors
-pub const INPCK: tcflag_t = 0x00000010; // enable checking of parity errors
-pub const ISTRIP: tcflag_t = 0x00000020; // strip 8th bit off chars
-pub const INLCR: tcflag_t = 0x00000040; // map NL into CR
-pub const IGNCR: tcflag_t = 0x00000080; // ignore CR
-pub const ICRNL: tcflag_t = 0x00000100; // map CR to NL (ala CRMOD)
-pub const IXON: tcflag_t = 0x00000200; // enable output flow control
-pub const IXOFF: tcflag_t = 0x00000400; // enable input flow control
-pub const IXANY: tcflag_t = 0x00000800; // any char will restart after stop
-pub const IUCLC: tcflag_t = 0x00001000; // translate upper to lower case
-pub const IMAXBEL: tcflag_t = 0x00002000; // ring bell on input queue full
-
-// Output flags - software output processing
-pub const OPOST: tcflag_t = 0x00000001; // enable following output processing
-pub const ONLCR: tcflag_t = 0x00000002; // map NL to CR-NL (ala CRMOD)
-pub const OXTABS: tcflag_t = 0x00000004; // expand tabs to spaces
-pub const ONOEOT: tcflag_t = 0x00000008; // discard EOT's (^D) on output
-pub const OCRNL: tcflag_t = 0x00000010; // map CR to NL
-pub const OLCUC: tcflag_t = 0x00000020; // translate lower case to upper case
-pub const ONOCR: tcflag_t = 0x00000040; // No CR output at column 0
-pub const ONLRET: tcflag_t = 0x00000080; // NL performs the CR function
-
-// Control flags - hardware control of terminal
-pub const CIGNORE: tcflag_t = 0x00000001; // ignore control flags
-pub const CSIZE: tcflag_t = 0x00000300; // character size mask
-pub const CS5: tcflag_t = 0x00000000; // 5 bits (pseudo)
-pub const CS6: tcflag_t = 0x00000100; // 6 bits
-pub const CS7: tcflag_t = 0x00000200; // 7 bits
-pub const CS8: tcflag_t = 0x00000300; // 8 bits
-pub const CSTOPB: tcflag_t = 0x00000400; // send 2 stop bits
-pub const CREAD: tcflag_t = 0x00000800; // enable receiver
-pub const PARENB: tcflag_t = 0x00001000; // parity enable
-pub const PARODD: tcflag_t = 0x00002000; // odd parity, else even
-pub const HUPCL: tcflag_t = 0x00004000; // hang up on last close
-pub const CLOCAL: tcflag_t = 0x00008000; // ignore modem status lines
-pub const CRTSCTS: tcflag_t = 0x00010000; // RTS/CTS full-duplex flow control
-pub const CRTS_IFLOW: tcflag_t = CRTSCTS; // XXX compat
-pub const CCTS_OFLOW: tcflag_t = CRTSCTS; // XXX compat
-pub const MDMBUF: tcflag_t = 0x00100000; // DTR/DCD hardware flow control
-pub const CHWFLOW: tcflag_t = (MDMBUF | CRTSCTS); // all types of hw flow control
-
-pub const termios = extern struct {
-    iflag: tcflag_t, // input flags
-    oflag: tcflag_t, // output flags
-    cflag: tcflag_t, // control flags
-    lflag: tcflag_t, // local flags
-    cc: [NCCS]cc_t, // control chars
-    ispeed: c_int, // input speed
-    ospeed: c_int, // output speed
-};
-
-// Commands passed to tcsetattr() for setting the termios structure.
-pub const TCSA = struct {
-    pub const NOW = 0; // make change immediate
-    pub const DRAIN = 1; // drain output, then change
-    pub const FLUSH = 2; // drain output, flush input
-    pub const SOFT = 0x10; // flag - don't alter h.w. state
-};
-
-// Standard speeds
-pub const B0 = 0;
-pub const B50 = 50;
-pub const B75 = 75;
-pub const B110 = 110;
-pub const B134 = 134;
-pub const B150 = 150;
-pub const B200 = 200;
-pub const B300 = 300;
-pub const B600 = 600;
-pub const B1200 = 1200;
-pub const B1800 = 1800;
-pub const B2400 = 2400;
-pub const B4800 = 4800;
-pub const B9600 = 9600;
-pub const B19200 = 19200;
-pub const B38400 = 38400;
-pub const B7200 = 7200;
-pub const B14400 = 14400;
-pub const B28800 = 28800;
-pub const B57600 = 57600;
-pub const B76800 = 76800;
-pub const B115200 = 115200;
-pub const B230400 = 230400;
-pub const EXTA = 19200;
-pub const EXTB = 38400;
 
 pub const TCIFLUSH = 1;
 pub const TCOFLUSH = 2;
@@ -990,11 +795,11 @@ pub const winsize = extern struct {
 const NSIG = 33;
 
 pub const SIG = struct {
-    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
-    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
-    pub const CATCH = @intToPtr(?Sigaction.handler_fn, 2);
-    pub const HOLD = @intToPtr(?Sigaction.handler_fn, 3);
+    pub const DFL: ?Sigaction.handler_fn = @ptrFromInt(0);
+    pub const IGN: ?Sigaction.handler_fn = @ptrFromInt(1);
+    pub const ERR: ?Sigaction.handler_fn = @ptrFromInt(maxInt(usize));
+    pub const CATCH: ?Sigaction.handler_fn = @ptrFromInt(2);
+    pub const HOLD: ?Sigaction.handler_fn = @ptrFromInt(3);
 
     pub const HUP = 1;
     pub const INT = 2;
@@ -1037,8 +842,8 @@ pub const SIG = struct {
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
-    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
+    pub const handler_fn = *align(1) const fn (i32) callconv(.C) void;
+    pub const sigaction_fn = *const fn (i32, *const siginfo_t, ?*anyopaque) callconv(.C) void;
 
     /// signal handler
     handler: extern union {
@@ -1076,7 +881,7 @@ pub const siginfo_t = extern struct {
             },
         },
         fault: extern struct {
-            addr: ?*anyopaque,
+            addr: *allowzero anyopaque,
             trapno: c_int,
         },
         __pad: [128 - 3 * @sizeOf(c_int)]u8,
@@ -1091,55 +896,51 @@ comptime {
         std.debug.assert(@sizeOf(siginfo_t) == 136);
 }
 
-pub usingnamespace switch (builtin.cpu.arch) {
-    .x86_64 => struct {
-        pub const ucontext_t = extern struct {
-            sc_rdi: c_long,
-            sc_rsi: c_long,
-            sc_rdx: c_long,
-            sc_rcx: c_long,
-            sc_r8: c_long,
-            sc_r9: c_long,
-            sc_r10: c_long,
-            sc_r11: c_long,
-            sc_r12: c_long,
-            sc_r13: c_long,
-            sc_r14: c_long,
-            sc_r15: c_long,
-            sc_rbp: c_long,
-            sc_rbx: c_long,
-            sc_rax: c_long,
-            sc_gs: c_long,
-            sc_fs: c_long,
-            sc_es: c_long,
-            sc_ds: c_long,
-            sc_trapno: c_long,
-            sc_err: c_long,
-            sc_rip: c_long,
-            sc_cs: c_long,
-            sc_rflags: c_long,
-            sc_rsp: c_long,
-            sc_ss: c_long,
+pub const ucontext_t = switch (builtin.cpu.arch) {
+    .x86_64 => extern struct {
+        sc_rdi: c_long,
+        sc_rsi: c_long,
+        sc_rdx: c_long,
+        sc_rcx: c_long,
+        sc_r8: c_long,
+        sc_r9: c_long,
+        sc_r10: c_long,
+        sc_r11: c_long,
+        sc_r12: c_long,
+        sc_r13: c_long,
+        sc_r14: c_long,
+        sc_r15: c_long,
+        sc_rbp: c_long,
+        sc_rbx: c_long,
+        sc_rax: c_long,
+        sc_gs: c_long,
+        sc_fs: c_long,
+        sc_es: c_long,
+        sc_ds: c_long,
+        sc_trapno: c_long,
+        sc_err: c_long,
+        sc_rip: c_long,
+        sc_cs: c_long,
+        sc_rflags: c_long,
+        sc_rsp: c_long,
+        sc_ss: c_long,
 
-            sc_fpstate: *anyopaque, // struct fxsave64 *
-            __sc_unused: c_int,
-            sc_mask: c_int,
-            sc_cookie: c_long,
-        };
+        sc_fpstate: *anyopaque, // struct fxsave64 *
+        __sc_unused: c_int,
+        sc_mask: c_int,
+        sc_cookie: c_long,
     },
-    .aarch64 => struct {
-        pub const ucontext_t = extern struct {
-            __sc_unused: c_int,
-            sc_mask: c_int,
-            sc_sp: c_ulong,
-            sc_lr: c_ulong,
-            sc_elr: c_ulong,
-            sc_spsr: c_ulong,
-            sc_x: [30]c_ulong,
-            sc_cookie: c_long,
-        };
+    .aarch64 => extern struct {
+        __sc_unused: c_int,
+        sc_mask: c_int,
+        sc_sp: c_ulong,
+        sc_lr: c_ulong,
+        sc_elr: c_ulong,
+        sc_spsr: c_ulong,
+        sc_x: [30]c_ulong,
+        sc_cookie: c_long,
     },
-    else => struct {},
+    else => @compileError("missing ucontext_t type definition"),
 };
 
 pub const sigset_t = c_uint;
@@ -1339,21 +1140,6 @@ pub const S = struct {
     pub fn ISSOCK(m: u32) bool {
         return m & IFMT == IFSOCK;
     }
-};
-
-pub const AT = struct {
-    /// Magic value that specify the use of the current working directory
-    /// to determine the target of relative file paths in the openat() and
-    /// similar syscalls.
-    pub const FDCWD = -100;
-    /// Check access using effective user and group ID
-    pub const EACCESS = 0x01;
-    /// Do not follow symbolic links
-    pub const SYMLINK_NOFOLLOW = 0x02;
-    /// Follow symbolic link
-    pub const SYMLINK_FOLLOW = 0x04;
-    /// Remove directory instead of file
-    pub const REMOVEDIR = 0x08;
 };
 
 pub const HOST_NAME_MAX = 255;
@@ -1606,28 +1392,37 @@ pub const KERN = struct {
     pub const PROC_NENV = 4;
 };
 
-pub const HW_MACHINE = 1;
-pub const HW_MODEL = 2;
-pub const HW_NCPU = 3;
-pub const HW_BYTEORDER = 4;
-pub const HW_PHYSMEM = 5;
-pub const HW_USERMEM = 6;
-pub const HW_PAGESIZE = 7;
-pub const HW_DISKNAMES = 8;
-pub const HW_DISKSTATS = 9;
-pub const HW_DISKCOUNT = 10;
-pub const HW_SENSORS = 11;
-pub const HW_CPUSPEED = 12;
-pub const HW_SETPERF = 13;
-pub const HW_VENDOR = 14;
-pub const HW_PRODUCT = 15;
-pub const HW_VERSION = 16;
-pub const HW_SERIALNO = 17;
-pub const HW_UUID = 18;
-pub const HW_PHYSMEM64 = 19;
-pub const HW_USERMEM64 = 20;
-pub const HW_NCPUFOUND = 21;
-pub const HW_ALLOWPOWERDOWN = 22;
-pub const HW_PERFPOLICY = 23;
-pub const HW_SMT = 24;
-pub const HW_NCPUONLINE = 25;
+pub const HW = struct {
+    pub const MACHINE = 1;
+    pub const MODEL = 2;
+    pub const NCPU = 3;
+    pub const BYTEORDER = 4;
+    pub const PHYSMEM = 5;
+    pub const USERMEM = 6;
+    pub const PAGESIZE = 7;
+    pub const DISKNAMES = 8;
+    pub const DISKSTATS = 9;
+    pub const DISKCOUNT = 10;
+    pub const SENSORS = 11;
+    pub const CPUSPEED = 12;
+    pub const SETPERF = 13;
+    pub const VENDOR = 14;
+    pub const PRODUCT = 15;
+    pub const VERSION = 16;
+    pub const SERIALNO = 17;
+    pub const UUID = 18;
+    pub const PHYSMEM64 = 19;
+    pub const USERMEM64 = 20;
+    pub const NCPUFOUND = 21;
+    pub const ALLOWPOWERDOWN = 22;
+    pub const PERFPOLICY = 23;
+    pub const SMT = 24;
+    pub const NCPUONLINE = 25;
+    pub const POWER = 26;
+};
+
+pub const PTHREAD_STACK_MIN = switch (builtin.cpu.arch) {
+    .sparc64 => 1 << 13,
+    .mips64 => 1 << 14,
+    else => 1 << 12,
+};

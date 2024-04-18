@@ -5,8 +5,7 @@ fn get_foo() fn (*u8) usize {
     comptime {
         return struct {
             fn func(ptr: *u8) usize {
-                var u = @ptrToInt(ptr);
-                return u;
+                return @intFromPtr(ptr);
             }
         }.func;
     }
@@ -14,5 +13,5 @@ fn get_foo() fn (*u8) usize {
 
 test "define a function in an anonymous struct in comptime" {
     const foo = get_foo();
-    try expect(foo(@intToPtr(*u8, 12345)) == 12345);
+    try expect(foo(@as(*u8, @ptrFromInt(12345))) == 12345);
 }

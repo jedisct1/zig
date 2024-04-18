@@ -30,7 +30,7 @@ export fn entry6() void {
 }
 export fn entry7() void {
     _ = @sizeOf(packed struct {
-        x: enum { A, B },
+        x: enum(u1) { A, B },
     });
 }
 export fn entry8() void {
@@ -65,6 +65,17 @@ export fn entry12() void {
         x: packed struct { a: []u8 },
     });
 }
+export fn entry13() void {
+    _ = @sizeOf(packed struct {
+        x: *type,
+    });
+}
+export fn entry14() void {
+    const E = enum { implicit, backing, type };
+    _ = @sizeOf(packed struct {
+        x: E,
+    });
+}
 
 // error
 // backend=llvm
@@ -84,8 +95,13 @@ export fn entry12() void {
 // :59:18: note: union declared here
 // :28:12: error: packed structs cannot contain fields of type '?anyerror'
 // :28:12: note: type has no guaranteed in-memory representation
-// :38:12: error: packed structs cannot contain fields of type 'fn() void'
+// :38:12: error: packed structs cannot contain fields of type 'fn () void'
 // :38:12: note: type has no guaranteed in-memory representation
 // :38:12: note: use '*const ' to make a function pointer type
 // :65:31: error: packed structs cannot contain fields of type '[]u8'
 // :65:31: note: slices have no guaranteed in-memory representation
+// :70:12: error: packed structs cannot contain fields of type '*type'
+// :70:12: note: comptime-only pointer has no guaranteed in-memory representation
+// :70:12: note: types are not available at runtime
+// :76:12: error: packed structs cannot contain fields of type 'tmp.entry14.E'
+// :74:15: note: enum declared here

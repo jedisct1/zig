@@ -13,8 +13,8 @@ const Complex = cmath.Complex;
 const ldexp_cexp = @import("ldexp.zig").ldexp_cexp;
 
 /// Returns the hyperbolic sine of z.
-pub fn sinh(z: anytype) @TypeOf(z) {
-    const T = @TypeOf(z.re);
+pub fn sinh(z: anytype) Complex(@TypeOf(z.re, z.im)) {
+    const T = @TypeOf(z.re, z.im);
     return switch (T) {
         f32 => sinh32(z),
         f64 => sinh64(z),
@@ -26,10 +26,10 @@ fn sinh32(z: Complex(f32)) Complex(f32) {
     const x = z.re;
     const y = z.im;
 
-    const hx = @bitCast(u32, x);
+    const hx = @as(u32, @bitCast(x));
     const ix = hx & 0x7fffffff;
 
-    const hy = @bitCast(u32, y);
+    const hy = @as(u32, @bitCast(y));
     const iy = hy & 0x7fffffff;
 
     if (ix < 0x7f800000 and iy < 0x7f800000) {
@@ -44,12 +44,12 @@ fn sinh32(z: Complex(f32)) Complex(f32) {
         // |x|>= 9, so cosh(x) ~= exp(|x|)
         if (ix < 0x42b17218) {
             // x < 88.7: exp(|x|) won't overflow
-            const h = @exp(@fabs(x)) * 0.5;
+            const h = @exp(@abs(x)) * 0.5;
             return Complex(f32).init(math.copysign(h, x) * @cos(y), h * @sin(y));
         }
         // x < 192.7: scale to avoid overflow
         else if (ix < 0x4340b1e7) {
-            const v = Complex(f32).init(@fabs(x), y);
+            const v = Complex(f32).init(@abs(x), y);
             const r = ldexp_cexp(v, -1);
             return Complex(f32).init(r.re * math.copysign(@as(f32, 1.0), x), r.im);
         }
@@ -89,14 +89,14 @@ fn sinh64(z: Complex(f64)) Complex(f64) {
     const x = z.re;
     const y = z.im;
 
-    const fx = @bitCast(u64, x);
-    const hx = @intCast(u32, fx >> 32);
-    const lx = @truncate(u32, fx);
+    const fx: u64 = @bitCast(x);
+    const hx: u32 = @intCast(fx >> 32);
+    const lx: u32 = @truncate(fx);
     const ix = hx & 0x7fffffff;
 
-    const fy = @bitCast(u64, y);
-    const hy = @intCast(u32, fy >> 32);
-    const ly = @truncate(u32, fy);
+    const fy: u64 = @bitCast(y);
+    const hy: u32 = @intCast(fy >> 32);
+    const ly: u32 = @truncate(fy);
     const iy = hy & 0x7fffffff;
 
     if (ix < 0x7ff00000 and iy < 0x7ff00000) {
@@ -111,12 +111,12 @@ fn sinh64(z: Complex(f64)) Complex(f64) {
         // |x|>= 22, so cosh(x) ~= exp(|x|)
         if (ix < 0x40862e42) {
             // x < 710: exp(|x|) won't overflow
-            const h = @exp(@fabs(x)) * 0.5;
+            const h = @exp(@abs(x)) * 0.5;
             return Complex(f64).init(math.copysign(h, x) * @cos(y), h * @sin(y));
         }
         // x < 1455: scale to avoid overflow
         else if (ix < 0x4096bbaa) {
-            const v = Complex(f64).init(@fabs(x), y);
+            const v = Complex(f64).init(@abs(x), y);
             const r = ldexp_cexp(v, -1);
             return Complex(f64).init(r.re * math.copysign(@as(f64, 1.0), x), r.im);
         }
@@ -154,7 +154,7 @@ fn sinh64(z: Complex(f64)) Complex(f64) {
 
 const epsilon = 0.0001;
 
-test "complex.csinh32" {
+test sinh32 {
     const a = Complex(f32).init(5, 3);
     const c = sinh(a);
 
@@ -162,7 +162,7 @@ test "complex.csinh32" {
     try testing.expect(math.approxEqAbs(f32, c.im, 10.472508, epsilon));
 }
 
-test "complex.csinh64" {
+test sinh64 {
     const a = Complex(f64).init(5, 3);
     const c = sinh(a);
 

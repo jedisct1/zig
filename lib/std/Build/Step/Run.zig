@@ -1,13 +1,12 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const Step = std.Build.Step;
+const Build = std.Build;
+const Step = Build.Step;
 const fs = std.fs;
 const mem = std.mem;
 const process = std.process;
 const ArrayList = std.ArrayList;
 const EnvMap = process.EnvMap;
-const Allocator = mem.Allocator;
-const ExecError = std.Build.ExecError;
 const assert = std.debug.assert;
 
 const Run = @This();
@@ -19,10 +18,8 @@ step: Step,
 /// See also addArg and addArgs to modifying this directly
 argv: ArrayList(Arg),
 
-/// Set this to modify the current working directory
-/// TODO change this to a Build.Cache.Directory to better integrate with
-/// future child process cwd API.
-cwd: ?[]const u8,
+/// Use `setCwd` to set the initial current working directory
+cwd: ?Build.LazyPath,
 
 /// Override this field to modify the environment, or use setEnvironmentVariable
 env_map: ?*EnvMap,
@@ -36,8 +33,10 @@ env_map: ?*EnvMap,
 /// be skipped if all output files are up-to-date and input files are
 /// unchanged.
 stdio: StdIo = .infer_from_args,
-/// This field must be `null` if stdio is `inherit`.
-stdin: ?[]const u8 = null,
+
+/// This field must be `.none` if stdio is `inherit`.
+/// It should be only set using `setStdIn`.
+stdin: StdIn = .none,
 
 /// Additional file paths relative to build.zig that, when modified, indicate
 /// that the Run step should be re-executed.
@@ -61,6 +60,13 @@ rename_step_with_output_arg: bool = true,
 /// nothing.
 skip_foreign_checks: bool = false,
 
+/// If this is true, failing to execute a foreign binary will be considered an
+/// error. However if this is false, the step will be skipped on failure instead.
+///
+/// This allows for a Run step to attempt to execute a foreign binary using an
+/// external executor (such as qemu) but not fail if the executor is unavailable.
+failing_to_execute_foreign_is_an_error: bool = true,
+
 /// If stderr or stdout exceeds this amount, the child process is killed and
 /// the step fails.
 max_stdio_size: usize = 10 * 1024 * 1024,
@@ -68,7 +74,15 @@ max_stdio_size: usize = 10 * 1024 * 1024,
 captured_stdout: ?*Output = null,
 captured_stderr: ?*Output = null,
 
+dep_output_file: ?*Output = null,
+
 has_side_effects: bool = false,
+
+pub const StdIn = union(enum) {
+    none,
+    bytes: []const u8,
+    lazy_path: std.Build.LazyPath,
+};
 
 pub const StdIo = union(enum) {
     /// Whether the Run step has side-effects will be determined by whether or not one
@@ -105,10 +119,15 @@ pub const StdIo = union(enum) {
 
 pub const Arg = union(enum) {
     artifact: *Step.Compile,
-    file_source: std.Build.FileSource,
-    directory_source: std.Build.FileSource,
+    lazy_path: PrefixedLazyPath,
+    directory_source: PrefixedLazyPath,
     bytes: []u8,
     output: *Output,
+};
+
+pub const PrefixedLazyPath = struct {
+    prefix: []const u8,
+    lazy_path: std.Build.LazyPath,
 };
 
 pub const Output = struct {
@@ -138,57 +157,149 @@ pub fn setName(self: *Run, name: []const u8) void {
     self.rename_step_with_output_arg = false;
 }
 
-pub fn enableTestRunnerMode(rs: *Run) void {
-    rs.stdio = .zig_test;
-    rs.addArgs(&.{"--listen=-"});
+pub fn enableTestRunnerMode(self: *Run) void {
+    self.stdio = .zig_test;
+    self.addArgs(&.{"--listen=-"});
 }
 
 pub fn addArtifactArg(self: *Run, artifact: *Step.Compile) void {
+    const bin_file = artifact.getEmittedBin();
+    bin_file.addStepDependencies(&self.step);
     self.argv.append(Arg{ .artifact = artifact }) catch @panic("OOM");
-    self.step.dependOn(&artifact.step);
 }
 
-/// This provides file path as a command line argument to the command being
-/// run, and returns a FileSource which can be used as inputs to other APIs
+/// Provides a file path as a command line argument to the command being run.
+///
+/// Returns a `std.Build.LazyPath` which can be used as inputs to other APIs
 /// throughout the build system.
-pub fn addOutputFileArg(rs: *Run, basename: []const u8) std.Build.FileSource {
-    return addPrefixedOutputFileArg(rs, "", basename);
+///
+/// Related:
+/// * `addPrefixedOutputFileArg` - same thing but prepends a string to the argument
+/// * `addFileArg` - for input files given to the child process
+pub fn addOutputFileArg(self: *Run, basename: []const u8) std.Build.LazyPath {
+    return self.addPrefixedOutputFileArg("", basename);
 }
 
+/// Provides a file path as a command line argument to the command being run.
+///
+/// For example, a prefix of "-o" and basename of "output.txt" will result in
+/// the child process seeing something like this: "-ozig-cache/.../output.txt"
+///
+/// The child process will see a single argument, regardless of whether the
+/// prefix or basename have spaces.
+///
+/// The returned `std.Build.LazyPath` can be used as inputs to other APIs
+/// throughout the build system.
+///
+/// Related:
+/// * `addOutputFileArg` - same thing but without the prefix
+/// * `addFileArg` - for input files given to the child process
 pub fn addPrefixedOutputFileArg(
-    rs: *Run,
+    self: *Run,
     prefix: []const u8,
     basename: []const u8,
-) std.Build.FileSource {
-    const b = rs.step.owner;
+) std.Build.LazyPath {
+    const b = self.step.owner;
 
     const output = b.allocator.create(Output) catch @panic("OOM");
     output.* = .{
         .prefix = prefix,
         .basename = basename,
-        .generated_file = .{ .step = &rs.step },
+        .generated_file = .{ .step = &self.step },
     };
-    rs.argv.append(.{ .output = output }) catch @panic("OOM");
+    self.argv.append(.{ .output = output }) catch @panic("OOM");
 
-    if (rs.rename_step_with_output_arg) {
-        rs.setName(b.fmt("{s} ({s})", .{ rs.step.name, basename }));
+    if (self.rename_step_with_output_arg) {
+        self.setName(b.fmt("{s} ({s})", .{ self.step.name, basename }));
     }
 
     return .{ .generated = &output.generated_file };
 }
 
-pub fn addFileSourceArg(self: *Run, file_source: std.Build.FileSource) void {
-    self.argv.append(.{
-        .file_source = file_source.dupe(self.step.owner),
-    }) catch @panic("OOM");
-    file_source.addStepDependencies(&self.step);
+/// Appends an input file to the command line arguments.
+///
+/// The child process will see a file path. Modifications to this file will be
+/// detected as a cache miss in subsequent builds, causing the child process to
+/// be re-executed.
+///
+/// Related:
+/// * `addPrefixedFileArg` - same thing but prepends a string to the argument
+/// * `addOutputFileArg` - for files generated by the child process
+pub fn addFileArg(self: *Run, lp: std.Build.LazyPath) void {
+    self.addPrefixedFileArg("", lp);
 }
 
-pub fn addDirectorySourceArg(self: *Run, directory_source: std.Build.FileSource) void {
-    self.argv.append(.{
-        .directory_source = directory_source.dupe(self.step.owner),
-    }) catch @panic("OOM");
+/// Appends an input file to the command line arguments prepended with a string.
+///
+/// For example, a prefix of "-F" will result in the child process seeing something
+/// like this: "-Fexample.txt"
+///
+/// The child process will see a single argument, even if the prefix has
+/// spaces. Modifications to this file will be detected as a cache miss in
+/// subsequent builds, causing the child process to be re-executed.
+///
+/// Related:
+/// * `addFileArg` - same thing but without the prefix
+/// * `addOutputFileArg` - for files generated by the child process
+pub fn addPrefixedFileArg(self: *Run, prefix: []const u8, lp: std.Build.LazyPath) void {
+    const b = self.step.owner;
+
+    const prefixed_file_source: PrefixedLazyPath = .{
+        .prefix = b.dupe(prefix),
+        .lazy_path = lp.dupe(b),
+    };
+    self.argv.append(.{ .lazy_path = prefixed_file_source }) catch @panic("OOM");
+    lp.addStepDependencies(&self.step);
+}
+
+/// deprecated: use `addDirectoryArg`
+pub const addDirectorySourceArg = addDirectoryArg;
+
+pub fn addDirectoryArg(self: *Run, directory_source: std.Build.LazyPath) void {
+    self.addPrefixedDirectoryArg("", directory_source);
+}
+
+// deprecated: use `addPrefixedDirectoryArg`
+pub const addPrefixedDirectorySourceArg = addPrefixedDirectoryArg;
+
+pub fn addPrefixedDirectoryArg(self: *Run, prefix: []const u8, directory_source: std.Build.LazyPath) void {
+    const b = self.step.owner;
+
+    const prefixed_directory_source: PrefixedLazyPath = .{
+        .prefix = b.dupe(prefix),
+        .lazy_path = directory_source.dupe(b),
+    };
+    self.argv.append(.{ .directory_source = prefixed_directory_source }) catch @panic("OOM");
     directory_source.addStepDependencies(&self.step);
+}
+
+/// Add a path argument to a dep file (.d) for the child process to write its
+/// discovered additional dependencies.
+/// Only one dep file argument is allowed by instance.
+pub fn addDepFileOutputArg(self: *Run, basename: []const u8) std.Build.LazyPath {
+    return self.addPrefixedDepFileOutputArg("", basename);
+}
+
+/// Add a prefixed path argument to a dep file (.d) for the child process to
+/// write its discovered additional dependencies.
+/// Only one dep file argument is allowed by instance.
+pub fn addPrefixedDepFileOutputArg(self: *Run, prefix: []const u8, basename: []const u8) std.Build.LazyPath {
+    assert(self.dep_output_file == null);
+
+    const b = self.step.owner;
+
+    const dep_file = b.allocator.create(Output) catch @panic("OOM");
+    dep_file.* = .{
+        .prefix = b.dupe(prefix),
+        .basename = b.dupe(basename),
+        .generated_file = .{ .step = &self.step },
+    };
+
+    self.dep_output_file = dep_file;
+
+    self.argv.append(.{ .output = dep_file }) catch @panic("OOM");
+
+    return .{ .generated = &dep_file.generated_file };
 }
 
 pub fn addArg(self: *Run, arg: []const u8) void {
@@ -199,6 +310,19 @@ pub fn addArgs(self: *Run, args: []const []const u8) void {
     for (args) |arg| {
         self.addArg(arg);
     }
+}
+
+pub fn setStdIn(self: *Run, stdin: StdIn) void {
+    switch (stdin) {
+        .lazy_path => |lazy_path| lazy_path.addStepDependencies(&self.step),
+        .bytes, .none => {},
+    }
+    self.stdin = stdin;
+}
+
+pub fn setCwd(self: *Run, cwd: Build.LazyPath) void {
+    cwd.addStepDependencies(&self.step);
+    self.cwd = cwd;
 }
 
 pub fn clearEnvironment(self: *Run) void {
@@ -213,7 +337,7 @@ pub fn addPathDir(self: *Run, search_path: []const u8) void {
     const env_map = getEnvMapInternal(self);
 
     const key = "PATH";
-    var prev_path = env_map.get(key);
+    const prev_path = env_map.get(key);
 
     if (prev_path) |pp| {
         const new_path = b.fmt("{s}" ++ [1]u8{fs.path.delimiter} ++ "{s}", .{ pp, search_path });
@@ -287,7 +411,7 @@ pub fn addCheck(self: *Run, new_check: StdIo.Check) void {
     }
 }
 
-pub fn captureStdErr(self: *Run) std.Build.FileSource {
+pub fn captureStdErr(self: *Run) std.Build.LazyPath {
     assert(self.stdio != .inherit);
 
     if (self.captured_stderr) |output| return .{ .generated = &output.generated_file };
@@ -302,7 +426,7 @@ pub fn captureStdErr(self: *Run) std.Build.FileSource {
     return .{ .generated = &output.generated_file };
 }
 
-pub fn captureStdOut(self: *Run) std.Build.FileSource {
+pub fn captureStdOut(self: *Run) std.Build.LazyPath {
     assert(self.stdio != .inherit);
 
     if (self.captured_stdout) |output| return .{ .generated = &output.generated_file };
@@ -366,19 +490,20 @@ fn checksContainStderr(checks: []const StdIo.Check) bool {
     return false;
 }
 
+const IndexedOutput = struct {
+    index: usize,
+    output: *Output,
+};
 fn make(step: *Step, prog_node: *std.Progress.Node) !void {
     const b = step.owner;
     const arena = b.allocator;
-    const self = @fieldParentPtr(Run, "step", step);
+    const self: *Run = @fieldParentPtr("step", step);
     const has_side_effects = self.hasSideEffects();
 
     var argv_list = ArrayList([]const u8).init(arena);
-    var output_placeholders = ArrayList(struct {
-        index: usize,
-        output: *Output,
-    }).init(arena);
+    var output_placeholders = ArrayList(IndexedOutput).init(arena);
 
-    var man = b.cache.obtain();
+    var man = b.graph.cache.obtain();
     defer man.deinit();
 
     for (self.argv.items) |arg| {
@@ -387,23 +512,24 @@ fn make(step: *Step, prog_node: *std.Progress.Node) !void {
                 try argv_list.append(bytes);
                 man.hash.addBytes(bytes);
             },
-            .file_source => |file| {
-                const file_path = file.getPath(b);
-                try argv_list.append(file_path);
+            .lazy_path => |file| {
+                const file_path = file.lazy_path.getPath(b);
+                try argv_list.append(b.fmt("{s}{s}", .{ file.prefix, file_path }));
+                man.hash.addBytes(file.prefix);
                 _ = try man.addFile(file_path, null);
             },
             .directory_source => |file| {
-                const file_path = file.getPath(b);
-                try argv_list.append(file_path);
+                const file_path = file.lazy_path.getPath(b);
+                try argv_list.append(b.fmt("{s}{s}", .{ file.prefix, file_path }));
+                man.hash.addBytes(file.prefix);
                 man.hash.addBytes(file_path);
             },
             .artifact => |artifact| {
-                if (artifact.target.isWindows()) {
+                if (artifact.rootModuleTarget().os.tag == .windows) {
                     // On Windows we don't have rpaths so we have to add .dll search paths to PATH
                     self.addPathForDynLibs(artifact);
                 }
-                const file_path = artifact.installed_path orelse
-                    artifact.getOutputSource().getPath(b);
+                const file_path = artifact.installed_path orelse artifact.generated_bin.?.path.?; // the path is guaranteed to be set
 
                 try argv_list.append(file_path);
 
@@ -422,6 +548,17 @@ fn make(step: *Step, prog_node: *std.Progress.Node) !void {
                 });
             },
         }
+    }
+
+    switch (self.stdin) {
+        .bytes => |bytes| {
+            man.hash.addBytes(bytes);
+        },
+        .lazy_path => |lazy_path| {
+            const file_path = lazy_path.getPath(b);
+            _ = try man.addFile(file_path, null);
+        },
+        .none => {},
     }
 
     if (self.captured_stdout) |output| {
@@ -446,32 +583,25 @@ fn make(step: *Step, prog_node: *std.Progress.Node) !void {
     if (try step.cacheHit(&man)) {
         // cache hit, skip running command
         const digest = man.final();
-        for (output_placeholders.items) |placeholder| {
-            placeholder.output.generated_file.path = try b.cache_root.join(arena, &.{
-                "o", &digest, placeholder.output.basename,
-            });
-        }
 
-        if (self.captured_stdout) |output| {
-            output.generated_file.path = try b.cache_root.join(arena, &.{
-                "o", &digest, output.basename,
-            });
-        }
-
-        if (self.captured_stderr) |output| {
-            output.generated_file.path = try b.cache_root.join(arena, &.{
-                "o", &digest, output.basename,
-            });
-        }
+        try populateGeneratedPaths(
+            arena,
+            output_placeholders.items,
+            self.captured_stdout,
+            self.captured_stderr,
+            b.cache_root,
+            &digest,
+        );
 
         step.result_cached = true;
         return;
     }
 
-    const digest = man.final();
+    const rand_int = std.crypto.random.int(u64);
+    const tmp_dir_path = "tmp" ++ fs.path.sep_str ++ std.Build.hex64(rand_int);
 
     for (output_placeholders.items) |placeholder| {
-        const output_components = .{ "o", &digest, placeholder.output.basename };
+        const output_components = .{ tmp_dir_path, placeholder.output.basename };
         const output_sub_path = try fs.path.join(arena, &output_components);
         const output_sub_dir_path = fs.path.dirname(output_sub_path).?;
         b.cache_root.handle.makePath(output_sub_dir_path) catch |err| {
@@ -488,9 +618,83 @@ fn make(step: *Step, prog_node: *std.Progress.Node) !void {
         argv_list.items[placeholder.index] = cli_arg;
     }
 
-    try runCommand(self, argv_list.items, has_side_effects, &digest, prog_node);
+    try runCommand(self, argv_list.items, has_side_effects, tmp_dir_path, prog_node);
+
+    if (self.dep_output_file) |dep_output_file|
+        try man.addDepFilePost(std.fs.cwd(), dep_output_file.generated_file.getPath());
+
+    const digest = man.final();
+
+    const any_output = output_placeholders.items.len > 0 or
+        self.captured_stdout != null or self.captured_stderr != null;
+
+    // Rename into place
+    if (any_output) {
+        const o_sub_path = "o" ++ fs.path.sep_str ++ &digest;
+
+        b.cache_root.handle.rename(tmp_dir_path, o_sub_path) catch |err| {
+            if (err == error.PathAlreadyExists) {
+                b.cache_root.handle.deleteTree(o_sub_path) catch |del_err| {
+                    return step.fail("unable to remove dir '{}'{s}: {s}", .{
+                        b.cache_root,
+                        tmp_dir_path,
+                        @errorName(del_err),
+                    });
+                };
+                b.cache_root.handle.rename(tmp_dir_path, o_sub_path) catch |retry_err| {
+                    return step.fail("unable to rename dir '{}{s}' to '{}{s}': {s}", .{
+                        b.cache_root,          tmp_dir_path,
+                        b.cache_root,          o_sub_path,
+                        @errorName(retry_err),
+                    });
+                };
+            } else {
+                return step.fail("unable to rename dir '{}{s}' to '{}{s}': {s}", .{
+                    b.cache_root,    tmp_dir_path,
+                    b.cache_root,    o_sub_path,
+                    @errorName(err),
+                });
+            }
+        };
+    }
 
     try step.writeManifest(&man);
+
+    try populateGeneratedPaths(
+        arena,
+        output_placeholders.items,
+        self.captured_stdout,
+        self.captured_stderr,
+        b.cache_root,
+        &digest,
+    );
+}
+
+fn populateGeneratedPaths(
+    arena: std.mem.Allocator,
+    output_placeholders: []const IndexedOutput,
+    captured_stdout: ?*Output,
+    captured_stderr: ?*Output,
+    cache_root: Build.Cache.Directory,
+    digest: *const Build.Cache.HexDigest,
+) !void {
+    for (output_placeholders) |placeholder| {
+        placeholder.output.generated_file.path = try cache_root.join(arena, &.{
+            "o", digest, placeholder.output.basename,
+        });
+    }
+
+    if (captured_stdout) |output| {
+        output.generated_file.path = try cache_root.join(arena, &.{
+            "o", digest, output.basename,
+        });
+    }
+
+    if (captured_stderr) |output| {
+        output.generated_file.path = try cache_root.join(arena, &.{
+            "o", digest, output.basename,
+        });
+    }
 }
 
 fn formatTerm(
@@ -542,15 +746,17 @@ fn runCommand(
     self: *Run,
     argv: []const []const u8,
     has_side_effects: bool,
-    digest: ?*const [std.Build.Cache.hex_digest_len]u8,
+    tmp_dir_path: ?[]const u8,
     prog_node: *std.Progress.Node,
 ) !void {
     const step = &self.step;
     const b = step.owner;
     const arena = b.allocator;
 
-    try step.handleChildProcUnsupported(self.cwd, argv);
-    try Step.handleVerbose2(step.owner, self.cwd, self.env_map, argv);
+    const cwd: ?[]const u8 = if (self.cwd) |lazy_cwd| lazy_cwd.getPath(b) else null;
+
+    try step.handleChildProcUnsupported(cwd, argv);
+    try Step.handleVerbose2(step.owner, cwd, self.env_map, argv);
 
     const allow_skip = switch (self.stdio) {
         .check, .zig_test => self.skip_foreign_checks,
@@ -577,8 +783,10 @@ fn runCommand(
                 else => break :interpret,
             }
 
-            const need_cross_glibc = exe.target.isGnuLibC() and exe.is_linking_libc;
-            switch (b.host.getExternalExecutor(exe.target_info, .{
+            const need_cross_glibc = exe.rootModuleTarget().isGnuLibC() and
+                exe.is_linking_libc;
+            const other_target = exe.root_module.resolved_target.?.result;
+            switch (std.zig.system.getExternalExecutor(b.host.result, &other_target, .{
                 .qemu_fixes_dl = need_cross_glibc and b.glibc_runtimes_dir != null,
                 .link_libc = exe.is_linking_libc,
             })) {
@@ -609,9 +817,9 @@ fn runCommand(
                             // needs the directory to be called "i686" rather than
                             // "x86" which is why we do it manually here.
                             const fmt_str = "{s}" ++ fs.path.sep_str ++ "{s}-{s}-{s}";
-                            const cpu_arch = exe.target.getCpuArch();
-                            const os_tag = exe.target.getOsTag();
-                            const abi = exe.target.getAbi();
+                            const cpu_arch = exe.rootModuleTarget().cpu.arch;
+                            const os_tag = exe.rootModuleTarget().os.tag;
+                            const abi = exe.rootModuleTarget().abi;
                             const cpu_arch_name: []const u8 = if (cpu_arch == .x86)
                                 "i686"
                             else
@@ -651,7 +859,7 @@ fn runCommand(
                 .bad_dl => |foreign_dl| {
                     if (allow_skip) return error.MakeSkipped;
 
-                    const host_dl = b.host.dynamic_linker.get() orelse "(none)";
+                    const host_dl = b.host.result.dynamic_linker.get() orelse "(none)";
 
                     return step.fail(
                         \\the host system is unable to execute binaries from the target
@@ -663,8 +871,8 @@ fn runCommand(
                 .bad_os_or_cpu => {
                     if (allow_skip) return error.MakeSkipped;
 
-                    const host_name = try b.host.target.zigTriple(b.allocator);
-                    const foreign_name = try exe.target.zigTriple(b.allocator);
+                    const host_name = try b.host.result.zigTriple(b.allocator);
+                    const foreign_name = try exe.rootModuleTarget().zigTriple(b.allocator);
 
                     return step.fail("the host system ({s}) is unable to execute binaries from the target ({s})", .{
                         host_name, foreign_name,
@@ -672,14 +880,16 @@ fn runCommand(
                 },
             }
 
-            if (exe.target.isWindows()) {
+            if (exe.rootModuleTarget().os.tag == .windows) {
                 // On Windows we don't have rpaths so we have to add .dll search paths to PATH
                 self.addPathForDynLibs(exe);
             }
 
-            try Step.handleVerbose2(step.owner, self.cwd, self.env_map, interp_argv.items);
+            try Step.handleVerbose2(step.owner, cwd, self.env_map, interp_argv.items);
 
             break :term spawnChildAndCollect(self, interp_argv.items, has_side_effects, prog_node) catch |e| {
+                if (!self.failing_to_execute_foreign_is_an_error) return error.MakeSkipped;
+
                 return step.fail("unable to spawn interpreter {s}: {s}", .{
                     interp_argv.items[0], @errorName(e),
                 });
@@ -696,25 +906,20 @@ fn runCommand(
     // Capture stdout and stderr to GeneratedFile objects.
     const Stream = struct {
         captured: ?*Output,
-        is_null: bool,
-        bytes: []const u8,
+        bytes: ?[]const u8,
     };
     for ([_]Stream{
         .{
             .captured = self.captured_stdout,
-            .is_null = result.stdio.stdout_null,
             .bytes = result.stdio.stdout,
         },
         .{
             .captured = self.captured_stderr,
-            .is_null = result.stdio.stderr_null,
             .bytes = result.stdio.stderr,
         },
     }) |stream| {
         if (stream.captured) |output| {
-            assert(!stream.is_null);
-
-            const output_components = .{ "o", digest.?, output.basename };
+            const output_components = .{ tmp_dir_path.?, output.basename };
             const output_path = try b.cache_root.join(arena, &output_components);
             output.generated_file.path = output_path;
 
@@ -725,7 +930,7 @@ fn runCommand(
                     b.cache_root, sub_path_dirname, @errorName(err),
                 });
             };
-            b.cache_root.handle.writeFile(sub_path, stream.bytes) catch |err| {
+            b.cache_root.handle.writeFile(sub_path, stream.bytes.?) catch |err| {
                 return step.fail("unable to write file '{}{s}': {s}", .{
                     b.cache_root, sub_path, @errorName(err),
                 });
@@ -738,8 +943,7 @@ fn runCommand(
     switch (self.stdio) {
         .check => |checks| for (checks.items) |check| switch (check) {
             .expect_stderr_exact => |expected_bytes| {
-                assert(!result.stdio.stderr_null);
-                if (!mem.eql(u8, expected_bytes, result.stdio.stderr)) {
+                if (!mem.eql(u8, expected_bytes, result.stdio.stderr.?)) {
                     return step.fail(
                         \\
                         \\========= expected this stderr: =========
@@ -750,14 +954,13 @@ fn runCommand(
                         \\{s}
                     , .{
                         expected_bytes,
-                        result.stdio.stderr,
-                        try Step.allocPrintCmd(arena, self.cwd, final_argv),
+                        result.stdio.stderr.?,
+                        try Step.allocPrintCmd(arena, cwd, final_argv),
                     });
                 }
             },
             .expect_stderr_match => |match| {
-                assert(!result.stdio.stderr_null);
-                if (mem.indexOf(u8, result.stdio.stderr, match) == null) {
+                if (mem.indexOf(u8, result.stdio.stderr.?, match) == null) {
                     return step.fail(
                         \\
                         \\========= expected to find in stderr: =========
@@ -768,14 +971,13 @@ fn runCommand(
                         \\{s}
                     , .{
                         match,
-                        result.stdio.stderr,
-                        try Step.allocPrintCmd(arena, self.cwd, final_argv),
+                        result.stdio.stderr.?,
+                        try Step.allocPrintCmd(arena, cwd, final_argv),
                     });
                 }
             },
             .expect_stdout_exact => |expected_bytes| {
-                assert(!result.stdio.stdout_null);
-                if (!mem.eql(u8, expected_bytes, result.stdio.stdout)) {
+                if (!mem.eql(u8, expected_bytes, result.stdio.stdout.?)) {
                     return step.fail(
                         \\
                         \\========= expected this stdout: =========
@@ -786,14 +988,13 @@ fn runCommand(
                         \\{s}
                     , .{
                         expected_bytes,
-                        result.stdio.stdout,
-                        try Step.allocPrintCmd(arena, self.cwd, final_argv),
+                        result.stdio.stdout.?,
+                        try Step.allocPrintCmd(arena, cwd, final_argv),
                     });
                 }
             },
             .expect_stdout_match => |match| {
-                assert(!result.stdio.stdout_null);
-                if (mem.indexOf(u8, result.stdio.stdout, match) == null) {
+                if (mem.indexOf(u8, result.stdio.stdout.?, match) == null) {
                     return step.fail(
                         \\
                         \\========= expected to find in stdout: =========
@@ -804,8 +1005,8 @@ fn runCommand(
                         \\{s}
                     , .{
                         match,
-                        result.stdio.stdout,
-                        try Step.allocPrintCmd(arena, self.cwd, final_argv),
+                        result.stdio.stdout.?,
+                        try Step.allocPrintCmd(arena, cwd, final_argv),
                     });
                 }
             },
@@ -814,7 +1015,7 @@ fn runCommand(
                     return step.fail("the following command {} (expected {}):\n{s}", .{
                         fmtTerm(result.term),
                         fmtTerm(expected_term),
-                        try Step.allocPrintCmd(arena, self.cwd, final_argv),
+                        try Step.allocPrintCmd(arena, cwd, final_argv),
                     });
                 }
             },
@@ -835,18 +1036,18 @@ fn runCommand(
                     prefix,
                     fmtTerm(result.term),
                     fmtTerm(expected_term),
-                    try Step.allocPrintCmd(arena, self.cwd, final_argv),
+                    try Step.allocPrintCmd(arena, cwd, final_argv),
                 });
             }
             if (!result.stdio.test_results.isSuccess()) {
                 return step.fail(
                     "{s}the following test command failed:\n{s}",
-                    .{ prefix, try Step.allocPrintCmd(arena, self.cwd, final_argv) },
+                    .{ prefix, try Step.allocPrintCmd(arena, cwd, final_argv) },
                 );
             }
         },
         else => {
-            try step.handleChildProcessTerm(result.term, self.cwd, final_argv);
+            try step.handleChildProcessTerm(result.term, cwd, final_argv);
         },
     }
 }
@@ -869,13 +1070,13 @@ fn spawnChildAndCollect(
     const arena = b.allocator;
 
     var child = std.process.Child.init(argv, arena);
-    if (self.cwd) |cwd| {
-        child.cwd = b.pathFromRoot(cwd);
+    if (self.cwd) |lazy_cwd| {
+        child.cwd = lazy_cwd.getPath(b);
     } else {
         child.cwd = b.build_root.path;
         child.cwd_dir = b.build_root.handle;
     }
-    child.env_map = self.env_map orelse b.env_map;
+    child.env_map = self.env_map orelse &b.graph.env_map;
     child.request_resource_usage_statistics = true;
 
     child.stdin_behavior = switch (self.stdio) {
@@ -898,8 +1099,8 @@ fn spawnChildAndCollect(
     };
     if (self.captured_stdout != null) child.stdout_behavior = .Pipe;
     if (self.captured_stderr != null) child.stderr_behavior = .Pipe;
-    if (self.stdin != null) {
-        assert(child.stdin_behavior != .Inherit);
+    if (self.stdin != .none) {
+        assert(self.stdio != .inherit);
         child.stdin_behavior = .Pipe;
     }
 
@@ -923,12 +1124,8 @@ fn spawnChildAndCollect(
 }
 
 const StdIoResult = struct {
-    // These use boolean flags instead of optionals as a workaround for
-    // https://github.com/ziglang/zig/issues/14783
-    stdout: []const u8,
-    stderr: []const u8,
-    stdout_null: bool,
-    stderr_null: bool,
+    stdout: ?[]const u8,
+    stderr: ?[]const u8,
     test_results: Step.TestResults,
     test_metadata: ?TestMetadata,
 };
@@ -958,6 +1155,7 @@ fn evalZigTest(
     var skip_count: u32 = 0;
     var leak_count: u32 = 0;
     var test_count: u32 = 0;
+    var log_err_count: u32 = 0;
 
     var metadata: ?TestMetadata = null;
 
@@ -985,22 +1183,17 @@ fn evalZigTest(
             },
             .test_metadata => {
                 const TmHdr = std.zig.Server.Message.TestMetadata;
-                const tm_hdr = @ptrCast(*align(1) const TmHdr, body);
+                const tm_hdr = @as(*align(1) const TmHdr, @ptrCast(body));
                 test_count = tm_hdr.tests_len;
 
                 const names_bytes = body[@sizeOf(TmHdr)..][0 .. test_count * @sizeOf(u32)];
-                const async_frame_lens_bytes = body[@sizeOf(TmHdr) + names_bytes.len ..][0 .. test_count * @sizeOf(u32)];
-                const expected_panic_msgs_bytes = body[@sizeOf(TmHdr) + names_bytes.len + async_frame_lens_bytes.len ..][0 .. test_count * @sizeOf(u32)];
-                const string_bytes = body[@sizeOf(TmHdr) + names_bytes.len + async_frame_lens_bytes.len + expected_panic_msgs_bytes.len ..][0..tm_hdr.string_bytes_len];
+                const expected_panic_msgs_bytes = body[@sizeOf(TmHdr) + names_bytes.len ..][0 .. test_count * @sizeOf(u32)];
+                const string_bytes = body[@sizeOf(TmHdr) + names_bytes.len + expected_panic_msgs_bytes.len ..][0..tm_hdr.string_bytes_len];
 
                 const names = std.mem.bytesAsSlice(u32, names_bytes);
-                const async_frame_lens = std.mem.bytesAsSlice(u32, async_frame_lens_bytes);
                 const expected_panic_msgs = std.mem.bytesAsSlice(u32, expected_panic_msgs_bytes);
                 const names_aligned = try arena.alloc(u32, names.len);
                 for (names_aligned, names) |*dest, src| dest.* = src;
-
-                const async_frame_lens_aligned = try arena.alloc(u32, async_frame_lens.len);
-                for (async_frame_lens_aligned, async_frame_lens) |*dest, src| dest.* = src;
 
                 const expected_panic_msgs_aligned = try arena.alloc(u32, expected_panic_msgs.len);
                 for (expected_panic_msgs_aligned, expected_panic_msgs) |*dest, src| dest.* = src;
@@ -1009,7 +1202,6 @@ fn evalZigTest(
                 metadata = .{
                     .string_bytes = try arena.dupe(u8, string_bytes),
                     .names = names_aligned,
-                    .async_frame_lens = async_frame_lens_aligned,
                     .expected_panic_msgs = expected_panic_msgs_aligned,
                     .next_index = 0,
                     .prog_node = prog_node,
@@ -1021,21 +1213,30 @@ fn evalZigTest(
                 const md = metadata.?;
 
                 const TrHdr = std.zig.Server.Message.TestResults;
-                const tr_hdr = @ptrCast(*align(1) const TrHdr, body);
-                fail_count += @boolToInt(tr_hdr.flags.fail);
-                skip_count += @boolToInt(tr_hdr.flags.skip);
-                leak_count += @boolToInt(tr_hdr.flags.leak);
+                const tr_hdr = @as(*align(1) const TrHdr, @ptrCast(body));
+                fail_count +|= @intFromBool(tr_hdr.flags.fail);
+                skip_count +|= @intFromBool(tr_hdr.flags.skip);
+                leak_count +|= @intFromBool(tr_hdr.flags.leak);
+                log_err_count +|= tr_hdr.flags.log_err_count;
 
-                if (tr_hdr.flags.fail or tr_hdr.flags.leak) {
+                if (tr_hdr.flags.fail or tr_hdr.flags.leak or tr_hdr.flags.log_err_count > 0) {
                     const name = std.mem.sliceTo(md.string_bytes[md.names[tr_hdr.index]..], 0);
-                    const msg = std.mem.trim(u8, stderr.readableSlice(0), "\n");
-                    const label = if (tr_hdr.flags.fail) "failed" else "leaked";
+                    const orig_msg = stderr.readableSlice(0);
+                    defer stderr.discard(orig_msg.len);
+                    const msg = std.mem.trim(u8, orig_msg, "\n");
+                    const label = if (tr_hdr.flags.fail)
+                        "failed"
+                    else if (tr_hdr.flags.leak)
+                        "leaked"
+                    else if (tr_hdr.flags.log_err_count > 0)
+                        "logged errors"
+                    else
+                        unreachable;
                     if (msg.len > 0) {
                         try self.step.addError("'{s}' {s}: {s}", .{ name, label, msg });
                     } else {
                         try self.step.addError("'{s}' {s}", .{ name, label });
                     }
-                    stderr.discard(msg.len);
                 }
 
                 try requestNextTest(child.stdin.?, &metadata.?, &sub_prog_node);
@@ -1048,7 +1249,7 @@ fn evalZigTest(
 
     if (stderr.readableLength() > 0) {
         const msg = std.mem.trim(u8, try stderr.toOwnedSlice(), "\n");
-        if (msg.len > 0) try self.step.result_error_msgs.append(arena, msg);
+        if (msg.len > 0) self.step.result_stderr = msg;
     }
 
     // Send EOF to stdin.
@@ -1056,15 +1257,14 @@ fn evalZigTest(
     child.stdin = null;
 
     return .{
-        .stdout = &.{},
-        .stderr = &.{},
-        .stdout_null = true,
-        .stderr_null = true,
+        .stdout = null,
+        .stderr = null,
         .test_results = .{
             .test_count = test_count,
             .fail_count = fail_count,
             .skip_count = skip_count,
             .leak_count = leak_count,
+            .log_err_count = log_err_count,
         },
         .test_metadata = metadata,
     };
@@ -1072,7 +1272,6 @@ fn evalZigTest(
 
 const TestMetadata = struct {
     names: []const u32,
-    async_frame_lens: []const u32,
     expected_panic_msgs: []const u32,
     string_bytes: []const u8,
     next_index: u32,
@@ -1088,7 +1287,6 @@ fn requestNextTest(in: fs.File, metadata: *TestMetadata, sub_prog_node: *?std.Pr
         const i = metadata.next_index;
         metadata.next_index += 1;
 
-        if (metadata.async_frame_lens[i] != 0) continue;
         if (metadata.expected_panic_msgs[i] != 0) continue;
 
         const name = metadata.testName(i);
@@ -1122,20 +1320,31 @@ fn sendRunTestMessage(file: std.fs.File, index: u32) !void {
 fn evalGeneric(self: *Run, child: *std.process.Child) !StdIoResult {
     const arena = self.step.owner.allocator;
 
-    if (self.stdin) |stdin| {
-        child.stdin.?.writeAll(stdin) catch |err| {
-            return self.step.fail("unable to write stdin: {s}", .{@errorName(err)});
-        };
-        child.stdin.?.close();
-        child.stdin = null;
+    switch (self.stdin) {
+        .bytes => |bytes| {
+            child.stdin.?.writeAll(bytes) catch |err| {
+                return self.step.fail("unable to write stdin: {s}", .{@errorName(err)});
+            };
+            child.stdin.?.close();
+            child.stdin = null;
+        },
+        .lazy_path => |lazy_path| {
+            const path = lazy_path.getPath(self.step.owner);
+            const file = self.step.owner.build_root.handle.openFile(path, .{}) catch |err| {
+                return self.step.fail("unable to open stdin file: {s}", .{@errorName(err)});
+            };
+            defer file.close();
+            child.stdin.?.writeFileAll(file, .{}) catch |err| {
+                return self.step.fail("unable to write file to stdin: {s}", .{@errorName(err)});
+            };
+            child.stdin.?.close();
+            child.stdin = null;
+        },
+        .none => {},
     }
 
-    // These are not optionals, as a workaround for
-    // https://github.com/ziglang/zig/issues/14783
-    var stdout_bytes: []const u8 = undefined;
-    var stderr_bytes: []const u8 = undefined;
-    var stdout_null = true;
-    var stderr_null = true;
+    var stdout_bytes: ?[]const u8 = null;
+    var stderr_bytes: ?[]const u8 = null;
 
     if (child.stdout) |stdout| {
         if (child.stderr) |stderr| {
@@ -1154,33 +1363,27 @@ fn evalGeneric(self: *Run, child: *std.process.Child) !StdIoResult {
 
             stdout_bytes = try poller.fifo(.stdout).toOwnedSlice();
             stderr_bytes = try poller.fifo(.stderr).toOwnedSlice();
-            stdout_null = false;
-            stderr_null = false;
         } else {
             stdout_bytes = try stdout.reader().readAllAlloc(arena, self.max_stdio_size);
-            stdout_null = false;
         }
     } else if (child.stderr) |stderr| {
         stderr_bytes = try stderr.reader().readAllAlloc(arena, self.max_stdio_size);
-        stderr_null = false;
     }
 
-    if (!stderr_null and stderr_bytes.len > 0) {
+    if (stderr_bytes) |bytes| if (bytes.len > 0) {
         // Treat stderr as an error message.
         const stderr_is_diagnostic = self.captured_stderr == null and switch (self.stdio) {
             .check => |checks| !checksContainStderr(checks.items),
             else => true,
         };
         if (stderr_is_diagnostic) {
-            try self.step.result_error_msgs.append(arena, stderr_bytes);
+            self.step.result_stderr = bytes;
         }
-    }
+    };
 
     return .{
         .stdout = stdout_bytes,
         .stderr = stderr_bytes,
-        .stdout_null = stdout_null,
-        .stderr_null = stderr_null,
         .test_results = .{},
         .test_metadata = null,
     };
@@ -1188,15 +1391,15 @@ fn evalGeneric(self: *Run, child: *std.process.Child) !StdIoResult {
 
 fn addPathForDynLibs(self: *Run, artifact: *Step.Compile) void {
     const b = self.step.owner;
-    for (artifact.link_objects.items) |link_object| {
-        switch (link_object) {
-            .other_step => |other| {
-                if (other.target.isWindows() and other.isDynamicLibrary()) {
-                    addPathDir(self, fs.path.dirname(other.getOutputSource().getPath(b)).?);
-                    addPathForDynLibs(self, other);
-                }
-            },
-            else => {},
+    var it = artifact.root_module.iterateDependencies(artifact, true);
+    while (it.next()) |item| {
+        const other = item.compile.?;
+        if (item.module == &other.root_module) {
+            if (item.module.resolved_target.?.result.os.tag == .windows and
+                other.isDynamicLibrary())
+            {
+                addPathDir(self, fs.path.dirname(other.getEmittedBin().getPath(b)).?);
+            }
         }
     }
 }
@@ -1213,8 +1416,8 @@ fn failForeign(
                 return error.MakeSkipped;
 
             const b = self.step.owner;
-            const host_name = try b.host.target.zigTriple(b.allocator);
-            const foreign_name = try exe.target.zigTriple(b.allocator);
+            const host_name = try b.host.result.zigTriple(b.allocator);
+            const foreign_name = try exe.rootModuleTarget().zigTriple(b.allocator);
 
             return self.step.fail(
                 \\unable to spawn foreign binary '{s}' ({s}) on host system ({s})

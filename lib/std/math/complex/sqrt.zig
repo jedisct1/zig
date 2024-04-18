@@ -12,8 +12,8 @@ const Complex = cmath.Complex;
 
 /// Returns the square root of z. The real and imaginary parts of the result have the same sign
 /// as the imaginary part of z.
-pub fn sqrt(z: anytype) @TypeOf(z) {
-    const T = @TypeOf(z.re);
+pub fn sqrt(z: anytype) Complex(@TypeOf(z.re, z.im)) {
+    const T = @TypeOf(z.re, z.im);
 
     return switch (T) {
         f32 => sqrt32(z),
@@ -43,7 +43,7 @@ fn sqrt32(z: Complex(f32)) Complex(f32) {
         // sqrt(-inf + i nan)   = nan +- inf i
         // sqrt(-inf + iy)      = 0 + inf i
         if (math.signbit(x)) {
-            return Complex(f32).init(@fabs(x - y), math.copysign(x, y));
+            return Complex(f32).init(@abs(x - y), math.copysign(x, y));
         } else {
             return Complex(f32).init(x, math.copysign(y - y, y));
         }
@@ -56,16 +56,16 @@ fn sqrt32(z: Complex(f32)) Complex(f32) {
     const dy = @as(f64, y);
 
     if (dx >= 0) {
-        const t = @sqrt((dx + math.hypot(f64, dx, dy)) * 0.5);
+        const t = @sqrt((dx + math.hypot(dx, dy)) * 0.5);
         return Complex(f32).init(
-            @floatCast(f32, t),
-            @floatCast(f32, dy / (2.0 * t)),
+            @as(f32, @floatCast(t)),
+            @as(f32, @floatCast(dy / (2.0 * t))),
         );
     } else {
-        const t = @sqrt((-dx + math.hypot(f64, dx, dy)) * 0.5);
+        const t = @sqrt((-dx + math.hypot(dx, dy)) * 0.5);
         return Complex(f32).init(
-            @floatCast(f32, @fabs(y) / (2.0 * t)),
-            @floatCast(f32, math.copysign(t, y)),
+            @as(f32, @floatCast(@abs(y) / (2.0 * t))),
+            @as(f32, @floatCast(math.copysign(t, y))),
         );
     }
 }
@@ -94,7 +94,7 @@ fn sqrt64(z: Complex(f64)) Complex(f64) {
         // sqrt(-inf + i nan)   = nan +- inf i
         // sqrt(-inf + iy)      = 0 + inf i
         if (math.signbit(x)) {
-            return Complex(f64).init(@fabs(x - y), math.copysign(x, y));
+            return Complex(f64).init(@abs(x - y), math.copysign(x, y));
         } else {
             return Complex(f64).init(x, math.copysign(y - y, y));
         }
@@ -104,7 +104,7 @@ fn sqrt64(z: Complex(f64)) Complex(f64) {
 
     // scale to avoid overflow
     var scale = false;
-    if (@fabs(x) >= threshold or @fabs(y) >= threshold) {
+    if (@abs(x) >= threshold or @abs(y) >= threshold) {
         x *= 0.25;
         y *= 0.25;
         scale = true;
@@ -112,11 +112,11 @@ fn sqrt64(z: Complex(f64)) Complex(f64) {
 
     var result: Complex(f64) = undefined;
     if (x >= 0) {
-        const t = @sqrt((x + math.hypot(f64, x, y)) * 0.5);
+        const t = @sqrt((x + math.hypot(x, y)) * 0.5);
         result = Complex(f64).init(t, y / (2.0 * t));
     } else {
-        const t = @sqrt((-x + math.hypot(f64, x, y)) * 0.5);
-        result = Complex(f64).init(@fabs(y) / (2.0 * t), math.copysign(t, y));
+        const t = @sqrt((-x + math.hypot(x, y)) * 0.5);
+        result = Complex(f64).init(@abs(y) / (2.0 * t), math.copysign(t, y));
     }
 
     if (scale) {
@@ -129,7 +129,7 @@ fn sqrt64(z: Complex(f64)) Complex(f64) {
 
 const epsilon = 0.0001;
 
-test "complex.csqrt32" {
+test sqrt32 {
     const a = Complex(f32).init(5, 3);
     const c = sqrt(a);
 
@@ -137,7 +137,7 @@ test "complex.csqrt32" {
     try testing.expect(math.approxEqAbs(f32, c.im, 0.644574, epsilon));
 }
 
-test "complex.csqrt64" {
+test sqrt64 {
     const a = Complex(f64).init(5, 3);
     const c = sqrt(a);
 

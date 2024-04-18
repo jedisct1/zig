@@ -1,8 +1,4 @@
-pub const parseFloat = @import("parse_float/parse_float.zig").parseFloat;
-pub const ParseFloatError = @import("parse_float/parse_float.zig").ParseFloatError;
-
-const builtin = @import("builtin");
-const std = @import("std");
+const std = @import("../std.zig");
 const math = std.math;
 const testing = std.testing;
 const expect = testing.expect;
@@ -10,10 +6,75 @@ const expectEqual = testing.expectEqual;
 const expectError = testing.expectError;
 const approxEqAbs = std.math.approxEqAbs;
 const epsilon = 1e-7;
+const parse = @import("parse_float/parse.zig");
+const convertHex = @import("parse_float/convert_hex.zig").convertHex;
+const convertFast = @import("parse_float/convert_fast.zig").convertFast;
+const convertEiselLemire = @import("parse_float/convert_eisel_lemire.zig").convertEiselLemire;
+const convertSlow = @import("parse_float/convert_slow.zig").convertSlow;
+
+pub const ParseFloatError = error{
+    InvalidCharacter,
+};
+
+pub fn parseFloat(comptime T: type, s: []const u8) ParseFloatError!T {
+    if (@typeInfo(T) != .Float) {
+        @compileError("Cannot parse a float into a non-floating point type.");
+    }
+
+    if (T == f80) {
+        @compileError("TODO support parsing float to f80");
+    }
+
+    if (s.len == 0) {
+        return error.InvalidCharacter;
+    }
+
+    var i: usize = 0;
+    const negative = s[i] == '-';
+    if (s[i] == '-' or s[i] == '+') {
+        i += 1;
+    }
+    if (s.len == i) {
+        return error.InvalidCharacter;
+    }
+
+    const n = parse.parseNumber(T, s[i..], negative) orelse {
+        return parse.parseInfOrNan(T, s[i..], negative) orelse error.InvalidCharacter;
+    };
+
+    if (n.hex) {
+        return convertHex(T, n);
+    }
+
+    if (convertFast(T, n)) |f| {
+        return f;
+    }
+
+    if (T == f16 or T == f32 or T == f64) {
+        // If significant digits were truncated, then we can have rounding error
+        // only if `mantissa + 1` produces a different result. We also avoid
+        // redundantly using the Eisel-Lemire algorithm if it was unable to
+        // correctly round on the first pass.
+        if (convertEiselLemire(T, n.exponent, n.mantissa)) |bf| {
+            if (!n.many_digits) {
+                return bf.toFloat(T, n.negative);
+            }
+            if (convertEiselLemire(T, n.exponent, n.mantissa + 1)) |bf2| {
+                if (bf.eql(bf2)) {
+                    return bf.toFloat(T, n.negative);
+                }
+            }
+        }
+    }
+
+    // Unable to correctly round the float using the Eisel-Lemire algorithm.
+    // Fallback to a slower, but always correct algorithm.
+    return convertSlow(T, s[i..]).toFloat(T, negative);
+}
 
 // See https://github.com/tiehuis/parse-number-fxx-test-data for a wider-selection of test-data.
 
-test "fmt.parseFloat" {
+test parseFloat {
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
         try testing.expectError(error.InvalidCharacter, parseFloat(T, ""));
         try testing.expectError(error.InvalidCharacter, parseFloat(T, "   1"));
@@ -69,32 +130,34 @@ test "fmt.parseFloat" {
     }
 }
 
-test "fmt.parseFloat nan and inf" {
-    if (builtin.zig_backend == .stage2_llvm and builtin.cpu.arch == .aarch64) {
-        // https://github.com/ziglang/zig/issues/12027
-        return error.SkipZigTest;
-    }
-
+test "nan and inf" {
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
         const Z = std.meta.Int(.unsigned, @typeInfo(T).Float.bits);
 
-        try expectEqual(@bitCast(Z, try parseFloat(T, "nAn")), @bitCast(Z, std.math.nan(T)));
+        try expectEqual(@as(Z, @bitCast(try parseFloat(T, "nAn"))), @as(Z, @bitCast(std.math.nan(T))));
         try expectEqual(try parseFloat(T, "inF"), std.math.inf(T));
         try expectEqual(try parseFloat(T, "-INF"), -std.math.inf(T));
     }
 }
 
-test "fmt.parseFloat #11169" {
+test "largest normals" {
+    try expectEqual(@as(u16, @bitCast(try parseFloat(f16, "65504"))), 0x7bff);
+    try expectEqual(@as(u32, @bitCast(try parseFloat(f32, "3.4028234664E38"))), 0x7f7f_ffff);
+    try expectEqual(@as(u64, @bitCast(try parseFloat(f64, "1.7976931348623157E308"))), 0x7fef_ffff_ffff_ffff);
+    try expectEqual(@as(u128, @bitCast(try parseFloat(f128, "1.1897314953572317650857593266280070162E4932"))), 0x7ffe_ffff_ffff_ffff_ffff_ffff_ffff_ffff);
+}
+
+test "#11169" {
     try expectEqual(try parseFloat(f128, "9007199254740993.0"), 9007199254740993.0);
 }
 
-test "fmt.parseFloat hex.special" {
+test "hex.special" {
     try testing.expect(math.isNan(try parseFloat(f32, "nAn")));
     try testing.expect(math.isPositiveInf(try parseFloat(f32, "iNf")));
     try testing.expect(math.isPositiveInf(try parseFloat(f32, "+Inf")));
     try testing.expect(math.isNegativeInf(try parseFloat(f32, "-iNf")));
 }
-test "fmt.parseFloat hex.zero" {
+test "hex.zero" {
     try testing.expectEqual(@as(f32, 0.0), try parseFloat(f32, "0x0"));
     try testing.expectEqual(@as(f32, 0.0), try parseFloat(f32, "-0x0"));
     try testing.expectEqual(@as(f32, 0.0), try parseFloat(f32, "0x0p42"));
@@ -102,7 +165,7 @@ test "fmt.parseFloat hex.zero" {
     try testing.expectEqual(@as(f32, 0.0), try parseFloat(f32, "0x0.00000p666"));
 }
 
-test "fmt.parseFloat hex.f16" {
+test "hex.f16" {
     try testing.expectEqual(try parseFloat(f16, "0x1p0"), 1.0);
     try testing.expectEqual(try parseFloat(f16, "-0x1p-1"), -0.5);
     try testing.expectEqual(try parseFloat(f16, "0x10p+10"), 16384.0);
@@ -118,7 +181,7 @@ test "fmt.parseFloat hex.f16" {
     try testing.expectEqual(try parseFloat(f16, "-0x1p-24"), -math.floatTrueMin(f16));
 }
 
-test "fmt.parseFloat hex.f32" {
+test "hex.f32" {
     try testing.expectError(error.InvalidCharacter, parseFloat(f32, "0x"));
     try testing.expectEqual(try parseFloat(f32, "0x1p0"), 1.0);
     try testing.expectEqual(try parseFloat(f32, "-0x1p-1"), -0.5);
@@ -137,7 +200,7 @@ test "fmt.parseFloat hex.f32" {
     try testing.expectEqual(try parseFloat(f32, "-0x1P-149"), -math.floatTrueMin(f32));
 }
 
-test "fmt.parseFloat hex.f64" {
+test "hex.f64" {
     try testing.expectEqual(try parseFloat(f64, "0x1p0"), 1.0);
     try testing.expectEqual(try parseFloat(f64, "-0x1p-1"), -0.5);
     try testing.expectEqual(try parseFloat(f64, "0x10p+10"), 16384.0);
@@ -152,7 +215,7 @@ test "fmt.parseFloat hex.f64" {
     try testing.expectEqual(try parseFloat(f64, "0x1p-1074"), math.floatTrueMin(f64));
     try testing.expectEqual(try parseFloat(f64, "-0x1p-1074"), -math.floatTrueMin(f64));
 }
-test "fmt.parseFloat hex.f128" {
+test "hex.f128" {
     try testing.expectEqual(try parseFloat(f128, "0x1p0"), 1.0);
     try testing.expectEqual(try parseFloat(f128, "-0x1p-1"), -0.5);
     try testing.expectEqual(try parseFloat(f128, "0x10p+10"), 16384.0);

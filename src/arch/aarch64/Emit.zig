@@ -81,7 +81,7 @@ pub fn emitMir(
 
     // Emit machine code
     for (mir_tags, 0..) |tag, index| {
-        const inst = @intCast(u32, index);
+        const inst = @as(u32, @intCast(index));
         switch (tag) {
             .add_immediate => try emit.mirAddSubtractImmediate(inst),
             .adds_immediate => try emit.mirAddSubtractImmediate(inst),
@@ -218,14 +218,16 @@ pub fn emitMir(
 }
 
 pub fn deinit(emit: *Emit) void {
+    const comp = emit.bin_file.comp;
+    const gpa = comp.gpa;
     var iter = emit.branch_forward_origins.valueIterator();
     while (iter.next()) |origin_list| {
-        origin_list.deinit(emit.bin_file.allocator);
+        origin_list.deinit(gpa);
     }
 
-    emit.branch_types.deinit(emit.bin_file.allocator);
-    emit.branch_forward_origins.deinit(emit.bin_file.allocator);
-    emit.code_offset_mapping.deinit(emit.bin_file.allocator);
+    emit.branch_types.deinit(gpa);
+    emit.branch_forward_origins.deinit(gpa);
+    emit.code_offset_mapping.deinit(gpa);
     emit.* = undefined;
 }
 
@@ -314,8 +316,9 @@ fn branchTarget(emit: *Emit, inst: Mir.Inst.Index) Mir.Inst.Index {
 }
 
 fn lowerBranches(emit: *Emit) !void {
+    const comp = emit.bin_file.comp;
+    const gpa = comp.gpa;
     const mir_tags = emit.mir.instructions.items(.tag);
-    const allocator = emit.bin_file.allocator;
 
     // First pass: Note down all branches and their target
     // instructions, i.e. populate branch_types,
@@ -324,12 +327,12 @@ fn lowerBranches(emit: *Emit) !void {
     // TODO optimization opportunity: do this in codegen while
     // generating MIR
     for (mir_tags, 0..) |tag, index| {
-        const inst = @intCast(u32, index);
+        const inst = @as(u32, @intCast(index));
         if (isBranch(tag)) {
             const target_inst = emit.branchTarget(inst);
 
             // Remember this branch instruction
-            try emit.branch_types.put(allocator, inst, BranchType.default(tag));
+            try emit.branch_types.put(gpa, inst, BranchType.default(tag));
 
             // Forward branches require some extra stuff: We only
             // know their offset once we arrive at the target
@@ -339,14 +342,14 @@ fn lowerBranches(emit: *Emit) !void {
             // etc.
             if (target_inst > inst) {
                 // Remember the branch instruction index
-                try emit.code_offset_mapping.put(allocator, inst, 0);
+                try emit.code_offset_mapping.put(gpa, inst, 0);
 
                 if (emit.branch_forward_origins.getPtr(target_inst)) |origin_list| {
-                    try origin_list.append(allocator, inst);
+                    try origin_list.append(gpa, inst);
                 } else {
                     var origin_list: std.ArrayListUnmanaged(Mir.Inst.Index) = .{};
-                    try origin_list.append(allocator, inst);
-                    try emit.branch_forward_origins.put(allocator, target_inst, origin_list);
+                    try origin_list.append(gpa, inst);
+                    try emit.branch_forward_origins.put(gpa, target_inst, origin_list);
                 }
             }
 
@@ -356,7 +359,7 @@ fn lowerBranches(emit: *Emit) !void {
             // putNoClobber may not be used as the put operation
             // may clobber the entry when multiple branches branch
             // to the same target instruction
-            try emit.code_offset_mapping.put(allocator, target_inst, 0);
+            try emit.code_offset_mapping.put(gpa, target_inst, 0);
         }
     }
 
@@ -369,7 +372,7 @@ fn lowerBranches(emit: *Emit) !void {
         var current_code_offset: usize = 0;
 
         for (mir_tags, 0..) |tag, index| {
-            const inst = @intCast(u32, index);
+            const inst = @as(u32, @intCast(index));
 
             // If this instruction contained in the code offset
             // mapping (when it is a target of a branch or if it is a
@@ -384,7 +387,7 @@ fn lowerBranches(emit: *Emit) !void {
                 const target_inst = emit.branchTarget(inst);
                 if (target_inst < inst) {
                     const target_offset = emit.code_offset_mapping.get(target_inst).?;
-                    const offset = @intCast(i64, target_offset) - @intCast(i64, current_code_offset);
+                    const offset = @as(i64, @intCast(target_offset)) - @as(i64, @intCast(current_code_offset));
                     const branch_type = emit.branch_types.getPtr(inst).?;
                     const optimal_branch_type = try emit.optimalBranchType(tag, offset);
                     if (branch_type.* != optimal_branch_type) {
@@ -403,7 +406,7 @@ fn lowerBranches(emit: *Emit) !void {
                 for (origin_list.items) |forward_branch_inst| {
                     const branch_tag = emit.mir.instructions.items(.tag)[forward_branch_inst];
                     const forward_branch_inst_offset = emit.code_offset_mapping.get(forward_branch_inst).?;
-                    const offset = @intCast(i64, current_code_offset) - @intCast(i64, forward_branch_inst_offset);
+                    const offset = @as(i64, @intCast(current_code_offset)) - @as(i64, @intCast(forward_branch_inst_offset));
                     const branch_type = emit.branch_types.getPtr(forward_branch_inst).?;
                     const optimal_branch_type = try emit.optimalBranchType(branch_tag, offset);
                     if (branch_type.* != optimal_branch_type) {
@@ -429,45 +432,56 @@ fn writeInstruction(emit: *Emit, instruction: Instruction) !void {
 fn fail(emit: *Emit, comptime format: []const u8, args: anytype) InnerError {
     @setCold(true);
     assert(emit.err_msg == null);
-    emit.err_msg = try ErrorMsg.create(emit.bin_file.allocator, emit.src_loc, format, args);
+    const comp = emit.bin_file.comp;
+    const gpa = comp.gpa;
+    emit.err_msg = try ErrorMsg.create(gpa, emit.src_loc, format, args);
     return error.EmitFail;
 }
 
-fn dbgAdvancePCAndLine(self: *Emit, line: u32, column: u32) !void {
-    const delta_line = @intCast(i32, line) - @intCast(i32, self.prev_di_line);
-    const delta_pc: usize = self.code.items.len - self.prev_di_pc;
-    switch (self.debug_output) {
+fn dbgAdvancePCAndLine(emit: *Emit, line: u32, column: u32) InnerError!void {
+    const delta_line = @as(i33, line) - @as(i33, emit.prev_di_line);
+    const delta_pc: usize = emit.code.items.len - emit.prev_di_pc;
+    log.debug("  (advance pc={d} and line={d})", .{ delta_pc, delta_line });
+    switch (emit.debug_output) {
         .dwarf => |dw| {
+            if (column != emit.prev_di_column) try dw.setColumn(column);
             try dw.advancePCAndLine(delta_line, delta_pc);
-            self.prev_di_line = line;
-            self.prev_di_column = column;
-            self.prev_di_pc = self.code.items.len;
+            emit.prev_di_line = line;
+            emit.prev_di_column = column;
+            emit.prev_di_pc = emit.code.items.len;
         },
         .plan9 => |dbg_out| {
             if (delta_pc <= 0) return; // only do this when the pc changes
-            // we have already checked the target in the linker to make sure it is compatable
-            const quant = @import("../../link/Plan9/aout.zig").getPCQuant(self.target.cpu.arch) catch unreachable;
 
             // increasing the line number
-            try @import("../../link/Plan9.zig").changeLine(dbg_out.dbg_line, delta_line);
+            try link.File.Plan9.changeLine(&dbg_out.dbg_line, @intCast(delta_line));
             // increasing the pc
-            const d_pc_p9 = @intCast(i64, delta_pc) - quant;
+            const d_pc_p9 = @as(i64, @intCast(delta_pc)) - dbg_out.pc_quanta;
             if (d_pc_p9 > 0) {
-                // minus one because if its the last one, we want to leave space to change the line which is one quanta
-                try dbg_out.dbg_line.append(@intCast(u8, @divExact(d_pc_p9, quant) + 128) - quant);
-                if (dbg_out.pcop_change_index.*) |pci|
+                // minus one because if its the last one, we want to leave space to change the line which is one pc quanta
+                var diff = @divExact(d_pc_p9, dbg_out.pc_quanta) - dbg_out.pc_quanta;
+                while (diff > 0) {
+                    if (diff < 64) {
+                        try dbg_out.dbg_line.append(@intCast(diff + 128));
+                        diff = 0;
+                    } else {
+                        try dbg_out.dbg_line.append(@intCast(64 + 128));
+                        diff -= 64;
+                    }
+                }
+                if (dbg_out.pcop_change_index) |pci|
                     dbg_out.dbg_line.items[pci] += 1;
-                dbg_out.pcop_change_index.* = @intCast(u32, dbg_out.dbg_line.items.len - 1);
+                dbg_out.pcop_change_index = @intCast(dbg_out.dbg_line.items.len - 1);
             } else if (d_pc_p9 == 0) {
-                // we don't need to do anything, because adding the quant does it for us
+                // we don't need to do anything, because adding the pc quanta does it for us
             } else unreachable;
-            if (dbg_out.start_line.* == null)
-                dbg_out.start_line.* = self.prev_di_line;
-            dbg_out.end_line.* = line;
+            if (dbg_out.start_line == null)
+                dbg_out.start_line = emit.prev_di_line;
+            dbg_out.end_line = line;
             // only do this if the pc changed
-            self.prev_di_line = line;
-            self.prev_di_column = column;
-            self.prev_di_pc = self.code.items.len;
+            emit.prev_di_line = line;
+            emit.prev_di_column = column;
+            emit.prev_di_pc = emit.code.items.len;
         },
         .none => {},
     }
@@ -548,13 +562,13 @@ fn mirConditionalBranchImmediate(emit: *Emit, inst: Mir.Inst.Index) !void {
     const tag = emit.mir.instructions.items(.tag)[inst];
     const inst_cond = emit.mir.instructions.items(.data)[inst].inst_cond;
 
-    const offset = @intCast(i64, emit.code_offset_mapping.get(inst_cond.inst).?) - @intCast(i64, emit.code.items.len);
+    const offset = @as(i64, @intCast(emit.code_offset_mapping.get(inst_cond.inst).?)) - @as(i64, @intCast(emit.code.items.len));
     const branch_type = emit.branch_types.get(inst).?;
     log.debug("mirConditionalBranchImmediate: {} offset={}", .{ inst, offset });
 
     switch (branch_type) {
         .b_cond => switch (tag) {
-            .b_cond => try emit.writeInstruction(Instruction.bCond(inst_cond.cond, @intCast(i21, offset))),
+            .b_cond => try emit.writeInstruction(Instruction.bCond(inst_cond.cond, @as(i21, @intCast(offset)))),
             else => unreachable,
         },
         else => unreachable,
@@ -572,14 +586,14 @@ fn mirBranch(emit: *Emit, inst: Mir.Inst.Index) !void {
         emit.mir.instructions.items(.tag)[target_inst],
     });
 
-    const offset = @intCast(i64, emit.code_offset_mapping.get(target_inst).?) - @intCast(i64, emit.code.items.len);
+    const offset = @as(i64, @intCast(emit.code_offset_mapping.get(target_inst).?)) - @as(i64, @intCast(emit.code.items.len));
     const branch_type = emit.branch_types.get(inst).?;
     log.debug("mirBranch: {} offset={}", .{ inst, offset });
 
     switch (branch_type) {
         .unconditional_branch_immediate => switch (tag) {
-            .b => try emit.writeInstruction(Instruction.b(@intCast(i28, offset))),
-            .bl => try emit.writeInstruction(Instruction.bl(@intCast(i28, offset))),
+            .b => try emit.writeInstruction(Instruction.b(@as(i28, @intCast(offset)))),
+            .bl => try emit.writeInstruction(Instruction.bl(@as(i28, @intCast(offset)))),
             else => unreachable,
         },
         else => unreachable,
@@ -590,13 +604,13 @@ fn mirCompareAndBranch(emit: *Emit, inst: Mir.Inst.Index) !void {
     const tag = emit.mir.instructions.items(.tag)[inst];
     const r_inst = emit.mir.instructions.items(.data)[inst].r_inst;
 
-    const offset = @intCast(i64, emit.code_offset_mapping.get(r_inst.inst).?) - @intCast(i64, emit.code.items.len);
+    const offset = @as(i64, @intCast(emit.code_offset_mapping.get(r_inst.inst).?)) - @as(i64, @intCast(emit.code.items.len));
     const branch_type = emit.branch_types.get(inst).?;
     log.debug("mirCompareAndBranch: {} offset={}", .{ inst, offset });
 
     switch (branch_type) {
         .cbz => switch (tag) {
-            .cbz => try emit.writeInstruction(Instruction.cbz(r_inst.rt, @intCast(i21, offset))),
+            .cbz => try emit.writeInstruction(Instruction.cbz(r_inst.rt, @as(i21, @intCast(offset)))),
             else => unreachable,
         },
         else => unreachable,
@@ -635,22 +649,25 @@ fn mirDbgLine(emit: *Emit, inst: Mir.Inst.Index) !void {
     }
 }
 
-fn mirDebugPrologueEnd(self: *Emit) !void {
-    switch (self.debug_output) {
+fn mirDebugPrologueEnd(emit: *Emit) !void {
+    switch (emit.debug_output) {
         .dwarf => |dw| {
             try dw.setPrologueEnd();
-            try self.dbgAdvancePCAndLine(self.prev_di_line, self.prev_di_column);
+            log.debug("mirDbgPrologueEnd (line={d}, col={d})", .{
+                emit.prev_di_line, emit.prev_di_column,
+            });
+            try emit.dbgAdvancePCAndLine(emit.prev_di_line, emit.prev_di_column);
         },
         .plan9 => {},
         .none => {},
     }
 }
 
-fn mirDebugEpilogueBegin(self: *Emit) !void {
-    switch (self.debug_output) {
+fn mirDebugEpilogueBegin(emit: *Emit) !void {
+    switch (emit.debug_output) {
         .dwarf => |dw| {
             try dw.setEpilogueBegin();
-            try self.dbgAdvancePCAndLine(self.prev_di_line, self.prev_di_column);
+            try emit.dbgAdvancePCAndLine(emit.prev_di_line, emit.prev_di_column);
         },
         .plan9 => {},
         .none => {},
@@ -660,26 +677,30 @@ fn mirDebugEpilogueBegin(self: *Emit) !void {
 fn mirCallExtern(emit: *Emit, inst: Mir.Inst.Index) !void {
     assert(emit.mir.instructions.items(.tag)[inst] == .call_extern);
     const relocation = emit.mir.instructions.items(.data)[inst].relocation;
+    _ = relocation;
 
     const offset = blk: {
-        const offset = @intCast(u32, emit.code.items.len);
+        const offset = @as(u32, @intCast(emit.code.items.len));
         // bl
         try emit.writeInstruction(Instruction.bl(0));
         break :blk offset;
     };
+    _ = offset;
 
     if (emit.bin_file.cast(link.File.MachO)) |macho_file| {
-        // Add relocation to the decl.
-        const atom_index = macho_file.getAtomIndexForSymbol(.{ .sym_index = relocation.atom_index, .file = null }).?;
-        const target = macho_file.getGlobalByIndex(relocation.sym_index);
-        try link.File.MachO.Atom.addRelocation(macho_file, atom_index, .{
-            .type = .branch,
-            .target = target,
-            .offset = offset,
-            .addend = 0,
-            .pcrel = true,
-            .length = 2,
-        });
+        _ = macho_file;
+        @panic("TODO mirCallExtern");
+        // // Add relocation to the decl.
+        // const atom_index = macho_file.getAtomIndexForSymbol(.{ .sym_index = relocation.atom_index }).?;
+        // const target = macho_file.getGlobalByIndex(relocation.sym_index);
+        // try link.File.MachO.Atom.addRelocation(macho_file, atom_index, .{
+        //     .type = .branch,
+        //     .target = target,
+        //     .offset = offset,
+        //     .addend = 0,
+        //     .pcrel = true,
+        //     .length = 2,
+        // });
     } else if (emit.bin_file.cast(link.File.Coff)) |_| {
         unreachable; // Calling imports is handled via `.load_memory_import`
     } else {
@@ -837,11 +858,11 @@ fn mirLoadMemoryPie(emit: *Emit, inst: Mir.Inst.Index) !void {
     const tag = emit.mir.instructions.items(.tag)[inst];
     const payload = emit.mir.instructions.items(.data)[inst].payload;
     const data = emit.mir.extraData(Mir.LoadMemoryPie, payload).data;
-    const reg = @intToEnum(Register, data.register);
+    const reg = @as(Register, @enumFromInt(data.register));
 
     // PC-relative displacement to the entry in memory.
     // adrp
-    const offset = @intCast(u32, emit.code.items.len);
+    const offset = @as(u32, @intCast(emit.code.items.len));
     try emit.writeInstruction(Instruction.adrp(reg.toX(), 0));
 
     switch (tag) {
@@ -883,32 +904,34 @@ fn mirLoadMemoryPie(emit: *Emit, inst: Mir.Inst.Index) !void {
     }
 
     if (emit.bin_file.cast(link.File.MachO)) |macho_file| {
-        const Atom = link.File.MachO.Atom;
-        const Relocation = Atom.Relocation;
-        const atom_index = macho_file.getAtomIndexForSymbol(.{ .sym_index = data.atom_index, .file = null }).?;
-        try Atom.addRelocations(macho_file, atom_index, &[_]Relocation{ .{
-            .target = .{ .sym_index = data.sym_index, .file = null },
-            .offset = offset,
-            .addend = 0,
-            .pcrel = true,
-            .length = 2,
-            .type = switch (tag) {
-                .load_memory_got, .load_memory_ptr_got => Relocation.Type.got_page,
-                .load_memory_direct, .load_memory_ptr_direct => Relocation.Type.page,
-                else => unreachable,
-            },
-        }, .{
-            .target = .{ .sym_index = data.sym_index, .file = null },
-            .offset = offset + 4,
-            .addend = 0,
-            .pcrel = false,
-            .length = 2,
-            .type = switch (tag) {
-                .load_memory_got, .load_memory_ptr_got => Relocation.Type.got_pageoff,
-                .load_memory_direct, .load_memory_ptr_direct => Relocation.Type.pageoff,
-                else => unreachable,
-            },
-        } });
+        _ = macho_file;
+        @panic("TODO mirLoadMemoryPie");
+        // const Atom = link.File.MachO.Atom;
+        // const Relocation = Atom.Relocation;
+        // const atom_index = macho_file.getAtomIndexForSymbol(.{ .sym_index = data.atom_index }).?;
+        // try Atom.addRelocations(macho_file, atom_index, &[_]Relocation{ .{
+        //     .target = .{ .sym_index = data.sym_index },
+        //     .offset = offset,
+        //     .addend = 0,
+        //     .pcrel = true,
+        //     .length = 2,
+        //     .type = switch (tag) {
+        //         .load_memory_got, .load_memory_ptr_got => Relocation.Type.got_page,
+        //         .load_memory_direct, .load_memory_ptr_direct => Relocation.Type.page,
+        //         else => unreachable,
+        //     },
+        // }, .{
+        //     .target = .{ .sym_index = data.sym_index },
+        //     .offset = offset + 4,
+        //     .addend = 0,
+        //     .pcrel = false,
+        //     .length = 2,
+        //     .type = switch (tag) {
+        //         .load_memory_got, .load_memory_ptr_got => Relocation.Type.got_pageoff,
+        //         .load_memory_direct, .load_memory_ptr_direct => Relocation.Type.pageoff,
+        //         else => unreachable,
+        //     },
+        // } });
     } else if (emit.bin_file.cast(link.File.Coff)) |coff_file| {
         const atom_index = coff_file.getAtomIndexForSymbol(.{ .sym_index = data.atom_index, .file = null }).?;
         const target = switch (tag) {
@@ -1220,7 +1243,7 @@ fn mirNop(emit: *Emit) !void {
 }
 
 fn regListIsSet(reg_list: u32, reg: Register) bool {
-    return reg_list & @as(u32, 1) << @intCast(u5, reg.id()) != 0;
+    return reg_list & @as(u32, 1) << @as(u5, @intCast(reg.id())) != 0;
 }
 
 fn mirPushPopRegs(emit: *Emit, inst: Mir.Inst.Index) !void {
@@ -1245,7 +1268,7 @@ fn mirPushPopRegs(emit: *Emit, inst: Mir.Inst.Index) !void {
             var count: u6 = 0;
             var other_reg: ?Register = null;
             while (i > 0) : (i -= 1) {
-                const reg = @intToEnum(Register, i - 1);
+                const reg = @as(Register, @enumFromInt(i - 1));
                 if (regListIsSet(reg_list, reg)) {
                     if (count == 0 and odd_number_of_regs) {
                         try emit.writeInstruction(Instruction.ldr(
@@ -1274,7 +1297,7 @@ fn mirPushPopRegs(emit: *Emit, inst: Mir.Inst.Index) !void {
             var count: u6 = 0;
             var other_reg: ?Register = null;
             while (i < 32) : (i += 1) {
-                const reg = @intToEnum(Register, i);
+                const reg = @as(Register, @enumFromInt(i));
                 if (regListIsSet(reg_list, reg)) {
                     if (count == number_of_regs - 1 and odd_number_of_regs) {
                         try emit.writeInstruction(Instruction.str(

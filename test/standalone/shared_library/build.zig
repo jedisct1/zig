@@ -4,12 +4,17 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Test it");
     b.default_step = test_step;
 
+    if (@import("builtin").os.tag == .windows) {
+        // https://github.com/ziglang/zig/issues/16959
+        return;
+    }
+
     const optimize: std.builtin.OptimizeMode = .Debug;
-    const target: std.zig.CrossTarget = .{};
+    const target = b.host;
     const lib = b.addSharedLibrary(.{
         .name = "mathtest",
-        .root_source_file = .{ .path = "mathtest.zig" },
-        .version = .{ .major = 1, .minor = 0 },
+        .root_source_file = b.path("mathtest.zig"),
+        .version = .{ .major = 1, .minor = 0, .patch = 0 },
         .target = target,
         .optimize = optimize,
     });
@@ -19,7 +24,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    exe.addCSourceFile("test.c", &[_][]const u8{"-std=c99"});
+    exe.addCSourceFile(.{
+        .file = b.path("test.c"),
+        .flags = &[_][]const u8{"-std=c99"},
+    });
     exe.linkLibrary(lib);
     exe.linkSystemLibrary("c");
 

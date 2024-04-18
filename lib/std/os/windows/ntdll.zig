@@ -36,6 +36,7 @@ const THREADINFOCLASS = windows.THREADINFOCLASS;
 const PROCESSINFOCLASS = windows.PROCESSINFOCLASS;
 const LPVOID = windows.LPVOID;
 const LPCVOID = windows.LPCVOID;
+const SECTION_INHERIT = windows.SECTION_INHERIT;
 
 pub extern "ntdll" fn NtQueryInformationProcess(
     ProcessHandle: HANDLE,
@@ -112,6 +113,13 @@ pub extern "ntdll" fn NtQueryAttributesFile(
     FileAttributes: *FILE_BASIC_INFORMATION,
 ) callconv(WINAPI) NTSTATUS;
 
+pub extern "ntdll" fn RtlQueryPerformanceCounter(PerformanceCounter: *LARGE_INTEGER) callconv(WINAPI) BOOL;
+pub extern "ntdll" fn RtlQueryPerformanceFrequency(PerformanceFrequency: *LARGE_INTEGER) callconv(WINAPI) BOOL;
+pub extern "ntdll" fn NtQueryPerformanceCounter(
+    PerformanceCounter: *LARGE_INTEGER,
+    PerformanceFrequency: ?*LARGE_INTEGER,
+) callconv(WINAPI) NTSTATUS;
+
 pub extern "ntdll" fn NtCreateFile(
     FileHandle: *HANDLE,
     DesiredAccess: ACCESS_MASK,
@@ -124,6 +132,31 @@ pub extern "ntdll" fn NtCreateFile(
     CreateOptions: ULONG,
     EaBuffer: ?*anyopaque,
     EaLength: ULONG,
+) callconv(WINAPI) NTSTATUS;
+pub extern "ntdll" fn NtCreateSection(
+    SectionHandle: *HANDLE,
+    DesiredAccess: ACCESS_MASK,
+    ObjectAttributes: ?*OBJECT_ATTRIBUTES,
+    MaximumSize: ?*LARGE_INTEGER,
+    SectionPageProtection: ULONG,
+    AllocationAttributes: ULONG,
+    FileHandle: ?HANDLE,
+) callconv(WINAPI) NTSTATUS;
+pub extern "ntdll" fn NtMapViewOfSection(
+    SectionHandle: HANDLE,
+    ProcessHandle: HANDLE,
+    BaseAddress: *PVOID,
+    ZeroBits: ?*ULONG,
+    CommitSize: SIZE_T,
+    SectionOffset: ?*LARGE_INTEGER,
+    ViewSize: *SIZE_T,
+    InheritDispostion: SECTION_INHERIT,
+    AllocationType: ULONG,
+    Win32Protect: ULONG,
+) callconv(WINAPI) NTSTATUS;
+pub extern "ntdll" fn NtUnmapViewOfSection(
+    ProcessHandle: HANDLE,
+    BaseAddress: PVOID,
 ) callconv(WINAPI) NTSTATUS;
 pub extern "ntdll" fn NtDeviceIoControlFile(
     FileHandle: HANDLE,
@@ -157,6 +190,16 @@ pub extern "ntdll" fn RtlDosPathNameToNtPathName_U(
     DirectoryInfo: ?*CURDIR,
 ) callconv(WINAPI) BOOL;
 pub extern "ntdll" fn RtlFreeUnicodeString(UnicodeString: *UNICODE_STRING) callconv(WINAPI) void;
+
+/// Returns the number of bytes written to `Buffer`.
+/// If the returned count is larger than `BufferByteLength`, the buffer was too small.
+/// If the returned count is zero, an error occurred.
+pub extern "ntdll" fn RtlGetFullPathName_U(
+    FileName: [*:0]const u16,
+    BufferByteLength: ULONG,
+    Buffer: [*]u16,
+    ShortName: ?*[*:0]const u16,
+) callconv(windows.WINAPI) windows.ULONG;
 
 pub extern "ntdll" fn NtQueryDirectoryFile(
     FileHandle: HANDLE,
@@ -293,4 +336,25 @@ pub extern "ntdll" fn NtProtectVirtualMemory(
     NumberOfBytesToProtect: *SIZE_T,
     NewAccessProtection: ULONG,
     OldAccessProtection: *ULONG,
+) callconv(WINAPI) NTSTATUS;
+
+pub extern "ntdll" fn RtlExitUserProcess(
+    ExitStatus: u32,
+) callconv(WINAPI) noreturn;
+
+pub extern "ntdll" fn NtCreateNamedPipeFile(
+    FileHandle: *HANDLE,
+    DesiredAccess: ULONG,
+    ObjectAttributes: *OBJECT_ATTRIBUTES,
+    IoStatusBlock: *IO_STATUS_BLOCK,
+    ShareAccess: ULONG,
+    CreateDisposition: ULONG,
+    CreateOptions: ULONG,
+    NamedPipeType: ULONG,
+    ReadMode: ULONG,
+    CompletionMode: ULONG,
+    MaximumInstances: ULONG,
+    InboundQuota: ULONG,
+    OutboundQuota: ULONG,
+    DefaultTimeout: *LARGE_INTEGER,
 ) callconv(WINAPI) NTSTATUS;

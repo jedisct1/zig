@@ -1,17 +1,17 @@
 pub export fn entry() void {
     var buf: [5]u8 = .{ 1, 2, 3, 4, 5 };
-    var slice: []u8 = &buf;
+    const slice: []u8 = &buf;
     const a: u32 = 1234;
-    @memcpy(slice.ptr, @ptrCast([*]const u8, &a));
+    @memcpy(slice.ptr, @as([*]const u8, @ptrCast(&a)));
 }
 pub export fn entry1() void {
     var buf: [5]u8 = .{ 1, 2, 3, 4, 5 };
-    var ptr: *u8 = &buf[0];
+    const ptr: *u8 = &buf[0];
     @memcpy(ptr, 0);
 }
 pub export fn entry2() void {
     var buf: [5]u8 = .{ 1, 2, 3, 4, 5 };
-    var ptr: *u8 = &buf[0];
+    const ptr: *u8 = &buf[0];
     @memset(ptr, 0);
 }
 pub export fn non_matching_lengths() void {
@@ -29,7 +29,7 @@ pub export fn memcpy_const_dest_ptr() void {
     @memcpy(&buf1, &buf2);
 }
 pub export fn memset_array() void {
-    var buf: [5]u8 = .{ 1, 2, 3, 4, 5 };
+    const buf: [5]u8 = .{ 1, 2, 3, 4, 5 };
     @memcpy(buf, 1);
 }
 
@@ -39,7 +39,7 @@ pub export fn memset_array() void {
 //
 // :5:5: error: unknown @memcpy length
 // :5:18: note: destination type '[*]u8' provides no length
-// :5:24: note: source type '[*]align(4) const u8' provides no length
+// :5:24: note: source type '[*]const u8' provides no length
 // :10:13: error: type '*u8' is not an indexable pointer
 // :10:13: note: operand must be a slice, a many pointer or a pointer to an array
 // :15:13: error: type '*u8' is not an indexable pointer

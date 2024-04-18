@@ -1,10 +1,11 @@
 export fn foo() void {
-    comptime bar(12, "hi",);
+    comptime bar(12, "hi");
+    _ = &bar;
 }
 fn bar(a: i32, b: []const u8) void {
-    @compileLog("begin",);
+    @compileLog("begin");
     @compileLog("a", a, "b", b);
-    @compileLog("end",);
+    @compileLog("end");
 }
 export fn baz() void {
     const S = struct { a: u32 };
@@ -15,12 +16,12 @@ export fn baz() void {
 // backend=llvm
 // target=native
 //
-// :5:5: error: found compile log statement
-// :11:5: note: also here
+// :6:5: error: found compile log statement
+// :12:5: note: also here
 //
 // Compile Log Output:
 // @as(*const [5:0]u8, "begin")
-// @as(*const [1:0]u8, "a"), @as(i32, 12), @as(*const [1:0]u8, "b"), @as([]const u8, "hi")
+// @as(*const [1:0]u8, "a"), @as(i32, 12), @as(*const [1:0]u8, "b"), @as([]const u8, "hi"[0..2])
 // @as(*const [3:0]u8, "end")
 // @as(comptime_int, 4)
 // @as(*const [5:0]u8, "begin")

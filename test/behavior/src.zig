@@ -17,15 +17,18 @@ test "@src" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     try doTheTest();
 }
 
 test "@src used as a comptime parameter" {
     const S = struct {
-        fn Foo(comptime _: std.builtin.SourceLocation) type {
-            return struct {};
+        fn Foo(comptime src: std.builtin.SourceLocation) type {
+            return struct {
+                comptime {
+                    _ = src;
+                }
+            };
         }
     };
     const T1 = S.Foo(@src());
@@ -34,8 +37,6 @@ test "@src used as a comptime parameter" {
 }
 
 test "@src in tuple passed to anytype function" {
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
-
     const S = struct {
         fn Foo(a: anytype) u32 {
             return a[0].line;

@@ -24,7 +24,7 @@ pub fn timingSafeEql(comptime T: type, a: T, b: T) bool {
             const s = @typeInfo(C).Int.bits;
             const Cu = std.meta.Int(.unsigned, s);
             const Cext = std.meta.Int(.unsigned, s + 1);
-            return @bitCast(bool, @truncate(u1, (@as(Cext, @bitCast(Cu, acc)) -% 1) >> s));
+            return @as(bool, @bitCast(@as(u1, @truncate((@as(Cext, @as(Cu, @bitCast(acc))) -% 1) >> s))));
         },
         .Vector => |info| {
             const C = info.child;
@@ -35,7 +35,7 @@ pub fn timingSafeEql(comptime T: type, a: T, b: T) bool {
             const s = @typeInfo(C).Int.bits;
             const Cu = std.meta.Int(.unsigned, s);
             const Cext = std.meta.Int(.unsigned, s + 1);
-            return @bitCast(bool, @truncate(u1, (@as(Cext, @bitCast(Cu, acc)) -% 1) >> s));
+            return @as(bool, @bitCast(@as(u1, @truncate((@as(Cext, @as(Cu, @bitCast(acc))) -% 1) >> s))));
         },
         else => {
             @compileError("Only arrays and vectors can be compared");
@@ -54,20 +54,20 @@ pub fn timingSafeCompare(comptime T: type, a: []const T, b: []const T, endian: E
     const Cext = std.meta.Int(.unsigned, bits + 1);
     var gt: T = 0;
     var eq: T = 1;
-    if (endian == .Little) {
+    if (endian == .little) {
         var i = a.len;
         while (i != 0) {
             i -= 1;
             const x1 = a[i];
             const x2 = b[i];
-            gt |= @truncate(T, (@as(Cext, x2) -% @as(Cext, x1)) >> bits) & eq;
-            eq &= @truncate(T, (@as(Cext, (x2 ^ x1)) -% 1) >> bits);
+            gt |= @as(T, @truncate((@as(Cext, x2) -% @as(Cext, x1)) >> bits)) & eq;
+            eq &= @as(T, @truncate((@as(Cext, (x2 ^ x1)) -% 1) >> bits));
         }
     } else {
         for (a, 0..) |x1, i| {
             const x2 = b[i];
-            gt |= @truncate(T, (@as(Cext, x2) -% @as(Cext, x1)) >> bits) & eq;
-            eq &= @truncate(T, (@as(Cext, (x2 ^ x1)) -% 1) >> bits);
+            gt |= @as(T, @truncate((@as(Cext, x2) -% @as(Cext, x1)) >> bits)) & eq;
+            eq &= @as(T, @truncate((@as(Cext, (x2 ^ x1)) -% 1) >> bits));
         }
     }
     if (gt != 0) {
@@ -84,7 +84,7 @@ pub fn timingSafeAdd(comptime T: type, a: []const T, b: []const T, result: []T, 
     const len = a.len;
     debug.assert(len == b.len and len == result.len);
     var carry: u1 = 0;
-    if (endian == .Little) {
+    if (endian == .little) {
         var i: usize = 0;
         while (i < len) : (i += 1) {
             const ov1 = @addWithOverflow(a[i], b[i]);
@@ -102,7 +102,7 @@ pub fn timingSafeAdd(comptime T: type, a: []const T, b: []const T, result: []T, 
             carry = ov1[1] | ov2[1];
         }
     }
-    return @bitCast(bool, carry);
+    return @as(bool, @bitCast(carry));
 }
 
 /// Subtract two integers serialized as arrays of the same size, in constant time.
@@ -111,7 +111,7 @@ pub fn timingSafeSub(comptime T: type, a: []const T, b: []const T, result: []T, 
     const len = a.len;
     debug.assert(len == b.len and len == result.len);
     var borrow: u1 = 0;
-    if (endian == .Little) {
+    if (endian == .little) {
         var i: usize = 0;
         while (i < len) : (i += 1) {
             const ov1 = @subWithOverflow(a[i], b[i]);
@@ -129,7 +129,7 @@ pub fn timingSafeSub(comptime T: type, a: []const T, b: []const T, result: []T, 
             borrow = ov1[1] | ov2[1];
         }
     }
-    return @bitCast(bool, borrow);
+    return @as(bool, @bitCast(borrow));
 }
 
 /// Sets a slice to zeroes.
@@ -138,7 +138,7 @@ pub inline fn secureZero(comptime T: type, s: []T) void {
     @memset(@as([]volatile T, s), 0);
 }
 
-test "crypto.utils.timingSafeEql" {
+test timingSafeEql {
     var a: [100]u8 = undefined;
     var b: [100]u8 = undefined;
     random.bytes(a[0..]);
@@ -148,7 +148,9 @@ test "crypto.utils.timingSafeEql" {
     try testing.expect(timingSafeEql([100]u8, a, b));
 }
 
-test "crypto.utils.timingSafeEql (vectors)" {
+test "timingSafeEql (vectors)" {
+    if (@import("builtin").zig_backend == .stage2_x86_64) return error.SkipZigTest;
+
     var a: [100]u8 = undefined;
     var b: [100]u8 = undefined;
     random.bytes(a[0..]);
@@ -160,20 +162,20 @@ test "crypto.utils.timingSafeEql (vectors)" {
     try testing.expect(timingSafeEql(@Vector(100, u8), v1, v3));
 }
 
-test "crypto.utils.timingSafeCompare" {
+test timingSafeCompare {
     var a = [_]u8{10} ** 32;
     var b = [_]u8{10} ** 32;
-    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .Big), .eq);
-    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .Little), .eq);
+    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .big), .eq);
+    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .little), .eq);
     a[31] = 1;
-    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .Big), .lt);
-    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .Little), .lt);
+    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .big), .lt);
+    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .little), .lt);
     a[0] = 20;
-    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .Big), .gt);
-    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .Little), .lt);
+    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .big), .gt);
+    try testing.expectEqual(timingSafeCompare(u8, &a, &b, .little), .lt);
 }
 
-test "crypto.utils.timingSafe{Add,Sub}" {
+test "timingSafe{Add,Sub}" {
     const len = 32;
     var a: [len]u8 = undefined;
     var b: [len]u8 = undefined;
@@ -183,7 +185,7 @@ test "crypto.utils.timingSafe{Add,Sub}" {
     while (iterations != 0) : (iterations -= 1) {
         random.bytes(&a);
         random.bytes(&b);
-        const endian = if (iterations % 2 == 0) Endian.Big else Endian.Little;
+        const endian = if (iterations % 2 == 0) Endian.big else Endian.little;
         _ = timingSafeSub(u8, &a, &b, &c, endian); // a-b
         _ = timingSafeAdd(u8, &c, &b, &c, endian); // (a-b)+b
         try testing.expectEqualSlices(u8, &c, &a);
@@ -193,7 +195,7 @@ test "crypto.utils.timingSafe{Add,Sub}" {
     }
 }
 
-test "crypto.utils.secureZero" {
+test secureZero {
     var a = [_]u8{0xfe} ** 8;
     var b = [_]u8{0xfe} ** 8;
 

@@ -1,9 +1,10 @@
 export fn entry() void {
     var ptr = afunc;
     _ = async ptr();
+    _ = &ptr;
 }
 
-fn afunc() callconv(.Async) void { }
+fn afunc() callconv(.Async) void {}
 
 // error
 // backend=stage1

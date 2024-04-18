@@ -7,10 +7,10 @@ pub fn isFinite(x: anytype) bool {
     const T = @TypeOf(x);
     const TBits = std.meta.Int(.unsigned, @typeInfo(T).Float.bits);
     const remove_sign = ~@as(TBits, 0) >> 1;
-    return @bitCast(TBits, x) & remove_sign < @bitCast(TBits, math.inf(T));
+    return @as(TBits, @bitCast(x)) & remove_sign < @as(TBits, @bitCast(math.inf(T)));
 }
 
-test "math.isFinite" {
+test isFinite {
     inline for ([_]type{ f16, f32, f64, f80, f128 }) |T| {
         // normals
         try expect(isFinite(@as(T, 1.0)));

@@ -7,11 +7,9 @@ const log = std.log.scoped(.link);
 const macho = std.macho;
 const mem = std.mem;
 const testing = std.testing;
-const ThreadPool = std.Thread.Pool;
-const WaitGroup = std.Thread.WaitGroup;
-
 const Allocator = mem.Allocator;
-const Compilation = @import("../../Compilation.zig");
+const Hasher = @import("hasher.zig").ParallelHasher;
+const MachO = @import("../MachO.zig");
 const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const hash_size = Sha256.digest_length;
@@ -73,7 +71,7 @@ const CodeDirectory = struct {
                 .hashSize = hash_size,
                 .hashType = macho.CS_HASHTYPE_SHA256,
                 .platform = 0,
-                .pageSize = @truncate(u8, std.math.log2(page_size)),
+                .pageSize = @as(u8, @truncate(std.math.log2(page_size))),
                 .spare2 = 0,
                 .scatterOffset = 0,
                 .teamOffset = 0,
@@ -99,8 +97,8 @@ const CodeDirectory = struct {
 
     fn addSpecialHash(self: *CodeDirectory, index: u32, hash: [hash_size]u8) void {
         assert(index > 0);
-        self.inner.nSpecialSlots = std.math.max(self.inner.nSpecialSlots, index);
-        self.special_slots[index - 1] = hash;
+        self.inner.nSpecialSlots = @max(self.inner.nSpecialSlots, index);
+        @memcpy(&self.special_slots[index - 1], &hash);
     }
 
     fn slotType(self: CodeDirectory) u32 {
@@ -111,38 +109,38 @@ const CodeDirectory = struct {
     fn size(self: CodeDirectory) u32 {
         const code_slots = self.inner.nCodeSlots * hash_size;
         const special_slots = self.inner.nSpecialSlots * hash_size;
-        return @sizeOf(macho.CodeDirectory) + @intCast(u32, self.ident.len + 1 + special_slots + code_slots);
+        return @sizeOf(macho.CodeDirectory) + @as(u32, @intCast(self.ident.len + 1 + special_slots + code_slots));
     }
 
     fn write(self: CodeDirectory, writer: anytype) !void {
-        try writer.writeIntBig(u32, self.inner.magic);
-        try writer.writeIntBig(u32, self.inner.length);
-        try writer.writeIntBig(u32, self.inner.version);
-        try writer.writeIntBig(u32, self.inner.flags);
-        try writer.writeIntBig(u32, self.inner.hashOffset);
-        try writer.writeIntBig(u32, self.inner.identOffset);
-        try writer.writeIntBig(u32, self.inner.nSpecialSlots);
-        try writer.writeIntBig(u32, self.inner.nCodeSlots);
-        try writer.writeIntBig(u32, self.inner.codeLimit);
+        try writer.writeInt(u32, self.inner.magic, .big);
+        try writer.writeInt(u32, self.inner.length, .big);
+        try writer.writeInt(u32, self.inner.version, .big);
+        try writer.writeInt(u32, self.inner.flags, .big);
+        try writer.writeInt(u32, self.inner.hashOffset, .big);
+        try writer.writeInt(u32, self.inner.identOffset, .big);
+        try writer.writeInt(u32, self.inner.nSpecialSlots, .big);
+        try writer.writeInt(u32, self.inner.nCodeSlots, .big);
+        try writer.writeInt(u32, self.inner.codeLimit, .big);
         try writer.writeByte(self.inner.hashSize);
         try writer.writeByte(self.inner.hashType);
         try writer.writeByte(self.inner.platform);
         try writer.writeByte(self.inner.pageSize);
-        try writer.writeIntBig(u32, self.inner.spare2);
-        try writer.writeIntBig(u32, self.inner.scatterOffset);
-        try writer.writeIntBig(u32, self.inner.teamOffset);
-        try writer.writeIntBig(u32, self.inner.spare3);
-        try writer.writeIntBig(u64, self.inner.codeLimit64);
-        try writer.writeIntBig(u64, self.inner.execSegBase);
-        try writer.writeIntBig(u64, self.inner.execSegLimit);
-        try writer.writeIntBig(u64, self.inner.execSegFlags);
+        try writer.writeInt(u32, self.inner.spare2, .big);
+        try writer.writeInt(u32, self.inner.scatterOffset, .big);
+        try writer.writeInt(u32, self.inner.teamOffset, .big);
+        try writer.writeInt(u32, self.inner.spare3, .big);
+        try writer.writeInt(u64, self.inner.codeLimit64, .big);
+        try writer.writeInt(u64, self.inner.execSegBase, .big);
+        try writer.writeInt(u64, self.inner.execSegLimit, .big);
+        try writer.writeInt(u64, self.inner.execSegFlags, .big);
 
         try writer.writeAll(self.ident);
         try writer.writeByte(0);
 
-        var i: isize = @intCast(isize, self.inner.nSpecialSlots);
+        var i: isize = @as(isize, @intCast(self.inner.nSpecialSlots));
         while (i > 0) : (i -= 1) {
-            try writer.writeAll(&self.special_slots[@intCast(usize, i - 1)]);
+            try writer.writeAll(&self.special_slots[@as(usize, @intCast(i - 1))]);
         }
 
         for (self.code_slots.items) |slot| {
@@ -168,9 +166,9 @@ const Requirements = struct {
     }
 
     fn write(self: Requirements, writer: anytype) !void {
-        try writer.writeIntBig(u32, macho.CSMAGIC_REQUIREMENTS);
-        try writer.writeIntBig(u32, self.size());
-        try writer.writeIntBig(u32, 0);
+        try writer.writeInt(u32, macho.CSMAGIC_REQUIREMENTS, .big);
+        try writer.writeInt(u32, self.size(), .big);
+        try writer.writeInt(u32, 0, .big);
     }
 };
 
@@ -187,12 +185,12 @@ const Entitlements = struct {
     }
 
     fn size(self: Entitlements) u32 {
-        return @intCast(u32, self.inner.len) + 2 * @sizeOf(u32);
+        return @as(u32, @intCast(self.inner.len)) + 2 * @sizeOf(u32);
     }
 
     fn write(self: Entitlements, writer: anytype) !void {
-        try writer.writeIntBig(u32, macho.CSMAGIC_EMBEDDED_ENTITLEMENTS);
-        try writer.writeIntBig(u32, self.size());
+        try writer.writeInt(u32, macho.CSMAGIC_EMBEDDED_ENTITLEMENTS, .big);
+        try writer.writeInt(u32, self.size(), .big);
         try writer.writeAll(self.inner);
     }
 };
@@ -214,8 +212,8 @@ const Signature = struct {
     }
 
     fn write(self: Signature, writer: anytype) !void {
-        try writer.writeIntBig(u32, macho.CSMAGIC_BLOBWRAPPER);
-        try writer.writeIntBig(u32, self.size());
+        try writer.writeInt(u32, macho.CSMAGIC_BLOBWRAPPER, .big);
+        try writer.writeInt(u32, self.size(), .big);
     }
 };
 
@@ -257,16 +255,16 @@ pub const WriteOpts = struct {
     exec_seg_base: u64,
     exec_seg_limit: u64,
     file_size: u32,
-    output_mode: std.builtin.OutputMode,
+    dylib: bool,
 };
 
 pub fn writeAdhocSignature(
     self: *CodeSignature,
-    comp: *const Compilation,
+    macho_file: *MachO,
     opts: WriteOpts,
     writer: anytype,
 ) !void {
-    const gpa = comp.gpa;
+    const allocator = macho_file.base.comp.gpa;
 
     var header: macho.SuperBlob = .{
         .magic = macho.CSMAGIC_EMBEDDED_SIGNATURE,
@@ -274,22 +272,26 @@ pub fn writeAdhocSignature(
         .count = 0,
     };
 
-    var blobs = std.ArrayList(Blob).init(gpa);
+    var blobs = std.ArrayList(Blob).init(allocator);
     defer blobs.deinit();
 
     self.code_directory.inner.execSegBase = opts.exec_seg_base;
     self.code_directory.inner.execSegLimit = opts.exec_seg_limit;
-    self.code_directory.inner.execSegFlags = if (opts.output_mode == .Exe) macho.CS_EXECSEG_MAIN_BINARY else 0;
+    self.code_directory.inner.execSegFlags = if (!opts.dylib) macho.CS_EXECSEG_MAIN_BINARY else 0;
     self.code_directory.inner.codeLimit = opts.file_size;
 
-    const total_pages = @intCast(u32, mem.alignForward(opts.file_size, self.page_size) / self.page_size);
+    const total_pages = @as(u32, @intCast(mem.alignForward(usize, opts.file_size, self.page_size) / self.page_size));
 
-    try self.code_directory.code_slots.ensureTotalCapacityPrecise(gpa, total_pages);
+    try self.code_directory.code_slots.ensureTotalCapacityPrecise(allocator, total_pages);
     self.code_directory.code_slots.items.len = total_pages;
     self.code_directory.inner.nCodeSlots = total_pages;
 
     // Calculate hash for each page (in file) and write it to the buffer
-    try self.parallelHash(gpa, comp.thread_pool, opts.file, opts.file_size);
+    var hasher = Hasher(Sha256){ .allocator = allocator, .thread_pool = macho_file.base.comp.thread_pool };
+    try hasher.hash(opts.file, self.code_directory.code_slots.items, .{
+        .chunk_size = self.page_size,
+        .max_file_size = opts.file_size,
+    });
 
     try blobs.append(.{ .code_directory = &self.code_directory });
     header.length += @sizeOf(macho.BlobIndex);
@@ -298,7 +300,7 @@ pub fn writeAdhocSignature(
     var hash: [hash_size]u8 = undefined;
 
     if (self.requirements) |*req| {
-        var buf = std.ArrayList(u8).init(gpa);
+        var buf = std.ArrayList(u8).init(allocator);
         defer buf.deinit();
         try req.write(buf.writer());
         Sha256.hash(buf.items, &hash, .{});
@@ -310,7 +312,7 @@ pub fn writeAdhocSignature(
     }
 
     if (self.entitlements) |*ents| {
-        var buf = std.ArrayList(u8).init(gpa);
+        var buf = std.ArrayList(u8).init(allocator);
         defer buf.deinit();
         try ents.write(buf.writer());
         Sha256.hash(buf.items, &hash, .{});
@@ -328,80 +330,24 @@ pub fn writeAdhocSignature(
     }
 
     self.code_directory.inner.hashOffset =
-        @sizeOf(macho.CodeDirectory) + @intCast(u32, self.code_directory.ident.len + 1 + self.code_directory.inner.nSpecialSlots * hash_size);
+        @sizeOf(macho.CodeDirectory) + @as(u32, @intCast(self.code_directory.ident.len + 1 + self.code_directory.inner.nSpecialSlots * hash_size));
     self.code_directory.inner.length = self.code_directory.size();
     header.length += self.code_directory.size();
 
-    try writer.writeIntBig(u32, header.magic);
-    try writer.writeIntBig(u32, header.length);
-    try writer.writeIntBig(u32, header.count);
+    try writer.writeInt(u32, header.magic, .big);
+    try writer.writeInt(u32, header.length, .big);
+    try writer.writeInt(u32, header.count, .big);
 
-    var offset: u32 = @sizeOf(macho.SuperBlob) + @sizeOf(macho.BlobIndex) * @intCast(u32, blobs.items.len);
+    var offset: u32 = @sizeOf(macho.SuperBlob) + @sizeOf(macho.BlobIndex) * @as(u32, @intCast(blobs.items.len));
     for (blobs.items) |blob| {
-        try writer.writeIntBig(u32, blob.slotType());
-        try writer.writeIntBig(u32, offset);
+        try writer.writeInt(u32, blob.slotType(), .big);
+        try writer.writeInt(u32, offset, .big);
         offset += blob.size();
     }
 
     for (blobs.items) |blob| {
         try blob.write(writer);
     }
-}
-
-fn parallelHash(
-    self: *CodeSignature,
-    gpa: Allocator,
-    pool: *ThreadPool,
-    file: fs.File,
-    file_size: u32,
-) !void {
-    var wg: WaitGroup = .{};
-
-    const total_num_chunks = mem.alignForward(file_size, self.page_size) / self.page_size;
-    assert(self.code_directory.code_slots.items.len >= total_num_chunks);
-
-    const buffer = try gpa.alloc(u8, self.page_size * total_num_chunks);
-    defer gpa.free(buffer);
-
-    const results = try gpa.alloc(fs.File.PReadError!usize, total_num_chunks);
-    defer gpa.free(results);
-
-    {
-        wg.reset();
-        defer wg.wait();
-
-        var i: usize = 0;
-        while (i < total_num_chunks) : (i += 1) {
-            const fstart = i * self.page_size;
-            const fsize = if (fstart + self.page_size > file_size)
-                file_size - fstart
-            else
-                self.page_size;
-            wg.start();
-            try pool.spawn(worker, .{
-                file,
-                fstart,
-                buffer[fstart..][0..fsize],
-                &self.code_directory.code_slots.items[i],
-                &results[i],
-                &wg,
-            });
-        }
-    }
-    for (results) |result| _ = try result;
-}
-
-fn worker(
-    file: fs.File,
-    fstart: usize,
-    buffer: []u8,
-    out: *[hash_size]u8,
-    err: *fs.File.PReadError!usize,
-    wg: *WaitGroup,
-) void {
-    defer wg.finish();
-    err.* = file.preadAll(buffer, fstart);
-    Sha256.hash(buffer, out, .{});
 }
 
 pub fn size(self: CodeSignature) u32 {
@@ -421,22 +367,22 @@ pub fn size(self: CodeSignature) u32 {
 pub fn estimateSize(self: CodeSignature, file_size: u64) u32 {
     var ssize: u64 = @sizeOf(macho.SuperBlob) + @sizeOf(macho.BlobIndex) + self.code_directory.size();
     // Approx code slots
-    const total_pages = mem.alignForwardGeneric(u64, file_size, self.page_size) / self.page_size;
+    const total_pages = mem.alignForward(u64, file_size, self.page_size) / self.page_size;
     ssize += total_pages * hash_size;
     var n_special_slots: u32 = 0;
     if (self.requirements) |req| {
         ssize += @sizeOf(macho.BlobIndex) + req.size();
-        n_special_slots = std.math.max(n_special_slots, req.slotType());
+        n_special_slots = @max(n_special_slots, req.slotType());
     }
     if (self.entitlements) |ent| {
         ssize += @sizeOf(macho.BlobIndex) + ent.size() + hash_size;
-        n_special_slots = std.math.max(n_special_slots, ent.slotType());
+        n_special_slots = @max(n_special_slots, ent.slotType());
     }
     if (self.signature) |sig| {
         ssize += @sizeOf(macho.BlobIndex) + sig.size();
     }
     ssize += n_special_slots * hash_size;
-    return @intCast(u32, mem.alignForwardGeneric(u64, ssize, @sizeOf(u64)));
+    return @as(u32, @intCast(mem.alignForward(u64, ssize, @sizeOf(u64))));
 }
 
 pub fn clear(self: *CodeSignature, allocator: Allocator) void {

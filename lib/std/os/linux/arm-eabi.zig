@@ -2,8 +2,8 @@ const std = @import("../../std.zig");
 const maxInt = std.math.maxInt;
 const linux = std.os.linux;
 const SYS = linux.SYS;
-const iovec = std.os.iovec;
-const iovec_const = std.os.iovec_const;
+const iovec = std.posix.iovec;
+const iovec_const = std.posix.iovec_const;
 const socklen_t = linux.socklen_t;
 const stack_t = linux.stack_t;
 const sigset_t = linux.sigset_t;
@@ -16,7 +16,7 @@ const timespec = linux.timespec;
 pub fn syscall0(number: SYS) usize {
     return asm volatile ("svc #0"
         : [ret] "={r0}" (-> usize),
-        : [number] "{r7}" (@enumToInt(number)),
+        : [number] "{r7}" (@intFromEnum(number)),
         : "memory"
     );
 }
@@ -24,7 +24,7 @@ pub fn syscall0(number: SYS) usize {
 pub fn syscall1(number: SYS, arg1: usize) usize {
     return asm volatile ("svc #0"
         : [ret] "={r0}" (-> usize),
-        : [number] "{r7}" (@enumToInt(number)),
+        : [number] "{r7}" (@intFromEnum(number)),
           [arg1] "{r0}" (arg1),
         : "memory"
     );
@@ -33,7 +33,7 @@ pub fn syscall1(number: SYS, arg1: usize) usize {
 pub fn syscall2(number: SYS, arg1: usize, arg2: usize) usize {
     return asm volatile ("svc #0"
         : [ret] "={r0}" (-> usize),
-        : [number] "{r7}" (@enumToInt(number)),
+        : [number] "{r7}" (@intFromEnum(number)),
           [arg1] "{r0}" (arg1),
           [arg2] "{r1}" (arg2),
         : "memory"
@@ -43,7 +43,7 @@ pub fn syscall2(number: SYS, arg1: usize, arg2: usize) usize {
 pub fn syscall3(number: SYS, arg1: usize, arg2: usize, arg3: usize) usize {
     return asm volatile ("svc #0"
         : [ret] "={r0}" (-> usize),
-        : [number] "{r7}" (@enumToInt(number)),
+        : [number] "{r7}" (@intFromEnum(number)),
           [arg1] "{r0}" (arg1),
           [arg2] "{r1}" (arg2),
           [arg3] "{r2}" (arg3),
@@ -54,7 +54,7 @@ pub fn syscall3(number: SYS, arg1: usize, arg2: usize, arg3: usize) usize {
 pub fn syscall4(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize) usize {
     return asm volatile ("svc #0"
         : [ret] "={r0}" (-> usize),
-        : [number] "{r7}" (@enumToInt(number)),
+        : [number] "{r7}" (@intFromEnum(number)),
           [arg1] "{r0}" (arg1),
           [arg2] "{r1}" (arg2),
           [arg3] "{r2}" (arg3),
@@ -66,7 +66,7 @@ pub fn syscall4(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize)
 pub fn syscall5(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize, arg5: usize) usize {
     return asm volatile ("svc #0"
         : [ret] "={r0}" (-> usize),
-        : [number] "{r7}" (@enumToInt(number)),
+        : [number] "{r7}" (@intFromEnum(number)),
           [arg1] "{r0}" (arg1),
           [arg2] "{r1}" (arg2),
           [arg3] "{r2}" (arg3),
@@ -87,7 +87,7 @@ pub fn syscall6(
 ) usize {
     return asm volatile ("svc #0"
         : [ret] "={r0}" (-> usize),
-        : [number] "{r7}" (@enumToInt(number)),
+        : [number] "{r7}" (@intFromEnum(number)),
           [arg1] "{r0}" (arg1),
           [arg2] "{r1}" (arg2),
           [arg3] "{r2}" (arg3),
@@ -103,46 +103,43 @@ const CloneFn = *const fn (arg: usize) callconv(.C) u8;
 /// This matches the libc clone function.
 pub extern fn clone(func: CloneFn, stack: usize, flags: u32, arg: usize, ptid: *i32, tls: usize, ctid: *i32) usize;
 
-pub fn restore() callconv(.Naked) void {
-    return asm volatile ("svc #0"
-        :
-        : [number] "{r7}" (@enumToInt(SYS.sigreturn)),
-        : "memory"
-    );
+pub fn restore() callconv(.Naked) noreturn {
+    switch (@import("builtin").zig_backend) {
+        .stage2_c => asm volatile (
+            \\ mov r7, %[number]
+            \\ svc #0
+            :
+            : [number] "I" (@intFromEnum(SYS.sigreturn)),
+            : "memory"
+        ),
+        else => asm volatile (
+            \\ svc #0
+            :
+            : [number] "{r7}" (@intFromEnum(SYS.sigreturn)),
+            : "memory"
+        ),
+    }
 }
 
-pub fn restore_rt() callconv(.Naked) void {
-    return asm volatile ("svc #0"
-        :
-        : [number] "{r7}" (@enumToInt(SYS.rt_sigreturn)),
-        : "memory"
-    );
+pub fn restore_rt() callconv(.Naked) noreturn {
+    switch (@import("builtin").zig_backend) {
+        .stage2_c => asm volatile (
+            \\ mov r7, %[number]
+            \\ svc #0
+            :
+            : [number] "I" (@intFromEnum(SYS.rt_sigreturn)),
+            : "memory"
+        ),
+        else => asm volatile (
+            \\ svc #0
+            :
+            : [number] "{r7}" (@intFromEnum(SYS.rt_sigreturn)),
+            : "memory"
+        ),
+    }
 }
 
 pub const MMAP2_UNIT = 4096;
-
-pub const O = struct {
-    pub const CREAT = 0o100;
-    pub const EXCL = 0o200;
-    pub const NOCTTY = 0o400;
-    pub const TRUNC = 0o1000;
-    pub const APPEND = 0o2000;
-    pub const NONBLOCK = 0o4000;
-    pub const DSYNC = 0o10000;
-    pub const SYNC = 0o4010000;
-    pub const RSYNC = 0o4010000;
-    pub const DIRECTORY = 0o40000;
-    pub const NOFOLLOW = 0o100000;
-    pub const CLOEXEC = 0o2000000;
-
-    pub const ASYNC = 0o20000;
-    pub const DIRECT = 0o200000;
-    pub const LARGEFILE = 0o400000;
-    pub const NOATIME = 0o1000000;
-    pub const PATH = 0o10000000;
-    pub const TMPFILE = 0o20040000;
-    pub const NDELAY = NONBLOCK;
-};
 
 pub const F = struct {
     pub const DUPFD = 0;
@@ -175,19 +172,6 @@ pub const LOCK = struct {
     pub const EX = 2;
     pub const UN = 8;
     pub const NB = 4;
-};
-
-pub const MAP = struct {
-    /// stack-like segment
-    pub const GROWSDOWN = 0x0100;
-    /// ETXTBSY
-    pub const DENYWRITE = 0x0800;
-    /// mark it as an executable
-    pub const EXECUTABLE = 0x1000;
-    /// pages are locked
-    pub const LOCKED = 0x2000;
-    /// don't check for reservations
-    pub const NORESERVE = 0x4000;
 };
 
 pub const VDSO = struct {

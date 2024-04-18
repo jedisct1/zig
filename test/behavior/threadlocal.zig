@@ -12,6 +12,11 @@ test "thread local variable" {
     }; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
 
+    if (builtin.zig_backend == .stage2_x86_64 and builtin.os.tag == .macos) {
+        // Fails due to register hazards.
+        return error.SkipZigTest;
+    }
+
     const S = struct {
         threadlocal var t: i32 = 1234;
     };
@@ -28,10 +33,9 @@ test "pointer to thread local array" {
         else => return error.SkipZigTest,
     }; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const s = "Hello world";
-    std.mem.copy(u8, buffer[0..], s);
+    @memcpy(buffer[0..s.len], s);
     try std.testing.expectEqualSlices(u8, buffer[0..], s);
 }
 

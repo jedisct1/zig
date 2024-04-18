@@ -1,483 +1,209 @@
-//! An algorithm for dead stripping of unreferenced Atoms.
+pub fn gcAtoms(macho_file: *MachO) !void {
+    const gpa = macho_file.base.comp.gpa;
 
-const std = @import("std");
-const assert = std.debug.assert;
-const eh_frame = @import("eh_frame.zig");
-const log = std.log.scoped(.dead_strip);
-const macho = std.macho;
-const math = std.math;
-const mem = std.mem;
+    var objects = try std.ArrayList(File.Index).initCapacity(gpa, macho_file.objects.items.len + 1);
+    defer objects.deinit();
+    for (macho_file.objects.items) |index| objects.appendAssumeCapacity(index);
+    if (macho_file.internal_object) |index| objects.appendAssumeCapacity(index);
 
-const Allocator = mem.Allocator;
-const AtomIndex = @import("zld.zig").AtomIndex;
-const Atom = @import("ZldAtom.zig");
-const SymbolWithLoc = @import("zld.zig").SymbolWithLoc;
-const SymbolResolver = @import("zld.zig").SymbolResolver;
-const UnwindInfo = @import("UnwindInfo.zig");
-const Zld = @import("zld.zig").Zld;
+    var roots = std.ArrayList(*Atom).init(gpa);
+    defer roots.deinit();
 
-const N_DEAD = @import("zld.zig").N_DEAD;
-
-const AtomTable = std.AutoHashMap(AtomIndex, void);
-
-pub fn gcAtoms(zld: *Zld, resolver: *const SymbolResolver) !void {
-    const gpa = zld.gpa;
-
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
-
-    var roots = AtomTable.init(arena.allocator());
-    try roots.ensureUnusedCapacity(@intCast(u32, zld.globals.items.len));
-
-    var alive = AtomTable.init(arena.allocator());
-    try alive.ensureTotalCapacity(@intCast(u32, zld.atoms.items.len));
-
-    try collectRoots(zld, &roots, resolver);
-    try mark(zld, roots, &alive);
-    prune(zld, alive);
+    try collectRoots(&roots, objects.items, macho_file);
+    mark(roots.items, objects.items, macho_file);
+    prune(objects.items, macho_file);
 }
 
-fn addRoot(zld: *Zld, roots: *AtomTable, file: u32, sym_loc: SymbolWithLoc) !void {
-    const sym = zld.getSymbol(sym_loc);
-    assert(!sym.undf());
-    const object = &zld.objects.items[file];
-    const atom_index = object.getAtomIndexForSymbol(sym_loc.sym_index).?; // panic here means fatal error
-    log.debug("root(ATOM({d}, %{d}, {d}))", .{
-        atom_index,
-        zld.getAtom(atom_index).sym_index,
-        file,
-    });
-    _ = try roots.getOrPut(atom_index);
-}
+fn collectRoots(roots: *std.ArrayList(*Atom), objects: []const File.Index, macho_file: *MachO) !void {
+    for (objects) |index| {
+        const object = macho_file.getFile(index).?;
+        for (object.getSymbols()) |sym_index| {
+            const sym = macho_file.getSymbol(sym_index);
+            const file = sym.getFile(macho_file) orelse continue;
+            if (file.getIndex() != index) continue;
+            if (sym.flags.no_dead_strip or (macho_file.base.isDynLib() and sym.visibility == .global))
+                try markSymbol(sym, roots, macho_file);
+        }
 
-fn collectRoots(zld: *Zld, roots: *AtomTable, resolver: *const SymbolResolver) !void {
-    log.debug("collecting roots", .{});
+        for (object.getAtoms()) |atom_index| {
+            const atom = macho_file.getAtom(atom_index).?;
+            const isec = atom.getInputSection(macho_file);
+            switch (isec.type()) {
+                macho.S_MOD_INIT_FUNC_POINTERS,
+                macho.S_MOD_TERM_FUNC_POINTERS,
+                => if (markAtom(atom)) try roots.append(atom),
 
-    switch (zld.options.output_mode) {
-        .Exe => {
-            // Add entrypoint as GC root
-            const global: SymbolWithLoc = zld.getEntryPoint();
-            if (global.getFile()) |file| {
-                try addRoot(zld, roots, file, global);
-            } else {
-                assert(zld.getSymbol(global).undf()); // Stub as our entrypoint is in a dylib.
+                else => if (isec.isDontDeadStrip() and markAtom(atom)) {
+                    try roots.append(atom);
+                },
             }
-        },
-        else => |other| {
-            assert(other == .Lib);
-            // Add exports as GC roots
-            for (zld.globals.items) |global| {
-                const sym = zld.getSymbol(global);
-                if (sym.undf()) continue;
-
-                if (global.getFile()) |file| {
-                    try addRoot(zld, roots, file, global);
-                }
-            }
-        },
+        }
     }
 
-    // Add all symbols force-defined by the user.
-    for (zld.options.force_undefined_symbols.keys()) |sym_name| {
-        const global_index = resolver.table.get(sym_name).?;
-        const global = zld.globals.items[global_index];
-        const sym = zld.getSymbol(global);
-        assert(!sym.undf());
-        try addRoot(zld, roots, global.getFile().?, global);
+    for (macho_file.objects.items) |index| {
+        for (macho_file.getFile(index).?.object.unwind_records.items) |cu_index| {
+            const cu = macho_file.getUnwindRecord(cu_index);
+            if (!cu.alive) continue;
+            if (cu.getFde(macho_file)) |fde| {
+                if (fde.getCie(macho_file).getPersonality(macho_file)) |sym| try markSymbol(sym, roots, macho_file);
+            } else if (cu.getPersonality(macho_file)) |sym| try markSymbol(sym, roots, macho_file);
+        }
     }
 
-    for (zld.objects.items) |object| {
-        const has_subsections = object.header.flags & macho.MH_SUBSECTIONS_VIA_SYMBOLS != 0;
+    for (macho_file.undefined_symbols.items) |sym_index| {
+        const sym = macho_file.getSymbol(sym_index);
+        try markSymbol(sym, roots, macho_file);
+    }
 
-        for (object.atoms.items) |atom_index| {
-            const is_gc_root = blk: {
-                // Modelled after ld64 which treats each object file compiled without MH_SUBSECTIONS_VIA_SYMBOLS
-                // as a root.
-                if (!has_subsections) break :blk true;
-
-                const atom = zld.getAtom(atom_index);
-                const sect_id = if (object.getSourceSymbol(atom.sym_index)) |source_sym|
-                    source_sym.n_sect - 1
-                else sect_id: {
-                    const nbase = @intCast(u32, object.in_symtab.?.len);
-                    const sect_id = @intCast(u8, atom.sym_index - nbase);
-                    break :sect_id sect_id;
-                };
-                const source_sect = object.getSourceSection(sect_id);
-                if (source_sect.isDontDeadStrip()) break :blk true;
-                switch (source_sect.type()) {
-                    macho.S_MOD_INIT_FUNC_POINTERS,
-                    macho.S_MOD_TERM_FUNC_POINTERS,
-                    => break :blk true,
-                    else => break :blk false,
-                }
-            };
-
-            if (is_gc_root) {
-                _ = try roots.getOrPut(atom_index);
-
-                log.debug("root(ATOM({d}, %{d}, {?d}))", .{
-                    atom_index,
-                    zld.getAtom(atom_index).sym_index,
-                    zld.getAtom(atom_index).getFile(),
-                });
-            }
+    for (&[_]?Symbol.Index{
+        macho_file.entry_index,
+        macho_file.dyld_stub_binder_index,
+        macho_file.objc_msg_send_index,
+    }) |index| {
+        if (index) |idx| {
+            const sym = macho_file.getSymbol(idx);
+            try markSymbol(sym, roots, macho_file);
         }
     }
 }
 
-fn markLive(zld: *Zld, atom_index: AtomIndex, alive: *AtomTable) void {
-    if (alive.contains(atom_index)) return;
-
-    const atom = zld.getAtom(atom_index);
-    const sym_loc = atom.getSymbolWithLoc();
-
-    log.debug("mark(ATOM({d}, %{d}, {?d}))", .{ atom_index, sym_loc.sym_index, sym_loc.getFile() });
-
-    alive.putAssumeCapacityNoClobber(atom_index, {});
-
-    const cpu_arch = zld.options.target.cpu.arch;
-
-    const sym = zld.getSymbol(atom.getSymbolWithLoc());
-    const header = zld.sections.items(.header)[sym.n_sect - 1];
-    if (header.isZerofill()) return;
-
-    const code = Atom.getAtomCode(zld, atom_index);
-    const relocs = Atom.getAtomRelocs(zld, atom_index);
-    const ctx = Atom.getRelocContext(zld, atom_index);
-
-    for (relocs) |rel| {
-        const target = switch (cpu_arch) {
-            .aarch64 => switch (@intToEnum(macho.reloc_type_arm64, rel.r_type)) {
-                .ARM64_RELOC_ADDEND => continue,
-                else => Atom.parseRelocTarget(zld, .{
-                    .object_id = atom.getFile().?,
-                    .rel = rel,
-                    .code = code,
-                    .base_offset = ctx.base_offset,
-                    .base_addr = ctx.base_addr,
-                }),
-            },
-            .x86_64 => Atom.parseRelocTarget(zld, .{
-                .object_id = atom.getFile().?,
-                .rel = rel,
-                .code = code,
-                .base_offset = ctx.base_offset,
-                .base_addr = ctx.base_addr,
-            }),
-            else => unreachable,
-        };
-        const target_sym = zld.getSymbol(target);
-
-        if (target_sym.undf()) continue;
-        if (target.getFile() == null) {
-            const target_sym_name = zld.getSymbolName(target);
-            if (mem.eql(u8, "__mh_execute_header", target_sym_name)) continue;
-            if (mem.eql(u8, "___dso_handle", target_sym_name)) continue;
-
-            unreachable; // referenced symbol not found
-        }
-
-        const object = zld.objects.items[target.getFile().?];
-        const target_atom_index = object.getAtomIndexForSymbol(target.sym_index).?;
-        log.debug("  following ATOM({d}, %{d}, {?d})", .{
-            target_atom_index,
-            zld.getAtom(target_atom_index).sym_index,
-            zld.getAtom(target_atom_index).getFile(),
-        });
-
-        markLive(zld, target_atom_index, alive);
-    }
+fn markSymbol(sym: *Symbol, roots: *std.ArrayList(*Atom), macho_file: *MachO) !void {
+    const atom = sym.getAtom(macho_file) orelse return;
+    if (markAtom(atom)) try roots.append(atom);
 }
 
-fn refersLive(zld: *Zld, atom_index: AtomIndex, alive: AtomTable) bool {
-    const atom = zld.getAtom(atom_index);
-    const sym_loc = atom.getSymbolWithLoc();
-
-    log.debug("refersLive(ATOM({d}, %{d}, {?d}))", .{ atom_index, sym_loc.sym_index, sym_loc.getFile() });
-
-    const cpu_arch = zld.options.target.cpu.arch;
-
-    const sym = zld.getSymbol(sym_loc);
-    const header = zld.sections.items(.header)[sym.n_sect - 1];
-    assert(!header.isZerofill());
-
-    const code = Atom.getAtomCode(zld, atom_index);
-    const relocs = Atom.getAtomRelocs(zld, atom_index);
-    const ctx = Atom.getRelocContext(zld, atom_index);
-
-    for (relocs) |rel| {
-        const target = switch (cpu_arch) {
-            .aarch64 => switch (@intToEnum(macho.reloc_type_arm64, rel.r_type)) {
-                .ARM64_RELOC_ADDEND => continue,
-                else => Atom.parseRelocTarget(zld, .{
-                    .object_id = atom.getFile().?,
-                    .rel = rel,
-                    .code = code,
-                    .base_offset = ctx.base_offset,
-                    .base_addr = ctx.base_addr,
-                }),
-            },
-            .x86_64 => Atom.parseRelocTarget(zld, .{
-                .object_id = atom.getFile().?,
-                .rel = rel,
-                .code = code,
-                .base_offset = ctx.base_offset,
-                .base_addr = ctx.base_addr,
-            }),
-            else => unreachable,
-        };
-
-        const object = zld.objects.items[target.getFile().?];
-        const target_atom_index = object.getAtomIndexForSymbol(target.sym_index) orelse {
-            log.debug("atom for symbol '{s}' not found; skipping...", .{zld.getSymbolName(target)});
-            continue;
-        };
-        if (alive.contains(target_atom_index)) {
-            log.debug("  refers live ATOM({d}, %{d}, {?d})", .{
-                target_atom_index,
-                zld.getAtom(target_atom_index).sym_index,
-                zld.getAtom(target_atom_index).getFile(),
-            });
-            return true;
-        }
-    }
-
-    return false;
+fn markAtom(atom: *Atom) bool {
+    const already_visited = atom.flags.visited;
+    atom.flags.visited = true;
+    return atom.flags.alive and !already_visited;
 }
 
-fn mark(zld: *Zld, roots: AtomTable, alive: *AtomTable) !void {
-    var it = roots.keyIterator();
-    while (it.next()) |root| {
-        markLive(zld, root.*, alive);
+fn mark(roots: []*Atom, objects: []const File.Index, macho_file: *MachO) void {
+    for (roots) |root| {
+        markLive(root, macho_file);
     }
 
     var loop: bool = true;
     while (loop) {
         loop = false;
 
-        for (zld.objects.items) |object| {
-            for (object.atoms.items) |atom_index| {
-                if (alive.contains(atom_index)) continue;
-
-                const atom = zld.getAtom(atom_index);
-                const sect_id = if (object.getSourceSymbol(atom.sym_index)) |source_sym|
-                    source_sym.n_sect - 1
-                else blk: {
-                    const nbase = @intCast(u32, object.in_symtab.?.len);
-                    const sect_id = @intCast(u8, atom.sym_index - nbase);
-                    break :blk sect_id;
-                };
-                const source_sect = object.getSourceSection(sect_id);
-
-                if (source_sect.isDontDeadStripIfReferencesLive()) {
-                    if (refersLive(zld, atom_index, alive.*)) {
-                        markLive(zld, atom_index, alive);
-                        loop = true;
-                    }
+        for (objects) |index| {
+            for (macho_file.getFile(index).?.getAtoms()) |atom_index| {
+                const atom = macho_file.getAtom(atom_index).?;
+                const isec = atom.getInputSection(macho_file);
+                if (isec.isDontDeadStripIfReferencesLive() and
+                    !(mem.eql(u8, isec.sectName(), "__eh_frame") or
+                    mem.eql(u8, isec.sectName(), "__compact_unwind") or
+                    isec.attrs() & macho.S_ATTR_DEBUG != 0) and
+                    !atom.flags.alive and refersLive(atom, macho_file))
+                {
+                    markLive(atom, macho_file);
+                    loop = true;
                 }
-            }
-        }
-    }
-
-    for (zld.objects.items, 0..) |_, object_id| {
-        // Traverse unwind and eh_frame records noting if the source symbol has been marked, and if so,
-        // marking all references as live.
-        try markUnwindRecords(zld, @intCast(u32, object_id), alive);
-    }
-}
-
-fn markUnwindRecords(zld: *Zld, object_id: u32, alive: *AtomTable) !void {
-    const object = &zld.objects.items[object_id];
-    const cpu_arch = zld.options.target.cpu.arch;
-
-    const unwind_records = object.getUnwindRecords();
-
-    for (object.exec_atoms.items) |atom_index| {
-        if (!object.hasUnwindRecords()) {
-            if (object.eh_frame_records_lookup.get(atom_index)) |fde_offset| {
-                const ptr = object.eh_frame_relocs_lookup.getPtr(fde_offset).?;
-                if (ptr.dead) continue; // already marked
-                if (!alive.contains(atom_index)) {
-                    // Mark dead and continue.
-                    ptr.dead = true;
-                } else {
-                    // Mark references live and continue.
-                    try markEhFrameRecord(zld, object_id, atom_index, alive);
-                }
-                continue;
-            }
-        }
-
-        const record_id = object.unwind_records_lookup.get(atom_index) orelse continue;
-        if (object.unwind_relocs_lookup[record_id].dead) continue; // already marked, nothing to do
-        if (!alive.contains(atom_index)) {
-            // Mark the record dead and continue.
-            object.unwind_relocs_lookup[record_id].dead = true;
-            if (object.eh_frame_records_lookup.get(atom_index)) |fde_offset| {
-                object.eh_frame_relocs_lookup.getPtr(fde_offset).?.dead = true;
-            }
-            continue;
-        }
-
-        const record = unwind_records[record_id];
-        if (UnwindInfo.UnwindEncoding.isDwarf(record.compactUnwindEncoding, cpu_arch)) {
-            try markEhFrameRecord(zld, object_id, atom_index, alive);
-        } else {
-            if (UnwindInfo.getPersonalityFunctionReloc(zld, object_id, record_id)) |rel| {
-                const target = Atom.parseRelocTarget(zld, .{
-                    .object_id = object_id,
-                    .rel = rel,
-                    .code = mem.asBytes(&record),
-                    .base_offset = @intCast(i32, record_id * @sizeOf(macho.compact_unwind_entry)),
-                });
-                const target_sym = zld.getSymbol(target);
-                if (!target_sym.undf()) {
-                    const target_object = zld.objects.items[target.getFile().?];
-                    const target_atom_index = target_object.getAtomIndexForSymbol(target.sym_index).?;
-                    markLive(zld, target_atom_index, alive);
-                }
-            }
-
-            if (UnwindInfo.getLsdaReloc(zld, object_id, record_id)) |rel| {
-                const target = Atom.parseRelocTarget(zld, .{
-                    .object_id = object_id,
-                    .rel = rel,
-                    .code = mem.asBytes(&record),
-                    .base_offset = @intCast(i32, record_id * @sizeOf(macho.compact_unwind_entry)),
-                });
-                const target_object = zld.objects.items[target.getFile().?];
-                const target_atom_index = target_object.getAtomIndexForSymbol(target.sym_index).?;
-                markLive(zld, target_atom_index, alive);
             }
         }
     }
 }
 
-fn markEhFrameRecord(zld: *Zld, object_id: u32, atom_index: AtomIndex, alive: *AtomTable) !void {
-    const cpu_arch = zld.options.target.cpu.arch;
-    const object = &zld.objects.items[object_id];
-    var it = object.getEhFrameRecordsIterator();
+fn markLive(atom: *Atom, macho_file: *MachO) void {
+    assert(atom.flags.visited);
+    atom.flags.alive = true;
+    track_live_log.debug("{}marking live atom({d},{s})", .{
+        track_live_level,
+        atom.atom_index,
+        atom.getName(macho_file),
+    });
 
-    const fde_offset = object.eh_frame_records_lookup.get(atom_index).?;
-    it.seekTo(fde_offset);
-    const fde = (try it.next()).?;
+    if (build_options.enable_logging)
+        track_live_level.incr();
 
-    const cie_ptr = fde.getCiePointer();
-    const cie_offset = fde_offset + 4 - cie_ptr;
-    it.seekTo(cie_offset);
-    const cie = (try it.next()).?;
-
-    switch (cpu_arch) {
-        .aarch64 => {
-            // Mark FDE references which should include any referenced LSDA record
-            const relocs = eh_frame.getRelocs(zld, object_id, fde_offset);
-            for (relocs) |rel| {
-                const target = Atom.parseRelocTarget(zld, .{
-                    .object_id = object_id,
-                    .rel = rel,
-                    .code = fde.data,
-                    .base_offset = @intCast(i32, fde_offset) + 4,
-                });
-                const target_sym = zld.getSymbol(target);
-                if (!target_sym.undf()) blk: {
-                    const target_object = zld.objects.items[target.getFile().?];
-                    const target_atom_index = target_object.getAtomIndexForSymbol(target.sym_index) orelse
-                        break :blk;
-                    markLive(zld, target_atom_index, alive);
-                }
-            }
-        },
-        .x86_64 => {
-            const sect = object.getSourceSection(object.eh_frame_sect_id.?);
-            const lsda_ptr = try fde.getLsdaPointer(cie, .{
-                .base_addr = sect.addr,
-                .base_offset = fde_offset,
-            });
-            if (lsda_ptr) |lsda_address| {
-                // Mark LSDA record as live
-                const sym_index = object.getSymbolByAddress(lsda_address, null);
-                const target_atom_index = object.getAtomIndexForSymbol(sym_index).?;
-                markLive(zld, target_atom_index, alive);
-            }
-        },
-        else => unreachable,
+    for (atom.getRelocs(macho_file)) |rel| {
+        const target_atom = switch (rel.tag) {
+            .local => rel.getTargetAtom(macho_file),
+            .@"extern" => rel.getTargetSymbol(macho_file).getAtom(macho_file),
+        };
+        if (target_atom) |ta| {
+            if (markAtom(ta)) markLive(ta, macho_file);
+        }
     }
 
-    // Mark CIE references which should include any referenced personalities
-    // that are defined locally.
-    if (cie.getPersonalityPointerReloc(zld, object_id, cie_offset)) |target| {
-        const target_sym = zld.getSymbol(target);
-        if (!target_sym.undf()) {
-            const target_object = zld.objects.items[target.getFile().?];
-            const target_atom_index = target_object.getAtomIndexForSymbol(target.sym_index).?;
-            markLive(zld, target_atom_index, alive);
+    for (atom.getUnwindRecords(macho_file)) |cu_index| {
+        const cu = macho_file.getUnwindRecord(cu_index);
+        const cu_atom = cu.getAtom(macho_file);
+        if (markAtom(cu_atom)) markLive(cu_atom, macho_file);
+
+        if (cu.getLsdaAtom(macho_file)) |lsda| {
+            if (markAtom(lsda)) markLive(lsda, macho_file);
+        }
+        if (cu.getFde(macho_file)) |fde| {
+            const fde_atom = fde.getAtom(macho_file);
+            if (markAtom(fde_atom)) markLive(fde_atom, macho_file);
+
+            if (fde.getLsdaAtom(macho_file)) |lsda| {
+                if (markAtom(lsda)) markLive(lsda, macho_file);
+            }
         }
     }
 }
 
-fn prune(zld: *Zld, alive: AtomTable) void {
-    log.debug("pruning dead atoms", .{});
-    for (zld.objects.items) |*object| {
-        var i: usize = 0;
-        while (i < object.atoms.items.len) {
-            const atom_index = object.atoms.items[i];
-            if (alive.contains(atom_index)) {
-                i += 1;
-                continue;
-            }
+fn refersLive(atom: *Atom, macho_file: *MachO) bool {
+    for (atom.getRelocs(macho_file)) |rel| {
+        const target_atom = switch (rel.tag) {
+            .local => rel.getTargetAtom(macho_file),
+            .@"extern" => rel.getTargetSymbol(macho_file).getAtom(macho_file),
+        };
+        if (target_atom) |ta| {
+            if (ta.flags.alive) return true;
+        }
+    }
+    return false;
+}
 
-            const atom = zld.getAtom(atom_index);
-            const sym_loc = atom.getSymbolWithLoc();
-
-            log.debug("prune(ATOM({d}, %{d}, {?d}))", .{
-                atom_index,
-                sym_loc.sym_index,
-                sym_loc.getFile(),
-            });
-            log.debug("  {s} in {s}", .{ zld.getSymbolName(sym_loc), object.name });
-
-            const sym = zld.getSymbolPtr(sym_loc);
-            const sect_id = sym.n_sect - 1;
-            var section = zld.sections.get(sect_id);
-            section.header.size -= atom.size;
-
-            if (atom.prev_index) |prev_index| {
-                const prev = zld.getAtomPtr(prev_index);
-                prev.next_index = atom.next_index;
-            } else {
-                if (atom.next_index) |next_index| {
-                    section.first_atom_index = next_index;
-                }
-            }
-            if (atom.next_index) |next_index| {
-                const next = zld.getAtomPtr(next_index);
-                next.prev_index = atom.prev_index;
-            } else {
-                if (atom.prev_index) |prev_index| {
-                    section.last_atom_index = prev_index;
-                } else {
-                    assert(section.header.size == 0);
-                    section.first_atom_index = undefined;
-                    section.last_atom_index = undefined;
-                }
-            }
-
-            zld.sections.set(sect_id, section);
-            _ = object.atoms.swapRemove(i);
-
-            sym.n_desc = N_DEAD;
-
-            var inner_sym_it = Atom.getInnerSymbolsIterator(zld, atom_index);
-            while (inner_sym_it.next()) |inner| {
-                const inner_sym = zld.getSymbolPtr(inner);
-                inner_sym.n_desc = N_DEAD;
-            }
-
-            if (Atom.getSectionAlias(zld, atom_index)) |alias| {
-                const alias_sym = zld.getSymbolPtr(alias);
-                alias_sym.n_desc = N_DEAD;
+fn prune(objects: []const File.Index, macho_file: *MachO) void {
+    for (objects) |index| {
+        for (macho_file.getFile(index).?.getAtoms()) |atom_index| {
+            const atom = macho_file.getAtom(atom_index).?;
+            if (atom.flags.alive and !atom.flags.visited) {
+                atom.flags.alive = false;
+                atom.markUnwindRecordsDead(macho_file);
             }
         }
     }
 }
+
+const Level = struct {
+    value: usize = 0,
+
+    fn incr(self: *@This()) void {
+        self.value += 1;
+    }
+
+    pub fn format(
+        self: *const @This(),
+        comptime unused_fmt_string: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = unused_fmt_string;
+        _ = options;
+        try writer.writeByteNTimes(' ', self.value);
+    }
+};
+
+var track_live_level: Level = .{};
+
+const assert = std.debug.assert;
+const build_options = @import("build_options");
+const log = std.log.scoped(.dead_strip);
+const macho = std.macho;
+const math = std.math;
+const mem = std.mem;
+const trace = @import("../../tracy.zig").trace;
+const track_live_log = std.log.scoped(.dead_strip_track_live);
+const std = @import("std");
+
+const Allocator = mem.Allocator;
+const Atom = @import("Atom.zig");
+const File = @import("file.zig").File;
+const MachO = @import("../MachO.zig");
+const Symbol = @import("Symbol.zig");

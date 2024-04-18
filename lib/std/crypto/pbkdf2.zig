@@ -74,7 +74,7 @@ pub fn pbkdf2(dk: []u8, password: []const u8, salt: []const u8, rounds: u32, com
     //      block
     //
 
-    const blocks_count = @intCast(u32, std.math.divCeil(usize, dk_len, h_len) catch unreachable);
+    const blocks_count = @as(u32, @intCast(std.math.divCeil(usize, dk_len, h_len) catch unreachable));
     var r = dk_len % h_len;
     if (r == 0) {
         r = h_len;
@@ -255,10 +255,8 @@ test "Very large dk_len" {
     const c = 1;
     const dk_len = 1 << 33;
 
-    var dk = try std.testing.allocator.alloc(u8, dk_len);
-    defer {
-        std.testing.allocator.free(dk);
-    }
+    const dk = try std.testing.allocator.alloc(u8, dk_len);
+    defer std.testing.allocator.free(dk);
 
     // Just verify this doesn't crash with an overflow
     try pbkdf2(dk, p, s, c, HmacSha1);

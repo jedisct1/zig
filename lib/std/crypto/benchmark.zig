@@ -10,7 +10,7 @@ const crypto = std.crypto;
 const KiB = 1024;
 const MiB = 1024 * KiB;
 
-var prng = std.rand.DefaultPrng.init(0);
+var prng = std.Random.DefaultPrng.init(0);
 const random = prng.random();
 
 const Crypto = struct {
@@ -34,23 +34,28 @@ const hashes = [_]Crypto{
     Crypto{ .ty = crypto.hash.Blake3, .name = "blake3" },
 };
 
+const block_size: usize = 8 * 8192;
+
 pub fn benchmarkHash(comptime Hash: anytype, comptime bytes: comptime_int) !u64 {
+    const blocks_count = bytes / block_size;
+    var block: [block_size]u8 = undefined;
+    random.bytes(&block);
+
     var h = Hash.init(.{});
 
-    var block: [Hash.digest_length]u8 = undefined;
-    random.bytes(block[0..]);
-
-    var offset: usize = 0;
     var timer = try Timer.start();
     const start = timer.lap();
-    while (offset < bytes) : (offset += block.len) {
-        h.update(block[0..]);
+    for (0..blocks_count) |_| {
+        h.update(&block);
     }
-    mem.doNotOptimizeAway(&h);
+    var final: [Hash.digest_length]u8 = undefined;
+    h.final(&final);
+    std.mem.doNotOptimizeAway(final);
+
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, bytes / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(bytes / elapsed_s));
 
     return throughput;
 }
@@ -90,8 +95,8 @@ pub fn benchmarkMac(comptime Mac: anytype, comptime bytes: comptime_int) !u64 {
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, bytes / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(bytes / elapsed_s));
 
     return throughput;
 }
@@ -120,13 +125,18 @@ pub fn benchmarkKeyExchange(comptime DhKeyExchange: anytype, comptime exchange_c
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, exchange_count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(exchange_count / elapsed_s));
 
     return throughput;
 }
 
-const signatures = [_]Crypto{Crypto{ .ty = crypto.sign.Ed25519, .name = "ed25519" }};
+const signatures = [_]Crypto{
+    Crypto{ .ty = crypto.sign.Ed25519, .name = "ed25519" },
+    Crypto{ .ty = crypto.sign.ecdsa.EcdsaP256Sha256, .name = "ecdsa-p256" },
+    Crypto{ .ty = crypto.sign.ecdsa.EcdsaP384Sha384, .name = "ecdsa-p384" },
+    Crypto{ .ty = crypto.sign.ecdsa.EcdsaSecp256k1Sha256, .name = "ecdsa-secp256k1" },
+};
 
 pub fn benchmarkSignature(comptime Signature: anytype, comptime signatures_count: comptime_int) !u64 {
     const msg = [_]u8{0} ** 64;
@@ -143,8 +153,8 @@ pub fn benchmarkSignature(comptime Signature: anytype, comptime signatures_count
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, signatures_count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(signatures_count / elapsed_s));
 
     return throughput;
 }
@@ -167,8 +177,8 @@ pub fn benchmarkSignatureVerification(comptime Signature: anytype, comptime sign
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, signatures_count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(signatures_count / elapsed_s));
 
     return throughput;
 }
@@ -196,8 +206,8 @@ pub fn benchmarkBatchSignatureVerification(comptime Signature: anytype, comptime
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = batch.len * @floatToInt(u64, signatures_count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = batch.len * @as(u64, @intFromFloat(signatures_count / elapsed_s));
 
     return throughput;
 }
@@ -222,8 +232,8 @@ pub fn benchmarkKem(comptime Kem: anytype, comptime kems_count: comptime_int) !u
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, kems_count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(kems_count / elapsed_s));
 
     return throughput;
 }
@@ -244,8 +254,8 @@ pub fn benchmarkKemDecaps(comptime Kem: anytype, comptime kems_count: comptime_i
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, kems_count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(kems_count / elapsed_s));
 
     return throughput;
 }
@@ -262,8 +272,8 @@ pub fn benchmarkKemKeyGen(comptime Kem: anytype, comptime kems_count: comptime_i
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, kems_count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(kems_count / elapsed_s));
 
     return throughput;
 }
@@ -304,8 +314,8 @@ pub fn benchmarkAead(comptime Aead: anytype, comptime bytes: comptime_int) !u64 
     mem.doNotOptimizeAway(&in);
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, 2 * bytes / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(2 * bytes / elapsed_s));
 
     return throughput;
 }
@@ -333,8 +343,8 @@ pub fn benchmarkAes(comptime Aes: anytype, comptime count: comptime_int) !u64 {
     mem.doNotOptimizeAway(&in);
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(count / elapsed_s));
 
     return throughput;
 }
@@ -362,8 +372,8 @@ pub fn benchmarkAes8(comptime Aes: anytype, comptime count: comptime_int) !u64 {
     mem.doNotOptimizeAway(&in);
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
-    const throughput = @floatToInt(u64, 8 * count / elapsed_s);
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
+    const throughput = @as(u64, @intFromFloat(8 * count / elapsed_s));
 
     return throughput;
 }
@@ -401,7 +411,7 @@ fn benchmarkPwhash(
     const password = "testpass" ** 2;
     const opts = .{
         .allocator = allocator,
-        .params = @ptrCast(*const ty.Params, @alignCast(std.meta.alignment(ty.Params), params)).*,
+        .params = @as(*const ty.Params, @ptrCast(@alignCast(params))).*,
         .encoding = .phc,
     };
     var buf: [256]u8 = undefined;
@@ -417,7 +427,7 @@ fn benchmarkPwhash(
     }
     const end = timer.read();
 
-    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
+    const elapsed_s = @as(f64, @floatFromInt(end - start)) / time.ns_per_s;
     const throughput = elapsed_s / count;
 
     return throughput;
@@ -458,7 +468,7 @@ pub fn main() !void {
             i += 1;
             if (i == args.len) {
                 usage();
-                std.os.exit(1);
+                std.process.exit(1);
             }
 
             const seed = try std.fmt.parseUnsigned(u32, args[i], 10);
@@ -467,7 +477,7 @@ pub fn main() !void {
             i += 1;
             if (i == args.len) {
                 usage();
-                std.os.exit(1);
+                std.process.exit(1);
             }
 
             filter = args[i];
@@ -476,7 +486,7 @@ pub fn main() !void {
             return;
         } else {
             usage();
-            std.os.exit(1);
+            std.process.exit(1);
         }
     }
 

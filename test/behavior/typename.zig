@@ -41,7 +41,6 @@ test "anon field init" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const Foo = .{
         .T1 = struct {},
@@ -67,31 +66,27 @@ test "basic" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     try expectEqualStrings("i64", @typeName(i64));
     try expectEqualStrings("*usize", @typeName(*usize));
     try expectEqualStrings("[]u8", @typeName([]u8));
 
-    try expectEqualStrings("fn() void", @typeName(fn () void));
-    try expectEqualStrings("fn(u32) void", @typeName(fn (u32) void));
-    try expectEqualStrings("fn(u32) void", @typeName(fn (a: u32) void));
+    try expectEqualStrings("fn () void", @typeName(fn () void));
+    try expectEqualStrings("fn (u32) void", @typeName(fn (u32) void));
+    try expectEqualStrings("fn (u32) void", @typeName(fn (a: u32) void));
 
-    try expectEqualStrings("fn(comptime u32) void", @typeName(fn (comptime u32) void));
-    try expectEqualStrings("fn(noalias []u8) void", @typeName(fn (noalias []u8) void));
+    try expectEqualStrings("fn (comptime u32) void", @typeName(fn (comptime u32) void));
+    try expectEqualStrings("fn (noalias []u8) void", @typeName(fn (noalias []u8) void));
 
-    try expectEqualStrings("fn() align(32) void", @typeName(fn () align(32) void));
-    try expectEqualStrings("fn() callconv(.C) void", @typeName(fn () callconv(.C) void));
-    try expectEqualStrings("fn() align(32) callconv(.C) void", @typeName(fn () align(32) callconv(.C) void));
-    try expectEqualStrings("fn(...) align(32) callconv(.C) void", @typeName(fn (...) align(32) callconv(.C) void));
-    try expectEqualStrings("fn(u32, ...) align(32) callconv(.C) void", @typeName(fn (u32, ...) align(32) callconv(.C) void));
+    try expectEqualStrings("fn () callconv(.C) void", @typeName(fn () callconv(.C) void));
+    try expectEqualStrings("fn (...) callconv(.C) void", @typeName(fn (...) callconv(.C) void));
+    try expectEqualStrings("fn (u32, ...) callconv(.C) void", @typeName(fn (u32, ...) callconv(.C) void));
 }
 
 test "top level decl" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     try expectEqualStrings(
         "behavior.typename.A_Struct",
@@ -108,17 +103,17 @@ test "top level decl" {
 
     // regular fn, without error
     try expectEqualStrings(
-        "fn() void",
+        "fn () void",
         @typeName(@TypeOf(regular)),
     );
     // regular fn inside struct, with error
     try expectEqualStrings(
-        "fn() @typeInfo(@typeInfo(@TypeOf(behavior.typename.B.doTest)).Fn.return_type.?).ErrorUnion.error_set!void",
+        "fn () @typeInfo(@typeInfo(@TypeOf(behavior.typename.B.doTest)).Fn.return_type.?).ErrorUnion.error_set!void",
         @typeName(@TypeOf(B.doTest)),
     );
     // generic fn
     try expectEqualStrings(
-        "fn(comptime type) type",
+        "fn (comptime type) type",
         @typeName(@TypeOf(TypeFromFn)),
     );
 }
@@ -141,7 +136,6 @@ test "fn param" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     // https://github.com/ziglang/zig/issues/675
     try expectEqualStrings(
@@ -168,21 +162,30 @@ test "fn param" {
 }
 
 fn TypeFromFn(comptime T: type) type {
-    _ = T;
-    return struct {};
+    return struct {
+        comptime {
+            _ = T;
+        }
+    };
 }
 
 fn TypeFromFn2(comptime T1: type, comptime T2: type) type {
-    _ = T1;
-    _ = T2;
-    return struct {};
+    return struct {
+        comptime {
+            _ = T1;
+            _ = T2;
+        }
+    };
 }
 
 fn TypeFromFnB(comptime T1: type, comptime T2: type, comptime T3: type) type {
-    _ = T1;
-    _ = T2;
-    _ = T3;
-    return struct {};
+    return struct {
+        comptime {
+            _ = T1;
+            _ = T2;
+            _ = T3;
+        }
+    };
 }
 
 /// Replaces integers in `actual` with '0' before doing the test.
@@ -212,7 +215,6 @@ test "local variable" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const Foo = struct { a: u32 };
     const Bar = union { a: u32 };
@@ -231,17 +233,15 @@ test "comptime parameters not converted to anytype in function type" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const T = fn (fn (type) void, void) void;
-    try expectEqualStrings("fn(comptime fn(comptime type) void, void) void", @typeName(T));
+    try expectEqualStrings("fn (comptime fn (comptime type) void, void) void", @typeName(T));
 }
 
 test "anon name strategy used in sub expression" {
     if (builtin.zig_backend == .stage2_aarch64) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_arm) return error.SkipZigTest; // TODO
     if (builtin.zig_backend == .stage2_sparc64) return error.SkipZigTest; // TODO
-    if (builtin.zig_backend == .stage2_spirv64) return error.SkipZigTest;
 
     const S = struct {
         fn getTheName() []const u8 {

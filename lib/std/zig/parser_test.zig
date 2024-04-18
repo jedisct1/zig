@@ -1,23 +1,3 @@
-// TODO: remove this after zig 0.11.0 is released
-test "zig fmt: transform old for loop syntax to new" {
-    try testTransform(
-        \\fn foo() void {
-        \\    for (a) |b, i| {
-        \\        _ = b; _ = i;
-        \\    }
-        \\}
-        \\
-    ,
-        \\fn foo() void {
-        \\    for (a, 0..) |b, i| {
-        \\        _ = b;
-        \\        _ = i;
-        \\    }
-        \\}
-        \\
-    );
-}
-
 test "zig fmt: remove extra whitespace at start and end of file with comment between" {
     try testTransform(
         \\
@@ -166,10 +146,10 @@ test "zig fmt: respect line breaks after var declarations" {
         \\    lookup_tables[1][p[6]] ^
         \\    lookup_tables[2][p[5]] ^
         \\    lookup_tables[3][p[4]] ^
-        \\    lookup_tables[4][@truncate(u8, self.crc >> 24)] ^
-        \\    lookup_tables[5][@truncate(u8, self.crc >> 16)] ^
-        \\    lookup_tables[6][@truncate(u8, self.crc >> 8)] ^
-        \\    lookup_tables[7][@truncate(u8, self.crc >> 0)];
+        \\    lookup_tables[4][@as(u8, self.crc >> 24)] ^
+        \\    lookup_tables[5][@as(u8, self.crc >> 16)] ^
+        \\    lookup_tables[6][@as(u8, self.crc >> 8)] ^
+        \\    lookup_tables[7][@as(u8, self.crc >> 0)];
         \\
     );
 }
@@ -270,6 +250,17 @@ test "zig fmt: top-level enum missing 'const name ='" {
         \\enum(u32)
         \\
     , &[_]Error{.expected_token});
+}
+
+test "zig fmt: top-level for/while loop" {
+    try testCanonical(
+        \\for (foo) |_| foo
+        \\
+    );
+    try testCanonical(
+        \\while (foo) |_| foo
+        \\
+    );
 }
 
 test "zig fmt: top-level bare asterisk+identifier" {
@@ -628,7 +619,7 @@ test "zig fmt: builtin call with trailing comma" {
     try testCanonical(
         \\pub fn main() void {
         \\    @breakpoint();
-        \\    _ = @boolToInt(a);
+        \\    _ = @intFromBool(a);
         \\    _ = @call(
         \\        a,
         \\        b,
@@ -1108,7 +1099,7 @@ test "zig fmt: async function" {
         \\    handleRequestFn: fn (*Server, *const std.net.Address, File) callconv(.Async) void,
         \\};
         \\test "hi" {
-        \\    var ptr = @ptrCast(fn (i32) callconv(.Async) void, other);
+        \\    var ptr: fn (i32) callconv(.Async) void = @ptrCast(other);
         \\}
         \\
     );
@@ -1825,10 +1816,10 @@ test "zig fmt: respect line breaks after infix operators" {
         \\        lookup_tables[1][p[6]] ^
         \\        lookup_tables[2][p[5]] ^
         \\        lookup_tables[3][p[4]] ^
-        \\        lookup_tables[4][@truncate(u8, self.crc >> 24)] ^
-        \\        lookup_tables[5][@truncate(u8, self.crc >> 16)] ^
-        \\        lookup_tables[6][@truncate(u8, self.crc >> 8)] ^
-        \\        lookup_tables[7][@truncate(u8, self.crc >> 0)];
+        \\        lookup_tables[4][@as(u8, self.crc >> 24)] ^
+        \\        lookup_tables[5][@as(u8, self.crc >> 16)] ^
+        \\        lookup_tables[6][@as(u8, self.crc >> 8)] ^
+        \\        lookup_tables[7][@as(u8, self.crc >> 0)];
         \\}
         \\
     );
@@ -2098,14 +2089,14 @@ test "zig fmt: multiline string parameter in fn call with trailing comma" {
     try testCanonical(
         \\fn foo() void {
         \\    try stdout.print(
-        \\        \\ZIG_CMAKE_BINARY_DIR {}
-        \\        \\ZIG_C_HEADER_FILES   {}
-        \\        \\ZIG_DIA_GUIDS_LIB    {}
+        \\        \\ZIG_CMAKE_BINARY_DIR {s}
+        \\        \\ZIG_C_HEADER_FILES   {s}
+        \\        \\ZIG_DIA_GUIDS_LIB    {s}
         \\        \\
         \\    ,
-        \\        std.cstr.toSliceConst(c.ZIG_CMAKE_BINARY_DIR),
-        \\        std.cstr.toSliceConst(c.ZIG_CXX_COMPILER),
-        \\        std.cstr.toSliceConst(c.ZIG_DIA_GUIDS_LIB),
+        \\        std.mem.sliceTo(c.ZIG_CMAKE_BINARY_DIR, 0),
+        \\        std.mem.sliceTo(c.ZIG_CXX_COMPILER, 0),
+        \\        std.mem.sliceTo(c.ZIG_DIA_GUIDS_LIB, 0),
         \\    );
         \\}
         \\
@@ -2239,6 +2230,10 @@ test "zig fmt: switch cases trailing comma" {
         \\        1,2,3 => {},
         \\        4,5, => {},
         \\        6... 8, => {},
+        \\        9 ...
+        \\        10 => {},
+        \\        11 => {},
+        \\        12, => {},
         \\        else => {},
         \\    }
         \\}
@@ -2249,7 +2244,12 @@ test "zig fmt: switch cases trailing comma" {
         \\        4,
         \\        5,
         \\        => {},
-        \\        6...8 => {},
+        \\        6...8,
+        \\        => {},
+        \\        9...10 => {},
+        \\        11 => {},
+        \\        12,
+        \\        => {},
         \\        else => {},
         \\    }
         \\}
@@ -2909,6 +2909,25 @@ test "zig fmt: test declaration" {
         \\test "test name" {
         \\    const a = 1;
         \\    var b = 1;
+        \\}
+        \\
+    );
+}
+
+test "zig fmt: destructure" {
+    try testCanonical(
+        \\comptime {
+        \\    var w: u8, var x: u8 = .{ 1, 2 };
+        \\    w, var y: u8 = .{ 3, 4 };
+        \\    var z: u8, x = .{ 5, 6 };
+        \\    y, z = .{ 7, 8 };
+        \\}
+        \\
+        \\comptime {
+        \\    comptime var w, var x = .{ 1, 2 };
+        \\    comptime w, var y = .{ 3, 4 };
+        \\    comptime var z, x = .{ 5, 6 };
+        \\    comptime y, z = .{ 7, 8 };
         \\}
         \\
     );
@@ -4279,6 +4298,69 @@ test "zig fmt: remove newlines surrounding doc comment" {
     );
 }
 
+test "zig fmt: remove newlines surrounding doc comment between members" {
+    try testTransform(
+        \\f1: i32,
+        \\
+        \\
+        \\/// doc comment
+        \\
+        \\f2: i32,
+        \\
+    ,
+        \\f1: i32,
+        \\
+        \\/// doc comment
+        \\f2: i32,
+        \\
+    );
+}
+
+test "zig fmt: remove newlines surrounding doc comment between members within container decl (1)" {
+    try testTransform(
+        \\const Foo = struct {
+        \\    fn foo() void {}
+        \\
+        \\
+        \\    /// doc comment
+        \\
+        \\
+        \\    fn bar() void {}
+        \\};
+        \\
+    ,
+        \\const Foo = struct {
+        \\    fn foo() void {}
+        \\
+        \\    /// doc comment
+        \\    fn bar() void {}
+        \\};
+        \\
+    );
+}
+
+test "zig fmt: remove newlines surrounding doc comment between members within container decl (2)" {
+    try testTransform(
+        \\const Foo = struct {
+        \\    fn foo() void {}
+        \\    /// doc comment 1
+        \\
+        \\    /// doc comment 2
+        \\
+        \\    fn bar() void {}
+        \\};
+        \\
+    ,
+        \\const Foo = struct {
+        \\    fn foo() void {}
+        \\    /// doc comment 1
+        \\    /// doc comment 2
+        \\    fn bar() void {}
+        \\};
+        \\
+    );
+}
+
 test "zig fmt: remove newlines surrounding doc comment within container decl" {
     try testTransform(
         \\const Foo = struct {
@@ -4322,6 +4404,21 @@ test "zig fmt: invalid doc comments on comptime and test blocks" {
     });
 }
 
+test "zig fmt: else comptime expr" {
+    try testCanonical(
+        \\comptime {
+        \\    if (true) {} else comptime foo();
+        \\}
+        \\comptime {
+        \\    while (true) {} else comptime foo();
+        \\}
+        \\comptime {
+        \\    for ("") |_| {} else comptime foo();
+        \\}
+        \\
+    );
+}
+
 test "zig fmt: invalid else branch statement" {
     try testError(
         \\comptime {
@@ -4337,12 +4434,12 @@ test "zig fmt: invalid else branch statement" {
         \\    for ("") |_| {} else defer {}
         \\}
     , &[_]Error{
-        .expected_statement,
-        .expected_statement,
-        .expected_statement,
-        .expected_statement,
-        .expected_statement,
-        .expected_statement,
+        .expected_expr_or_assignment,
+        .expected_expr_or_assignment,
+        .expected_expr_or_assignment,
+        .expected_expr_or_assignment,
+        .expected_expr_or_assignment,
+        .expected_expr_or_assignment,
     });
 }
 
@@ -4814,8 +4911,8 @@ test "zig fmt: use of comments and multiline string literals may force the param
         \\        \\ unknown-length pointers and C pointers cannot be hashed deeply.
         \\        \\ Consider providing your own hash function.
         \\    );
-        \\    return @intCast(i1, doMemCheckClientRequestExpr(0, // default return
-        \\        .MakeMemUndefined, @ptrToInt(qzz.ptr), qzz.len, 0, 0, 0));
+        \\    return @intCast(doMemCheckClientRequestExpr(0, // default return
+        \\        .MakeMemUndefined, @intFromPtr(qzz.ptr), qzz.len, 0, 0, 0));
         \\}
         \\
         \\// This looks like garbage don't do this
@@ -5240,8 +5337,8 @@ test "zig fmt: make single-line if no trailing comma, fmt: off" {
         \\    }
         \\}
         \\
-        \\const fn_no_comma = fn(i32, i32)void;
-        \\const fn_trailing_comma = fn(i32, i32,)void;
+        \\const fn_no_comma = fn (i32, i32) void;
+        \\const fn_trailing_comma = fn (i32, i32,) void;
         \\
         \\fn fn_calls() void {
         \\    fn add(x: i32, y: i32,) i32 { x + y };
@@ -6067,7 +6164,7 @@ test "recovery: missing for payload" {
     try testError(
         \\comptime {
         \\    const a = for(a) {};
-        \\    const a: for(a) blk: {};
+        \\    const a: for(a) blk: {} = {};
         \\    for(a) {}
         \\}
     , &[_]Error{

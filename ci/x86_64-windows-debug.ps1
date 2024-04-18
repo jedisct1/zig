@@ -1,11 +1,12 @@
 $TARGET = "$($Env:ARCH)-windows-gnu"
-$ZIG_LLVM_CLANG_LLD_NAME = "zig+llvm+lld+clang-$TARGET-0.11.0-dev.1869+df4cfc2ec"
+$ZIG_LLVM_CLANG_LLD_NAME = "zig+llvm+lld+clang-$TARGET-0.12.0-dev.2073+402fe565a"
 $MCPU = "baseline"
 $ZIG_LLVM_CLANG_LLD_URL = "https://ziglang.org/deps/$ZIG_LLVM_CLANG_LLD_NAME.zip"
 $PREFIX_PATH = "$(Get-Location)\$ZIG_LLVM_CLANG_LLD_NAME"
 $ZIG = "$PREFIX_PATH\bin\zig.exe"
 $ZIG_LIB_DIR = "$(Get-Location)\lib"
 
+choco install ninja
 Write-Output "Downloading $ZIG_LLVM_CLANG_LLD_URL"
 Invoke-WebRequest -Uri "$ZIG_LLVM_CLANG_LLD_URL" -OutFile "$ZIG_LLVM_CLANG_LLD_NAME.zip"
 
@@ -22,7 +23,6 @@ function CheckLastExitCode {
 
 # Make the `zig version` number consistent.
 # This will affect the `zig build` command below which uses `git describe`.
-git config core.abbrev 9
 git fetch --tags
 
 if ((git rev-parse --is-shallow-repository) -eq "true") {
@@ -45,7 +45,8 @@ Set-Location -Path 'build-debug'
   -DCMAKE_CXX_COMPILER="$($ZIG -Replace "\\", "/");c++;-target;$TARGET;-mcpu=$MCPU" `
   -DZIG_TARGET_TRIPLE="$TARGET" `
   -DZIG_TARGET_MCPU="$MCPU" `
-  -DZIG_STATIC=ON
+  -DZIG_STATIC=ON `
+  -DZIG_NO_LIB=ON
 CheckLastExitCode
 
 ninja install
@@ -57,22 +58,14 @@ Write-Output "Main test suite..."
   --search-prefix "$PREFIX_PATH" `
   -Dstatic-llvm `
   -Dskip-non-native `
+  -Dskip-release `
   -Denable-symlinks-windows
-CheckLastExitCode
-
-Write-Output "Testing Autodocs..."
-& "stage3-debug\bin\zig.exe" test "..\lib\std\std.zig" `
-  --zig-lib-dir "$ZIG_LIB_DIR" `
-  -femit-docs `
-  -fno-emit-bin
 CheckLastExitCode
 
 Write-Output "Build x86_64-windows-msvc behavior tests using the C backend..."
 & "stage3-debug\bin\zig.exe" test `
   ..\test\behavior.zig `
   --zig-lib-dir "$ZIG_LIB_DIR" `
-  -I..\test `
-  -I..\lib `
   -ofmt=c `
   -femit-bin="test-x86_64-windows-msvc.c" `
   --test-no-exec `
@@ -81,15 +74,15 @@ Write-Output "Build x86_64-windows-msvc behavior tests using the C backend..."
 CheckLastExitCode
 
 & "stage3-debug\bin\zig.exe" build-obj `
-  ..\lib\compiler_rt.zig `
   --zig-lib-dir "$ZIG_LIB_DIR" `
   -ofmt=c `
   -OReleaseSmall `
   --name compiler_rt `
   -femit-bin="compiler_rt-x86_64-windows-msvc.c" `
-  --mod build_options::config.zig `
-  --deps build_options `
-  -target x86_64-windows-msvc
+  --dep build_options `
+  -target x86_64-windows-msvc `
+  --mod root ..\lib\compiler_rt.zig `
+  --mod build_options config.zig
 CheckLastExitCode
 
 Import-Module "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"

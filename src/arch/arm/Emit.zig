@@ -78,7 +78,7 @@ pub fn emitMir(
 
     // Emit machine code
     for (mir_tags, 0..) |tag, index| {
-        const inst = @intCast(u32, index);
+        const inst = @as(u32, @intCast(index));
         switch (tag) {
             .add => try emit.mirDataProcessing(inst),
             .adds => try emit.mirDataProcessing(inst),
@@ -152,14 +152,17 @@ pub fn emitMir(
 }
 
 pub fn deinit(emit: *Emit) void {
+    const comp = emit.bin_file.comp;
+    const gpa = comp.gpa;
+
     var iter = emit.branch_forward_origins.valueIterator();
     while (iter.next()) |origin_list| {
-        origin_list.deinit(emit.bin_file.allocator);
+        origin_list.deinit(gpa);
     }
 
-    emit.branch_types.deinit(emit.bin_file.allocator);
-    emit.branch_forward_origins.deinit(emit.bin_file.allocator);
-    emit.code_offset_mapping.deinit(emit.bin_file.allocator);
+    emit.branch_types.deinit(gpa);
+    emit.branch_forward_origins.deinit(gpa);
+    emit.code_offset_mapping.deinit(gpa);
     emit.* = undefined;
 }
 
@@ -231,8 +234,9 @@ fn branchTarget(emit: *Emit, inst: Mir.Inst.Index) Mir.Inst.Index {
 }
 
 fn lowerBranches(emit: *Emit) !void {
+    const comp = emit.bin_file.comp;
+    const gpa = comp.gpa;
     const mir_tags = emit.mir.instructions.items(.tag);
-    const allocator = emit.bin_file.allocator;
 
     // First pass: Note down all branches and their target
     // instructions, i.e. populate branch_types,
@@ -241,12 +245,12 @@ fn lowerBranches(emit: *Emit) !void {
     // TODO optimization opportunity: do this in codegen while
     // generating MIR
     for (mir_tags, 0..) |tag, index| {
-        const inst = @intCast(u32, index);
+        const inst = @as(u32, @intCast(index));
         if (isBranch(tag)) {
             const target_inst = emit.branchTarget(inst);
 
             // Remember this branch instruction
-            try emit.branch_types.put(allocator, inst, BranchType.default(tag));
+            try emit.branch_types.put(gpa, inst, BranchType.default(tag));
 
             // Forward branches require some extra stuff: We only
             // know their offset once we arrive at the target
@@ -256,14 +260,14 @@ fn lowerBranches(emit: *Emit) !void {
             // etc.
             if (target_inst > inst) {
                 // Remember the branch instruction index
-                try emit.code_offset_mapping.put(allocator, inst, 0);
+                try emit.code_offset_mapping.put(gpa, inst, 0);
 
                 if (emit.branch_forward_origins.getPtr(target_inst)) |origin_list| {
-                    try origin_list.append(allocator, inst);
+                    try origin_list.append(gpa, inst);
                 } else {
                     var origin_list: std.ArrayListUnmanaged(Mir.Inst.Index) = .{};
-                    try origin_list.append(allocator, inst);
-                    try emit.branch_forward_origins.put(allocator, target_inst, origin_list);
+                    try origin_list.append(gpa, inst);
+                    try emit.branch_forward_origins.put(gpa, target_inst, origin_list);
                 }
             }
 
@@ -273,7 +277,7 @@ fn lowerBranches(emit: *Emit) !void {
             // putNoClobber may not be used as the put operation
             // may clobber the entry when multiple branches branch
             // to the same target instruction
-            try emit.code_offset_mapping.put(allocator, target_inst, 0);
+            try emit.code_offset_mapping.put(gpa, target_inst, 0);
         }
     }
 
@@ -286,7 +290,7 @@ fn lowerBranches(emit: *Emit) !void {
         var current_code_offset: usize = 0;
 
         for (mir_tags, 0..) |tag, index| {
-            const inst = @intCast(u32, index);
+            const inst = @as(u32, @intCast(index));
 
             // If this instruction contained in the code offset
             // mapping (when it is a target of a branch or if it is a
@@ -301,7 +305,7 @@ fn lowerBranches(emit: *Emit) !void {
                 const target_inst = emit.branchTarget(inst);
                 if (target_inst < inst) {
                     const target_offset = emit.code_offset_mapping.get(target_inst).?;
-                    const offset = @intCast(i64, target_offset) - @intCast(i64, current_code_offset + 8);
+                    const offset = @as(i64, @intCast(target_offset)) - @as(i64, @intCast(current_code_offset + 8));
                     const branch_type = emit.branch_types.getPtr(inst).?;
                     const optimal_branch_type = try emit.optimalBranchType(tag, offset);
                     if (branch_type.* != optimal_branch_type) {
@@ -320,7 +324,7 @@ fn lowerBranches(emit: *Emit) !void {
                 for (origin_list.items) |forward_branch_inst| {
                     const branch_tag = emit.mir.instructions.items(.tag)[forward_branch_inst];
                     const forward_branch_inst_offset = emit.code_offset_mapping.get(forward_branch_inst).?;
-                    const offset = @intCast(i64, current_code_offset) - @intCast(i64, forward_branch_inst_offset + 8);
+                    const offset = @as(i64, @intCast(current_code_offset)) - @as(i64, @intCast(forward_branch_inst_offset + 8));
                     const branch_type = emit.branch_types.getPtr(forward_branch_inst).?;
                     const optimal_branch_type = try emit.optimalBranchType(branch_tag, offset);
                     if (branch_type.* != optimal_branch_type) {
@@ -346,12 +350,14 @@ fn writeInstruction(emit: *Emit, instruction: Instruction) !void {
 fn fail(emit: *Emit, comptime format: []const u8, args: anytype) InnerError {
     @setCold(true);
     assert(emit.err_msg == null);
-    emit.err_msg = try ErrorMsg.create(emit.bin_file.allocator, emit.src_loc, format, args);
+    const comp = emit.bin_file.comp;
+    const gpa = comp.gpa;
+    emit.err_msg = try ErrorMsg.create(gpa, emit.src_loc, format, args);
     return error.EmitFail;
 }
 
 fn dbgAdvancePCAndLine(self: *Emit, line: u32, column: u32) !void {
-    const delta_line = @intCast(i32, line) - @intCast(i32, self.prev_di_line);
+    const delta_line = @as(i32, @intCast(line)) - @as(i32, @intCast(self.prev_di_line));
     const delta_pc: usize = self.code.items.len - self.prev_di_pc;
     switch (self.debug_output) {
         .dwarf => |dw| {
@@ -362,25 +368,23 @@ fn dbgAdvancePCAndLine(self: *Emit, line: u32, column: u32) !void {
         },
         .plan9 => |dbg_out| {
             if (delta_pc <= 0) return; // only do this when the pc changes
-            // we have already checked the target in the linker to make sure it is compatable
-            const quant = @import("../../link/Plan9/aout.zig").getPCQuant(self.target.cpu.arch) catch unreachable;
 
             // increasing the line number
-            try @import("../../link/Plan9.zig").changeLine(dbg_out.dbg_line, delta_line);
+            try link.File.Plan9.changeLine(&dbg_out.dbg_line, delta_line);
             // increasing the pc
-            const d_pc_p9 = @intCast(i64, delta_pc) - quant;
+            const d_pc_p9 = @as(i64, @intCast(delta_pc)) - dbg_out.pc_quanta;
             if (d_pc_p9 > 0) {
-                // minus one because if its the last one, we want to leave space to change the line which is one quanta
-                try dbg_out.dbg_line.append(@intCast(u8, @divExact(d_pc_p9, quant) + 128) - quant);
-                if (dbg_out.pcop_change_index.*) |pci|
+                // minus one because if its the last one, we want to leave space to change the line which is one pc quanta
+                try dbg_out.dbg_line.append(@as(u8, @intCast(@divExact(d_pc_p9, dbg_out.pc_quanta) + 128)) - dbg_out.pc_quanta);
+                if (dbg_out.pcop_change_index) |pci|
                     dbg_out.dbg_line.items[pci] += 1;
-                dbg_out.pcop_change_index.* = @intCast(u32, dbg_out.dbg_line.items.len - 1);
+                dbg_out.pcop_change_index = @as(u32, @intCast(dbg_out.dbg_line.items.len - 1));
             } else if (d_pc_p9 == 0) {
-                // we don't need to do anything, because adding the quant does it for us
+                // we don't need to do anything, because adding the pc quanta does it for us
             } else unreachable;
-            if (dbg_out.start_line.* == null)
-                dbg_out.start_line.* = self.prev_di_line;
-            dbg_out.end_line.* = line;
+            if (dbg_out.start_line == null)
+                dbg_out.start_line = self.prev_di_line;
+            dbg_out.end_line = line;
             // only do this if the pc changed
             self.prev_di_line = line;
             self.prev_di_column = column;
@@ -448,13 +452,13 @@ fn mirSubStackPointer(emit: *Emit, inst: Mir.Inst.Index) !void {
                 const scratch: Register = .r4;
 
                 if (Target.arm.featureSetHas(emit.target.cpu.features, .has_v7)) {
-                    try emit.writeInstruction(Instruction.movw(cond, scratch, @truncate(u16, imm32)));
-                    try emit.writeInstruction(Instruction.movt(cond, scratch, @truncate(u16, imm32 >> 16)));
+                    try emit.writeInstruction(Instruction.movw(cond, scratch, @as(u16, @truncate(imm32))));
+                    try emit.writeInstruction(Instruction.movt(cond, scratch, @as(u16, @truncate(imm32 >> 16))));
                 } else {
-                    try emit.writeInstruction(Instruction.mov(cond, scratch, Instruction.Operand.imm(@truncate(u8, imm32), 0)));
-                    try emit.writeInstruction(Instruction.orr(cond, scratch, scratch, Instruction.Operand.imm(@truncate(u8, imm32 >> 8), 12)));
-                    try emit.writeInstruction(Instruction.orr(cond, scratch, scratch, Instruction.Operand.imm(@truncate(u8, imm32 >> 16), 8)));
-                    try emit.writeInstruction(Instruction.orr(cond, scratch, scratch, Instruction.Operand.imm(@truncate(u8, imm32 >> 24), 4)));
+                    try emit.writeInstruction(Instruction.mov(cond, scratch, Instruction.Operand.imm(@as(u8, @truncate(imm32)), 0)));
+                    try emit.writeInstruction(Instruction.orr(cond, scratch, scratch, Instruction.Operand.imm(@as(u8, @truncate(imm32 >> 8)), 12)));
+                    try emit.writeInstruction(Instruction.orr(cond, scratch, scratch, Instruction.Operand.imm(@as(u8, @truncate(imm32 >> 16)), 8)));
+                    try emit.writeInstruction(Instruction.orr(cond, scratch, scratch, Instruction.Operand.imm(@as(u8, @truncate(imm32 >> 24)), 4)));
                 }
 
                 break :blk Instruction.Operand.reg(scratch, Instruction.Operand.Shift.none);
@@ -484,12 +488,12 @@ fn mirBranch(emit: *Emit, inst: Mir.Inst.Index) !void {
     const cond = emit.mir.instructions.items(.cond)[inst];
     const target_inst = emit.mir.instructions.items(.data)[inst].inst;
 
-    const offset = @intCast(i64, emit.code_offset_mapping.get(target_inst).?) - @intCast(i64, emit.code.items.len + 8);
+    const offset = @as(i64, @intCast(emit.code_offset_mapping.get(target_inst).?)) - @as(i64, @intCast(emit.code.items.len + 8));
     const branch_type = emit.branch_types.get(inst).?;
 
     switch (branch_type) {
         .b => switch (tag) {
-            .b => try emit.writeInstruction(Instruction.b(cond, @intCast(i26, offset))),
+            .b => try emit.writeInstruction(Instruction.b(cond, @as(i26, @intCast(offset)))),
             else => unreachable,
         },
     }
@@ -585,7 +589,7 @@ fn mirLoadStackArgument(emit: *Emit, inst: Mir.Inst.Index) !void {
         .ldrb_stack_argument,
         => {
             const offset = if (raw_offset <= math.maxInt(u12)) blk: {
-                break :blk Instruction.Offset.imm(@intCast(u12, raw_offset));
+                break :blk Instruction.Offset.imm(@as(u12, @intCast(raw_offset)));
             } else return emit.fail("TODO mirLoadStack larger offsets", .{});
 
             switch (tag) {
@@ -599,7 +603,7 @@ fn mirLoadStackArgument(emit: *Emit, inst: Mir.Inst.Index) !void {
         .ldrsh_stack_argument,
         => {
             const offset = if (raw_offset <= math.maxInt(u8)) blk: {
-                break :blk Instruction.ExtraLoadStoreOffset.imm(@intCast(u8, raw_offset));
+                break :blk Instruction.ExtraLoadStoreOffset.imm(@as(u8, @intCast(raw_offset)));
             } else return emit.fail("TODO mirLoadStack larger offsets", .{});
 
             switch (tag) {

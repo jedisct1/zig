@@ -29,9 +29,9 @@ pub fn sinh(x: anytype) @TypeOf(x) {
 //         = (exp(x) - 1 + (exp(x) - 1) / exp(x)) / 2
 //         = x + x^3 / 6 + o(x^5)
 fn sinh32(x: f32) f32 {
-    const u = @bitCast(u32, x);
+    const u = @as(u32, @bitCast(x));
     const ux = u & 0x7FFFFFFF;
-    const ax = @bitCast(f32, ux);
+    const ax = @as(f32, @bitCast(ux));
 
     if (x == 0.0 or math.isNan(x)) {
         return x;
@@ -60,9 +60,9 @@ fn sinh32(x: f32) f32 {
 }
 
 fn sinh64(x: f64) f64 {
-    const u = @bitCast(u64, x);
-    const w = @intCast(u32, u >> 32) & (maxInt(u32) >> 1);
-    const ax = @bitCast(f64, u & (maxInt(u64) >> 1));
+    const u = @as(u64, @bitCast(x));
+    const w = @as(u32, @intCast(u >> 32)) & (maxInt(u32) >> 1);
+    const ax = @as(f64, @bitCast(u & (maxInt(u64) >> 1)));
 
     if (x == 0.0 or math.isNan(x)) {
         return x;
@@ -91,12 +91,12 @@ fn sinh64(x: f64) f64 {
     return 2 * h * expo2(ax);
 }
 
-test "math.sinh" {
+test sinh {
     try expect(sinh(@as(f32, 1.5)) == sinh32(1.5));
     try expect(sinh(@as(f64, 1.5)) == sinh64(1.5));
 }
 
-test "math.sinh32" {
+test sinh32 {
     const epsilon = 0.000001;
 
     try expect(math.approxEqAbs(f32, sinh32(0.0), 0.0, epsilon));
@@ -109,7 +109,7 @@ test "math.sinh32" {
     try expect(math.approxEqAbs(f32, sinh32(-1.5), -2.129279, epsilon));
 }
 
-test "math.sinh64" {
+test sinh64 {
     const epsilon = 0.000001;
 
     try expect(math.approxEqAbs(f64, sinh64(0.0), 0.0, epsilon));
@@ -122,17 +122,17 @@ test "math.sinh64" {
     try expect(math.approxEqAbs(f64, sinh64(-1.5), -2.129279, epsilon));
 }
 
-test "math.sinh32.special" {
-    try expect(sinh32(0.0) == 0.0);
-    try expect(sinh32(-0.0) == -0.0);
+test "sinh32.special" {
+    try expect(math.isPositiveZero(sinh32(0.0)));
+    try expect(math.isNegativeZero(sinh32(-0.0)));
     try expect(math.isPositiveInf(sinh32(math.inf(f32))));
     try expect(math.isNegativeInf(sinh32(-math.inf(f32))));
     try expect(math.isNan(sinh32(math.nan(f32))));
 }
 
-test "math.sinh64.special" {
-    try expect(sinh64(0.0) == 0.0);
-    try expect(sinh64(-0.0) == -0.0);
+test "sinh64.special" {
+    try expect(math.isPositiveZero(sinh64(0.0)));
+    try expect(math.isNegativeZero(sinh64(-0.0)));
     try expect(math.isPositiveInf(sinh64(math.inf(f64))));
     try expect(math.isNegativeInf(sinh64(-math.inf(f64))));
     try expect(math.isNan(sinh64(math.nan(f64))));

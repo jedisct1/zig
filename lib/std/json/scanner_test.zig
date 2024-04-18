@@ -7,6 +7,7 @@ const TokenType = @import("./scanner.zig").TokenType;
 const Diagnostics = @import("./scanner.zig").Diagnostics;
 const Error = @import("./scanner.zig").Error;
 const validate = @import("./scanner.zig").validate;
+const isNumberFormattedLikeAnInteger = @import("./scanner.zig").isNumberFormattedLikeAnInteger;
 
 const example_document_str =
     \\{
@@ -34,7 +35,7 @@ fn expectPeekNext(scanner_or_reader: anytype, expected_token_type: TokenType, ex
     try expectEqualTokens(expected_token, try scanner_or_reader.next());
 }
 
-test "json.token" {
+test "token" {
     var scanner = JsonScanner.initCompleteInput(std.testing.allocator, example_document_str);
     defer scanner.deinit();
 
@@ -152,7 +153,7 @@ test "peek all types" {
     try testAllTypes(&tiny_json_reader, false);
 }
 
-test "json.token mismatched close" {
+test "token mismatched close" {
     var scanner = JsonScanner.initCompleteInput(std.testing.allocator, "[102, 111, 111 }");
     defer scanner.deinit();
     try expectNext(&scanner, .array_begin);
@@ -162,7 +163,7 @@ test "json.token mismatched close" {
     try std.testing.expectError(error.SyntaxError, scanner.next());
 }
 
-test "json.token premature object close" {
+test "token premature object close" {
     var scanner = JsonScanner.initCompleteInput(std.testing.allocator, "{ \"key\": }");
     defer scanner.deinit();
     try expectNext(&scanner, .object_begin);
@@ -199,7 +200,7 @@ const number_test_stems = .{
     .{ "", "e0", "E0", "e+0", "e-0", "e9999999999999999999999999999" },
 };
 const number_test_items = blk: {
-    comptime var ret: []const []const u8 = &[_][]const u8{};
+    var ret: []const []const u8 = &[_][]const u8{};
     for (number_test_stems[0]) |s0| {
         for (number_test_stems[1]) |s1| {
             for (number_test_stems[2]) |s2| {
@@ -236,6 +237,7 @@ const string_test_cases = .{
     .{ "\\u000a", "\n" },
     .{ "𝄞", "\u{1D11E}" },
     .{ "\\uD834\\uDD1E", "\u{1D11E}" },
+    .{ "\\uD87F\\uDFFE", "\u{2FFFE}" },
     .{ "\\uff20", "＠" },
 };
 
@@ -351,7 +353,7 @@ test "BufferUnderrun" {
     }
 }
 
-test "json.validate" {
+test "validate" {
     try std.testing.expectEqual(true, try validate(std.testing.allocator, "{}"));
     try std.testing.expectEqual(true, try validate(std.testing.allocator, "[]"));
     try std.testing.expectEqual(false, try validate(std.testing.allocator, "[{[[[[{}]]]]}]"));
@@ -396,7 +398,7 @@ test "skipValue" {
 }
 
 fn testEnsureStackCapacity(do_ensure: bool) !void {
-    var fail_alloc = std.testing.FailingAllocator.init(std.testing.allocator, 1);
+    var fail_alloc = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
     const failing_allocator = fail_alloc.allocator();
 
     const nestings = 999; // intentionally not a power of 2.
@@ -463,4 +465,16 @@ test "enableDiagnostics" {
         const s = "[" ** reps ++ "}";
         try testDiagnostics(error.SyntaxError, 1, s.len, s.len - 1, s);
     }
+}
+
+test isNumberFormattedLikeAnInteger {
+    try std.testing.expect(isNumberFormattedLikeAnInteger("0"));
+    try std.testing.expect(isNumberFormattedLikeAnInteger("1"));
+    try std.testing.expect(isNumberFormattedLikeAnInteger("123"));
+    try std.testing.expect(!isNumberFormattedLikeAnInteger("-0"));
+    try std.testing.expect(!isNumberFormattedLikeAnInteger("0.0"));
+    try std.testing.expect(!isNumberFormattedLikeAnInteger("1.0"));
+    try std.testing.expect(!isNumberFormattedLikeAnInteger("1.23"));
+    try std.testing.expect(!isNumberFormattedLikeAnInteger("1e10"));
+    try std.testing.expect(!isNumberFormattedLikeAnInteger("1E10"));
 }

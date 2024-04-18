@@ -18,12 +18,12 @@ pub fn main() !void {
     );
 
     var names = std.ArrayList([]const u8).init(allocator);
-    var cwd = try std.fs.cwd().openIterableDir(".", .{});
+    var cwd = try std.fs.cwd().openDir(".", .{ .iterate = true });
     var it = cwd.iterate();
     while (try it.next()) |entry| {
         try names.append(try allocator.dupe(u8, entry.name));
     }
-    std.sort.sort([]const u8, names.items, {}, (struct {
+    std.mem.sort([]const u8, names.items, {}, (struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
             return std.mem.lessThan(u8, a, b);
         }

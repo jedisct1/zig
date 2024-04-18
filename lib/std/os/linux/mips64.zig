@@ -3,8 +3,8 @@ const maxInt = std.math.maxInt;
 const linux = std.os.linux;
 const SYS = linux.SYS;
 const socklen_t = linux.socklen_t;
-const iovec = std.os.iovec;
-const iovec_const = std.os.iovec_const;
+const iovec = std.posix.iovec;
+const iovec_const = std.posix.iovec_const;
 const uid_t = linux.uid_t;
 const gid_t = linux.gid_t;
 const pid_t = linux.pid_t;
@@ -18,7 +18,7 @@ pub fn syscall0(number: SYS) usize {
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
         : "$1", "$3", "$4", "$5", "$6", "$7", "$8", "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$24", "$25", "hi", "lo", "memory"
     );
 }
@@ -37,7 +37,7 @@ pub fn syscall_pipe(fd: *[2]i32) usize {
         \\ sw $3, 4($4)
         \\ 2:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(SYS.pipe)),
+        : [number] "{$2}" (@intFromEnum(SYS.pipe)),
           [fd] "{$4}" (fd),
         : "$1", "$3", "$5", "$6", "$7", "$8", "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$24", "$25", "hi", "lo", "memory"
     );
@@ -50,7 +50,7 @@ pub fn syscall1(number: SYS, arg1: usize) usize {
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
           [arg1] "{$4}" (arg1),
         : "$1", "$3", "$5", "$6", "$7", "$8", "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$24", "$25", "hi", "lo", "memory"
     );
@@ -63,7 +63,7 @@ pub fn syscall2(number: SYS, arg1: usize, arg2: usize) usize {
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
           [arg1] "{$4}" (arg1),
           [arg2] "{$5}" (arg2),
         : "$1", "$3", "$6", "$7", "$8", "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$24", "$25", "hi", "lo", "memory"
@@ -77,7 +77,7 @@ pub fn syscall3(number: SYS, arg1: usize, arg2: usize, arg3: usize) usize {
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
           [arg1] "{$4}" (arg1),
           [arg2] "{$5}" (arg2),
           [arg3] "{$6}" (arg3),
@@ -92,7 +92,7 @@ pub fn syscall4(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize)
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
           [arg1] "{$4}" (arg1),
           [arg2] "{$5}" (arg2),
           [arg3] "{$6}" (arg3),
@@ -108,7 +108,7 @@ pub fn syscall5(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize,
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
           [arg1] "{$4}" (arg1),
           [arg2] "{$5}" (arg2),
           [arg3] "{$6}" (arg3),
@@ -136,7 +136,7 @@ pub fn syscall6(
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
           [arg1] "{$4}" (arg1),
           [arg2] "{$5}" (arg2),
           [arg3] "{$6}" (arg3),
@@ -163,7 +163,7 @@ pub fn syscall7(
         \\ dsubu $2, $0, $2
         \\ 1:
         : [ret] "={$2}" (-> usize),
-        : [number] "{$2}" (@enumToInt(number)),
+        : [number] "{$2}" (@intFromEnum(number)),
           [arg1] "{$4}" (arg1),
           [arg2] "{$5}" (arg2),
           [arg3] "{$6}" (arg3),
@@ -180,44 +180,23 @@ const CloneFn = *const fn (arg: usize) callconv(.C) u8;
 /// This matches the libc clone function.
 pub extern fn clone(func: CloneFn, stack: usize, flags: u32, arg: usize, ptid: *i32, tls: usize, ctid: *i32) usize;
 
-pub fn restore() callconv(.Naked) void {
-    return asm volatile ("syscall"
+pub fn restore() callconv(.Naked) noreturn {
+    asm volatile (
+        \\ syscall
         :
-        : [number] "{$2}" (@enumToInt(SYS.rt_sigreturn)),
+        : [number] "{$2}" (@intFromEnum(SYS.rt_sigreturn)),
         : "$1", "$3", "$4", "$5", "$6", "$7", "$8", "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$24", "$25", "hi", "lo", "memory"
     );
 }
 
-pub fn restore_rt() callconv(.Naked) void {
-    return asm volatile ("syscall"
+pub fn restore_rt() callconv(.Naked) noreturn {
+    asm volatile (
+        \\ syscall
         :
-        : [number] "{$2}" (@enumToInt(SYS.rt_sigreturn)),
+        : [number] "{$2}" (@intFromEnum(SYS.rt_sigreturn)),
         : "$1", "$3", "$4", "$5", "$6", "$7", "$8", "$9", "$10", "$11", "$12", "$13", "$14", "$15", "$24", "$25", "hi", "lo", "memory"
     );
 }
-
-pub const O = struct {
-    pub const CREAT = 0o0400;
-    pub const EXCL = 0o02000;
-    pub const NOCTTY = 0o04000;
-    pub const TRUNC = 0o01000;
-    pub const APPEND = 0o0010;
-    pub const NONBLOCK = 0o0200;
-    pub const DSYNC = 0o0020;
-    pub const SYNC = 0o040020;
-    pub const RSYNC = 0o040020;
-    pub const DIRECTORY = 0o0200000;
-    pub const NOFOLLOW = 0o0400000;
-    pub const CLOEXEC = 0o02000000;
-
-    pub const ASYNC = 0o010000;
-    pub const DIRECT = 0o0100000;
-    pub const LARGEFILE = 0o020000;
-    pub const NOATIME = 0o01000000;
-    pub const PATH = 0o010000000;
-    pub const TMPFILE = 0o020200000;
-    pub const NDELAY = NONBLOCK;
-};
 
 pub const F = struct {
     pub const DUPFD = 0;
@@ -253,15 +232,6 @@ pub const LOCK = struct {
 };
 
 pub const MMAP2_UNIT = 4096;
-
-pub const MAP = struct {
-    pub const NORESERVE = 0x0400;
-    pub const GROWSDOWN = 0x1000;
-    pub const DENYWRITE = 0x2000;
-    pub const EXECUTABLE = 0x4000;
-    pub const LOCKED = 0x8000;
-    pub const @"32BIT" = 0x40;
-};
 
 pub const VDSO = struct {
     pub const CGT_SYM = "__kernel_clock_gettime";

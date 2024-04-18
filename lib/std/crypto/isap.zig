@@ -4,7 +4,7 @@ const debug = std.debug;
 const mem = std.mem;
 const math = std.math;
 const testing = std.testing;
-const Ascon = crypto.core.Ascon(.Big);
+const Ascon = crypto.core.Ascon(.big);
 const AuthenticationError = crypto.errors.AuthenticationError;
 
 /// ISAPv2 is an authenticated encryption system hardened against side channels and fault attacks.
@@ -55,9 +55,9 @@ pub const IsapA128A = struct {
     fn trickle(k: [16]u8, iv: [8]u8, y: []const u8, comptime out_len: usize) [out_len]u8 {
         var isap = IsapA128A{
             .st = Ascon.initFromWords(.{
-                mem.readIntBig(u64, k[0..8]),
-                mem.readIntBig(u64, k[8..16]),
-                mem.readIntBig(u64, iv[0..8]),
+                mem.readInt(u64, k[0..8], .big),
+                mem.readInt(u64, k[8..16], .big),
+                mem.readInt(u64, iv[0..8], .big),
                 0,
                 0,
             }),
@@ -67,7 +67,7 @@ pub const IsapA128A = struct {
         var i: usize = 0;
         while (i < y.len * 8 - 1) : (i += 1) {
             const cur_byte_pos = i / 8;
-            const cur_bit_pos = @truncate(u3, 7 - (i % 8));
+            const cur_bit_pos: u3 = @truncate(7 - (i % 8));
             const cur_bit = ((y[cur_byte_pos] >> cur_bit_pos) & 1) << 7;
             isap.st.addByte(cur_bit, 0);
             isap.st.permuteR(1);
@@ -85,9 +85,9 @@ pub const IsapA128A = struct {
     fn mac(c: []const u8, ad: []const u8, npub: [16]u8, key: [16]u8) [16]u8 {
         var isap = IsapA128A{
             .st = Ascon.initFromWords(.{
-                mem.readIntBig(u64, npub[0..8]),
-                mem.readIntBig(u64, npub[8..16]),
-                mem.readIntBig(u64, iv1[0..]),
+                mem.readInt(u64, npub[0..8], .big),
+                mem.readInt(u64, npub[8..16], .big),
+                mem.readInt(u64, iv1[0..], .big),
                 0,
                 0,
             }),
@@ -116,11 +116,11 @@ pub const IsapA128A = struct {
         const nb = trickle(key, iv3, npub[0..], 24);
         var isap = IsapA128A{
             .st = Ascon.initFromWords(.{
-                mem.readIntBig(u64, nb[0..8]),
-                mem.readIntBig(u64, nb[8..16]),
-                mem.readIntBig(u64, nb[16..24]),
-                mem.readIntBig(u64, npub[0..8]),
-                mem.readIntBig(u64, npub[8..16]),
+                mem.readInt(u64, nb[0..8], .big),
+                mem.readInt(u64, nb[8..16], .big),
+                mem.readInt(u64, nb[16..24], .big),
+                mem.readInt(u64, npub[0..8], .big),
+                mem.readInt(u64, npub[8..16], .big),
             }),
         };
         isap.st.permuteR(6);
@@ -147,11 +147,21 @@ pub const IsapA128A = struct {
         tag.* = mac(c, ad, npub, key);
     }
 
+    /// `m`: Message
+    /// `c`: Ciphertext
+    /// `tag`: Authentication tag
+    /// `ad`: Associated data
+    /// `npub`: Public nonce
+    /// `k`: Private key
+    /// Asserts `c.len == m.len`.
+    ///
+    /// Contents of `m` are undefined if an error is returned.
     pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) AuthenticationError!void {
         var computed_tag = mac(c, ad, npub, key);
-        const res = crypto.utils.timingSafeEql([tag_length]u8, computed_tag, tag);
-        crypto.utils.secureZero(u8, &computed_tag);
-        if (!res) {
+        const verify = crypto.utils.timingSafeEql([tag_length]u8, computed_tag, tag);
+        if (!verify) {
+            crypto.utils.secureZero(u8, &computed_tag);
+            @memset(m, undefined);
             return error.AuthenticationFailed;
         }
         xor(m, c, npub, key);

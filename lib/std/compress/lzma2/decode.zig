@@ -97,12 +97,12 @@ pub const Decoder = struct {
         const unpacked_size = blk: {
             var tmp: u64 = status & 0x1F;
             tmp <<= 16;
-            tmp |= try reader.readIntBig(u16);
+            tmp |= try reader.readInt(u16, .big);
             break :blk tmp + 1;
         };
 
         const packed_size = blk: {
-            const tmp: u17 = try reader.readIntBig(u16);
+            const tmp: u17 = try reader.readInt(u16, .big);
             break :blk tmp + 1;
         };
 
@@ -119,11 +119,11 @@ pub const Decoder = struct {
                     return error.CorruptInput;
                 }
 
-                const lc = @intCast(u4, props % 9);
+                const lc = @as(u4, @intCast(props % 9));
                 props /= 9;
-                const lp = @intCast(u3, props % 5);
+                const lp = @as(u3, @intCast(props % 5));
                 props /= 5;
-                const pb = @intCast(u3, props);
+                const pb = @as(u3, @intCast(props));
 
                 if (lc + lp > 4) {
                     return error.CorruptInput;
@@ -155,7 +155,7 @@ pub const Decoder = struct {
         accum: *LzAccumBuffer,
         reset_dict: bool,
     ) !void {
-        const unpacked_size = @as(u17, try reader.readIntBig(u16)) + 1;
+        const unpacked_size = @as(u17, try reader.readInt(u16, .big)) + 1;
 
         if (reset_dict) {
             try accum.reset(writer);

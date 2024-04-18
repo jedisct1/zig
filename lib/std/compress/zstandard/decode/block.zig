@@ -13,8 +13,6 @@ const readers = @import("../readers.zig");
 
 const decodeFseTable = @import("fse.zig").decodeFseTable;
 
-const readInt = std.mem.readIntLittle;
-
 pub const Error = error{
     BlockSizeOverMaximum,
     MalformedBlockSize,
@@ -311,8 +309,8 @@ pub const DecodeState = struct {
         try self.decodeLiteralsRingBuffer(dest, sequence.literal_length);
         const copy_start = dest.write_index + dest.data.len - sequence.offset;
         const copy_slice = dest.sliceAt(copy_start, sequence.match_length);
-        for (copy_slice.first) |b| dest.writeAssumeCapacity(b);
-        for (copy_slice.second) |b| dest.writeAssumeCapacity(b);
+        dest.writeSliceForwardsAssumeCapacity(copy_slice.first);
+        dest.writeSliceForwardsAssumeCapacity(copy_slice.second);
         self.written_count += sequence.match_length;
     }
 
@@ -715,10 +713,14 @@ pub fn decodeBlockRingBuffer(
     switch (block_header.block_type) {
         .raw => {
             if (src.len < block_size) return error.MalformedBlockSize;
-            const data = src[0..block_size];
-            dest.writeSliceAssumeCapacity(data);
-            consumed_count.* += block_size;
-            decode_state.written_count += block_size;
+            // dest may have length zero if block_size == 0, causing division by zero in
+            // writeSliceAssumeCapacity()
+            if (block_size > 0) {
+                const data = src[0..block_size];
+                dest.writeSliceAssumeCapacity(data);
+                consumed_count.* += block_size;
+                decode_state.written_count += block_size;
+            }
             return block_size;
         },
         .rle => {
@@ -894,7 +896,7 @@ pub fn decodeBlockReader(
 /// Decode the header of a block.
 pub fn decodeBlockHeader(src: *const [3]u8) frame.Zstandard.Block.Header {
     const last_block = src[0] & 1 == 1;
-    const block_type = @intToEnum(frame.Zstandard.Block.Type, (src[0] & 0b110) >> 1);
+    const block_type = @as(frame.Zstandard.Block.Type, @enumFromInt((src[0] & 0b110) >> 1));
     const block_size = ((src[0] & 0b11111000) >> 3) + (@as(u21, src[1]) << 5) + (@as(u21, src[2]) << 13);
     return .{
         .last_block = last_block,
@@ -936,7 +938,7 @@ pub fn decodeLiteralsSectionSlice(
     switch (header.block_type) {
         .raw => {
             if (src.len < bytes_read + header.regenerated_size) return error.MalformedLiteralsSection;
-            const stream = src[bytes_read .. bytes_read + header.regenerated_size];
+            const stream = src[bytes_read..][0..header.regenerated_size];
             consumed_count.* += header.regenerated_size + bytes_read;
             return LiteralsSection{
                 .header = header,
@@ -946,7 +948,7 @@ pub fn decodeLiteralsSectionSlice(
         },
         .rle => {
             if (src.len < bytes_read + 1) return error.MalformedLiteralsSection;
-            const stream = src[bytes_read .. bytes_read + 1];
+            const stream = src[bytes_read..][0..1];
             consumed_count.* += 1 + bytes_read;
             return LiteralsSection{
                 .header = header,
@@ -1008,7 +1010,7 @@ pub fn decodeLiteralsSection(
                 try huffman.decodeHuffmanTree(counting_reader.reader(), buffer)
             else
                 null;
-            const huffman_tree_size = @intCast(usize, counting_reader.bytes_read);
+            const huffman_tree_size = @as(usize, @intCast(counting_reader.bytes_read));
             const total_streams_size = std.math.sub(usize, header.compressed_size.?, huffman_tree_size) catch
                 return error.MalformedLiteralsSection;
 
@@ -1033,9 +1035,9 @@ fn decodeStreams(size_format: u2, stream_data: []const u8) !LiteralsSection.Stre
 
     if (stream_data.len < 6) return error.MalformedLiteralsSection;
 
-    const stream_1_length = @as(usize, readInt(u16, stream_data[0..2]));
-    const stream_2_length = @as(usize, readInt(u16, stream_data[2..4]));
-    const stream_3_length = @as(usize, readInt(u16, stream_data[4..6]));
+    const stream_1_length: usize = std.mem.readInt(u16, stream_data[0..2], .little);
+    const stream_2_length: usize = std.mem.readInt(u16, stream_data[2..4], .little);
+    const stream_3_length: usize = std.mem.readInt(u16, stream_data[4..6], .little);
 
     const stream_1_start = 6;
     const stream_2_start = stream_1_start + stream_1_length;
@@ -1058,8 +1060,8 @@ fn decodeStreams(size_format: u2, stream_data: []const u8) !LiteralsSection.Stre
 ///   - `error.EndOfStream` if there are not enough bytes in `source`
 pub fn decodeLiteralsHeader(source: anytype) !LiteralsSection.Header {
     const byte0 = try source.readByte();
-    const block_type = @intToEnum(LiteralsSection.BlockType, byte0 & 0b11);
-    const size_format = @intCast(u2, (byte0 & 0b1100) >> 2);
+    const block_type = @as(LiteralsSection.BlockType, @enumFromInt(byte0 & 0b11));
+    const size_format = @as(u2, @intCast((byte0 & 0b1100) >> 2));
     var regenerated_size: u20 = undefined;
     var compressed_size: ?u18 = null;
     switch (block_type) {
@@ -1132,9 +1134,9 @@ pub fn decodeSequencesHeader(
 
     const compression_modes = try source.readByte();
 
-    const matches_mode = @intToEnum(SequencesSection.Header.Mode, (compression_modes & 0b00001100) >> 2);
-    const offsets_mode = @intToEnum(SequencesSection.Header.Mode, (compression_modes & 0b00110000) >> 4);
-    const literal_mode = @intToEnum(SequencesSection.Header.Mode, (compression_modes & 0b11000000) >> 6);
+    const matches_mode = @as(SequencesSection.Header.Mode, @enumFromInt((compression_modes & 0b00001100) >> 2));
+    const offsets_mode = @as(SequencesSection.Header.Mode, @enumFromInt((compression_modes & 0b00110000) >> 4));
+    const literal_mode = @as(SequencesSection.Header.Mode, @enumFromInt((compression_modes & 0b11000000) >> 6));
     if (compression_modes & 0b11 != 0) return error.ReservedBitSet;
 
     return SequencesSection.Header{

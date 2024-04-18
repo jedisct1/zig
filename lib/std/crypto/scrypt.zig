@@ -73,11 +73,11 @@ fn salsaXor(tmp: *align(16) [16]u32, in: []align(16) const u32, out: []align(16)
 }
 
 fn blockMix(tmp: *align(16) [16]u32, in: []align(16) const u32, out: []align(16) u32, r: u30) void {
-    blockCopy(tmp, @alignCast(16, in[(2 * r - 1) * 16 ..]), 1);
+    blockCopy(tmp, @alignCast(in[(2 * r - 1) * 16 ..]), 1);
     var i: usize = 0;
     while (i < 2 * r) : (i += 2) {
-        salsaXor(tmp, @alignCast(16, in[i * 16 ..]), @alignCast(16, out[i * 8 ..]));
-        salsaXor(tmp, @alignCast(16, in[i * 16 + 16 ..]), @alignCast(16, out[i * 8 + r * 16 ..]));
+        salsaXor(tmp, @alignCast(in[i * 16 ..]), @alignCast(out[i * 8 ..]));
+        salsaXor(tmp, @alignCast(in[i * 16 + 16 ..]), @alignCast(out[i * 8 + r * 16 ..]));
     }
 }
 
@@ -87,36 +87,36 @@ fn integerify(b: []align(16) const u32, r: u30) u64 {
 }
 
 fn smix(b: []align(16) u8, r: u30, n: usize, v: []align(16) u32, xy: []align(16) u32) void {
-    var x = @alignCast(16, xy[0 .. 32 * r]);
-    var y = @alignCast(16, xy[32 * r ..]);
+    const x: []align(16) u32 = @alignCast(xy[0 .. 32 * r]);
+    const y: []align(16) u32 = @alignCast(xy[32 * r ..]);
 
     for (x, 0..) |*v1, j| {
-        v1.* = mem.readIntSliceLittle(u32, b[4 * j ..]);
+        v1.* = mem.readInt(u32, b[4 * j ..][0..4], .little);
     }
 
     var tmp: [16]u32 align(16) = undefined;
     var i: usize = 0;
     while (i < n) : (i += 2) {
-        blockCopy(@alignCast(16, v[i * (32 * r) ..]), x, 2 * r);
+        blockCopy(@alignCast(v[i * (32 * r) ..]), x, 2 * r);
         blockMix(&tmp, x, y, r);
 
-        blockCopy(@alignCast(16, v[(i + 1) * (32 * r) ..]), y, 2 * r);
+        blockCopy(@alignCast(v[(i + 1) * (32 * r) ..]), y, 2 * r);
         blockMix(&tmp, y, x, r);
     }
 
     i = 0;
     while (i < n) : (i += 2) {
-        var j = @intCast(usize, integerify(x, r) & (n - 1));
-        blockXor(x, @alignCast(16, v[j * (32 * r) ..]), 2 * r);
+        var j = @as(usize, @intCast(integerify(x, r) & (n - 1)));
+        blockXor(x, @alignCast(v[j * (32 * r) ..]), 2 * r);
         blockMix(&tmp, x, y, r);
 
-        j = @intCast(usize, integerify(y, r) & (n - 1));
-        blockXor(y, @alignCast(16, v[j * (32 * r) ..]), 2 * r);
+        j = @as(usize, @intCast(integerify(y, r) & (n - 1)));
+        blockXor(y, @alignCast(v[j * (32 * r) ..]), 2 * r);
         blockMix(&tmp, y, x, r);
     }
 
     for (x, 0..) |v1, j| {
-        mem.writeIntLittle(u32, b[4 * j ..][0..4], v1);
+        mem.writeInt(u32, b[4 * j ..][0..4], v1, .little);
     }
 }
 
@@ -143,16 +143,16 @@ pub const Params = struct {
 
     /// Create parameters from ops and mem limits, where mem_limit given in bytes
     pub fn fromLimits(ops_limit: u64, mem_limit: usize) Self {
-        const ops = math.max(32768, ops_limit);
+        const ops = @max(32768, ops_limit);
         const r: u30 = 8;
         if (ops < mem_limit / 32) {
             const max_n = ops / (r * 4);
-            return Self{ .r = r, .p = 1, .ln = @intCast(u6, math.log2(max_n)) };
+            return Self{ .r = r, .p = 1, .ln = @as(u6, @intCast(math.log2(max_n))) };
         } else {
-            const max_n = mem_limit / (@intCast(usize, r) * 128);
-            const ln = @intCast(u6, math.log2(max_n));
-            const max_rp = math.min(0x3fffffff, (ops / 4) / (@as(u64, 1) << ln));
-            return Self{ .r = r, .p = @intCast(u30, max_rp / @as(u64, r)), .ln = ln };
+            const max_n = mem_limit / (@as(usize, @intCast(r)) * 128);
+            const ln = @as(u6, @intCast(math.log2(max_n)));
+            const max_rp = @min(0x3fffffff, (ops / 4) / (@as(u64, 1) << ln));
+            return Self{ .r = r, .p = @as(u30, @intCast(max_rp / @as(u64, r))), .ln = ln };
         }
     }
 };
@@ -185,15 +185,15 @@ pub fn kdf(
 
     const n64 = @as(u64, 1) << params.ln;
     if (n64 > max_size) return KdfError.WeakParameters;
-    const n = @intCast(usize, n64);
+    const n = @as(usize, @intCast(n64));
     if (@as(u64, params.r) * @as(u64, params.p) >= 1 << 30 or
         params.r > max_int / 128 / @as(u64, params.p) or
         params.r > max_int / 256 or
         n > max_int / 128 / @as(u64, params.r)) return KdfError.WeakParameters;
 
-    var xy = try allocator.alignedAlloc(u32, 16, 64 * params.r);
+    const xy = try allocator.alignedAlloc(u32, 16, 64 * params.r);
     defer allocator.free(xy);
-    var v = try allocator.alignedAlloc(u32, 16, 32 * n * params.r);
+    const v = try allocator.alignedAlloc(u32, 16, 32 * n * params.r);
     defer allocator.free(v);
     var dk = try allocator.alignedAlloc(u8, 16, params.p * 128 * params.r);
     defer allocator.free(dk);
@@ -201,7 +201,7 @@ pub fn kdf(
     try pwhash.pbkdf2(dk, password, salt, 1, HmacSha256);
     var i: u32 = 0;
     while (i < params.p) : (i += 1) {
-        smix(@alignCast(16, dk[i * 128 * params.r ..]), params.r, n, v, xy);
+        smix(@alignCast(dk[i * 128 * params.r ..]), params.r, n, v, xy);
     }
     try pwhash.pbkdf2(derived_key, password, dk, 1, HmacSha256);
 }
@@ -263,7 +263,7 @@ const crypt_format = struct {
                 const value = self.constSlice();
                 const len = Codec.encodedLen(value.len);
                 if (len > buf.len) return EncodingError.NoSpaceLeft;
-                var encoded = buf[0..len];
+                const encoded = buf[0..len];
                 Codec.encode(encoded, value);
                 return encoded;
             }
@@ -287,7 +287,7 @@ const crypt_format = struct {
         out.r = try Codec.intDecode(u30, str[4..9]);
         out.p = try Codec.intDecode(u30, str[9..14]);
 
-        var it = mem.split(u8, str[14..], "$");
+        var it = mem.splitScalar(u8, str[14..], '$');
 
         const salt = it.first();
         if (@hasField(T, "salt")) out.salt = salt;
@@ -309,7 +309,7 @@ const crypt_format = struct {
     pub fn calcSize(params: anytype) usize {
         var buf = io.countingWriter(io.null_writer);
         serializeTo(params, buf.writer()) catch unreachable;
-        return @intCast(usize, buf.bytes_written);
+        return @as(usize, @intCast(buf.bytes_written));
     }
 
     fn serializeTo(params: anytype, out: anytype) !void {
@@ -343,7 +343,7 @@ const crypt_format = struct {
             fn intEncode(dst: []u8, src: anytype) void {
                 var n = src;
                 for (dst) |*x| {
-                    x.* = map64[@truncate(u6, n)];
+                    x.* = map64[@as(u6, @truncate(n))];
                     n = math.shr(@TypeOf(src), n, 6);
                 }
             }
@@ -352,7 +352,7 @@ const crypt_format = struct {
                 var v: T = 0;
                 for (src, 0..) |x, i| {
                     const vi = mem.indexOfScalar(u8, &map64, x) orelse return EncodingError.InvalidEncoding;
-                    v |= @intCast(T, vi) << @intCast(math.Log2Int(T), i * 6);
+                    v |= @as(T, @intCast(vi)) << @as(math.Log2Int(T), @intCast(i * 6));
                 }
                 return v;
             }
@@ -361,15 +361,15 @@ const crypt_format = struct {
                 std.debug.assert(dst.len == decodedLen(src.len));
                 var i: usize = 0;
                 while (i < src.len / 4) : (i += 1) {
-                    mem.writeIntSliceLittle(u24, dst[i * 3 ..], try intDecode(u24, src[i * 4 ..][0..4]));
+                    mem.writeInt(u24, dst[i * 3 ..][0..3], try intDecode(u24, src[i * 4 ..][0..4]), .little);
                 }
                 const leftover = src[i * 4 ..];
                 var v: u24 = 0;
                 for (leftover, 0..) |_, j| {
-                    v |= @as(u24, try intDecode(u6, leftover[j..][0..1])) << @intCast(u5, j * 6);
+                    v |= @as(u24, try intDecode(u6, leftover[j..][0..1])) << @as(u5, @intCast(j * 6));
                 }
                 for (dst[i * 3 ..], 0..) |*x, j| {
-                    x.* = @truncate(u8, v >> @intCast(u5, j * 8));
+                    x.* = @as(u8, @truncate(v >> @as(u5, @intCast(j * 8))));
                 }
             }
 
@@ -377,12 +377,12 @@ const crypt_format = struct {
                 std.debug.assert(dst.len == encodedLen(src.len));
                 var i: usize = 0;
                 while (i < src.len / 3) : (i += 1) {
-                    intEncode(dst[i * 4 ..][0..4], mem.readIntSliceLittle(u24, src[i * 3 ..]));
+                    intEncode(dst[i * 4 ..][0..4], mem.readInt(u24, src[i * 3 ..][0..3], .little));
                 }
                 const leftover = src[i * 3 ..];
                 var v: u24 = 0;
                 for (leftover, 0..) |x, j| {
-                    v |= @as(u24, x) << @intCast(u5, j * 8);
+                    v |= @as(u24, x) << @as(u5, @intCast(j * 8));
                 }
                 intEncode(dst[i * 4 ..], v);
             }
@@ -439,7 +439,7 @@ const PhcFormatHasher = struct {
         const expected_hash = hash_result.hash.constSlice();
         var hash_buf: [max_hash_len]u8 = undefined;
         if (expected_hash.len > hash_buf.len) return HasherError.InvalidEncoding;
-        var hash = hash_buf[0..expected_hash.len];
+        const hash = hash_buf[0..expected_hash.len];
         try kdf(allocator, hash, password, hash_result.salt.constSlice(), params);
         if (!mem.eql(u8, hash, expected_hash)) return HasherError.PasswordVerificationFailed;
     }
@@ -487,7 +487,7 @@ const CryptFormatHasher = struct {
         const expected_hash = hash_result.hash.constSlice();
         var hash_buf: [max_hash_len]u8 = undefined;
         if (expected_hash.len > hash_buf.len) return HasherError.InvalidEncoding;
-        var hash = hash_buf[0..expected_hash.len];
+        const hash = hash_buf[0..expected_hash.len];
         try kdf(allocator, hash, password, hash_result.salt, params);
         if (!mem.eql(u8, hash, expected_hash)) return HasherError.PasswordVerificationFailed;
     }

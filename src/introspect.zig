@@ -4,6 +4,7 @@ const mem = std.mem;
 const os = std.os;
 const fs = std.fs;
 const Compilation = @import("Compilation.zig");
+const build_options = @import("build_options");
 
 /// Returns the sub_path that worked, or `null` if none did.
 /// The path of the returned Directory is relative to `base`.
@@ -80,23 +81,17 @@ pub fn findZigLibDirFromSelfExe(
 
 /// Caller owns returned memory.
 pub fn resolveGlobalCacheDir(allocator: mem.Allocator) ![]u8 {
-    if (builtin.os.tag == .wasi) {
+    if (builtin.os.tag == .wasi)
         @compileError("on WASI the global cache dir must be resolved with preopens");
-    }
-    if (std.process.getEnvVarOwned(allocator, "ZIG_GLOBAL_CACHE_DIR")) |value| {
-        if (value.len > 0) {
-            return value;
-        } else {
-            allocator.free(value);
-        }
-    } else |_| {}
+
+    if (try std.zig.EnvVar.ZIG_GLOBAL_CACHE_DIR.get(allocator)) |value| return value;
 
     const appname = "zig";
 
     if (builtin.os.tag != .windows) {
-        if (std.os.getenv("XDG_CACHE_HOME")) |cache_root| {
+        if (std.zig.EnvVar.XDG_CACHE_HOME.getPosix()) |cache_root| {
             return fs.path.join(allocator, &[_][]const u8{ cache_root, appname });
-        } else if (std.os.getenv("HOME")) |home| {
+        } else if (std.zig.EnvVar.HOME.getPosix()) |home| {
             return fs.path.join(allocator, &[_][]const u8{ home, ".cache", appname });
         }
     }

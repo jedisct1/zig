@@ -1,10 +1,9 @@
 pub const Client = @import("http/Client.zig");
 pub const Server = @import("http/Server.zig");
 pub const protocol = @import("http/protocol.zig");
-const headers = @import("http/Headers.zig");
-
-pub const Headers = headers.Headers;
-pub const Field = headers.Field;
+pub const HeadParser = @import("http/HeadParser.zig");
+pub const ChunkParser = @import("http/ChunkParser.zig");
+pub const HeaderIterator = @import("http/HeaderIterator.zig");
 
 pub const Version = enum {
     @"HTTP/1.0",
@@ -12,18 +11,37 @@ pub const Version = enum {
 };
 
 /// https://developer.mozilla.org/en-US/docs/Web/HTTP/Methods
+///
 /// https://datatracker.ietf.org/doc/html/rfc7231#section-4 Initial definition
+///
 /// https://datatracker.ietf.org/doc/html/rfc5789#section-2 PATCH
-pub const Method = enum {
-    GET,
-    HEAD,
-    POST,
-    PUT,
-    DELETE,
-    CONNECT,
-    OPTIONS,
-    TRACE,
-    PATCH,
+pub const Method = enum(u64) {
+    GET = parse("GET"),
+    HEAD = parse("HEAD"),
+    POST = parse("POST"),
+    PUT = parse("PUT"),
+    DELETE = parse("DELETE"),
+    CONNECT = parse("CONNECT"),
+    OPTIONS = parse("OPTIONS"),
+    TRACE = parse("TRACE"),
+    PATCH = parse("PATCH"),
+
+    _,
+
+    /// Converts `s` into a type that may be used as a `Method` field.
+    /// Asserts that `s` is 24 or fewer bytes.
+    pub fn parse(s: []const u8) u64 {
+        var x: u64 = 0;
+        const len = @min(s.len, @sizeOf(@TypeOf(x)));
+        @memcpy(std.mem.asBytes(&x)[0..len], s[0..len]);
+        return x;
+    }
+
+    pub fn write(self: Method, w: anytype) !void {
+        const bytes = std.mem.asBytes(&@intFromEnum(self));
+        const str = std.mem.sliceTo(bytes, 0);
+        try w.writeAll(str);
+    }
 
     /// Returns true if a request of this method is allowed to have a body
     /// Actual behavior from servers may vary and should still be checked
@@ -31,6 +49,7 @@ pub const Method = enum {
         return switch (self) {
             .POST, .PUT, .PATCH => true,
             .GET, .HEAD, .DELETE, .CONNECT, .OPTIONS, .TRACE => false,
+            else => true,
         };
     }
 
@@ -40,36 +59,46 @@ pub const Method = enum {
         return switch (self) {
             .GET, .POST, .DELETE, .CONNECT, .OPTIONS, .PATCH => true,
             .HEAD, .PUT, .TRACE => false,
+            else => true,
         };
     }
 
     /// An HTTP method is safe if it doesn't alter the state of the server.
+    ///
     /// https://developer.mozilla.org/en-US/docs/Glossary/Safe/HTTP
+    ///
     /// https://datatracker.ietf.org/doc/html/rfc7231#section-4.2.1
     pub fn safe(self: Method) bool {
         return switch (self) {
             .GET, .HEAD, .OPTIONS, .TRACE => true,
             .POST, .PUT, .DELETE, .CONNECT, .PATCH => false,
+            else => false,
         };
     }
 
     /// An HTTP method is idempotent if an identical request can be made once or several times in a row with the same effect while leaving the server in the same state.
+    ///
     /// https://developer.mozilla.org/en-US/docs/Glossary/Idempotent
+    ///
     /// https://datatracker.ietf.org/doc/html/rfc7231#section-4.2.2
     pub fn idempotent(self: Method) bool {
         return switch (self) {
             .GET, .HEAD, .PUT, .DELETE, .OPTIONS, .TRACE => true,
             .CONNECT, .POST, .PATCH => false,
+            else => false,
         };
     }
 
     /// A cacheable response is an HTTP response that can be cached, that is stored to be retrieved and used later, saving a new request to the server.
+    ///
     /// https://developer.mozilla.org/en-US/docs/Glossary/cacheable
+    ///
     /// https://datatracker.ietf.org/doc/html/rfc7231#section-4.2.3
     pub fn cacheable(self: Method) bool {
         return switch (self) {
             .GET, .HEAD => true,
             .POST, .PUT, .DELETE, .CONNECT, .OPTIONS, .TRACE, .PATCH => false,
+            else => false,
         };
     }
 };
@@ -232,7 +261,7 @@ pub const Status = enum(u10) {
     };
 
     pub fn class(self: Status) Class {
-        return switch (@enumToInt(self)) {
+        return switch (@intFromEnum(self)) {
             100...199 => .informational,
             200...299 => .success,
             300...399 => .redirect,
@@ -247,20 +276,24 @@ pub const Status = enum(u10) {
     }
 
     test {
-        try std.testing.expectEqual(@as(?Status.Class, Status.Class.success), Status.ok.class());
-        try std.testing.expectEqual(@as(?Status.Class, Status.Class.client_error), Status.not_found.class());
+        try std.testing.expectEqual(Status.Class.success, Status.ok.class());
+        try std.testing.expectEqual(Status.Class.client_error, Status.not_found.class());
     }
 };
 
 pub const TransferEncoding = enum {
     chunked,
+    none,
     // compression is intentionally omitted here, as std.http.Client stores it as content-encoding
 };
 
 pub const ContentEncoding = enum {
+    identity,
     compress,
+    @"x-compress",
     deflate,
     gzip,
+    @"x-gzip",
     zstd,
 };
 
@@ -269,10 +302,22 @@ pub const Connection = enum {
     close,
 };
 
+pub const Header = struct {
+    name: []const u8,
+    value: []const u8,
+};
+
+const builtin = @import("builtin");
 const std = @import("std.zig");
 
 test {
     _ = Client;
     _ = Method;
+    _ = Server;
     _ = Status;
+    _ = HeadParser;
+    _ = ChunkParser;
+    if (builtin.os.tag != .wasi) {
+        _ = @import("http/test.zig");
+    }
 }

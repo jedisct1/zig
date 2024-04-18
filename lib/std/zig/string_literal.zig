@@ -142,13 +142,13 @@ pub fn parseEscapeSequence(slice: []const u8, offset: *usize) ParsedCharLiteral 
                 return .{ .failure = .{ .expected_rbrace = i } };
             }
             offset.* = i;
-            return .{ .success = @intCast(u21, value) };
+            return .{ .success = @as(u21, @intCast(value)) };
         },
         else => return .{ .failure = .{ .invalid_escape_character = offset.* - 1 } },
     }
 }
 
-test "parseCharLiteral" {
+test parseCharLiteral {
     try std.testing.expectEqual(
         ParsedCharLiteral{ .success = 'a' },
         parseCharLiteral("'a'"),
@@ -253,7 +253,7 @@ pub fn parseWrite(writer: anytype, bytes: []const u8) error{OutOfMemory}!Result 
                             };
                             try writer.writeAll(buf[0..len]);
                         } else {
-                            try writer.writeByte(@intCast(u8, codepoint));
+                            try writer.writeByte(@as(u8, @intCast(codepoint)));
                         }
                     },
                     .failure => |err| return Result{ .failure = err },
@@ -281,14 +281,14 @@ pub fn parseAlloc(allocator: std.mem.Allocator, bytes: []const u8) ParseError![]
     }
 }
 
-test "parse" {
+test parseAlloc {
     const expect = std.testing.expect;
     const expectError = std.testing.expectError;
     const eql = std.mem.eql;
 
     var fixed_buf_mem: [64]u8 = undefined;
     var fixed_buf_alloc = std.heap.FixedBufferAllocator.init(&fixed_buf_mem);
-    var alloc = fixed_buf_alloc.allocator();
+    const alloc = fixed_buf_alloc.allocator();
 
     try expectError(error.InvalidLiteral, parseAlloc(alloc, "\"\\x6\""));
     try expect(eql(u8, "foo\nbar", try parseAlloc(alloc, "\"foo\\nbar\"")));

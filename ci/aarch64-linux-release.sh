@@ -8,15 +8,14 @@ set -e
 ARCH="$(uname -m)"
 TARGET="$ARCH-linux-musl"
 MCPU="baseline"
-CACHE_BASENAME="zig+llvm+lld+clang-$TARGET-0.11.0-dev.1869+df4cfc2ec"
+CACHE_BASENAME="zig+llvm+lld+clang-$TARGET-0.12.0-dev.203+d3bc1cfc4"
 PREFIX="$HOME/deps/$CACHE_BASENAME"
 ZIG="$PREFIX/bin/zig"
 
-export PATH="$HOME/deps/wasmtime-v2.0.2-$ARCH-linux:$PATH"
+export PATH="$HOME/deps/wasmtime-v10.0.2-$ARCH-linux:$PATH"
 
 # Make the `zig version` number consistent.
 # This will affect the cmake command below.
-git config core.abbrev 9
 git fetch --unshallow || true
 git fetch --tags
 
@@ -40,6 +39,7 @@ cmake .. \
   -DZIG_TARGET_TRIPLE="$TARGET" \
   -DZIG_TARGET_MCPU="$MCPU" \
   -DZIG_STATIC=ON \
+  -DZIG_NO_LIB=ON \
   -GNinja
 
 # Now cmake will use zig as the C/C++ compiler. We reset the environment variables
@@ -49,16 +49,18 @@ unset CXX
 
 ninja install
 
+# TODO: move this to a build.zig step (check-fmt)
 echo "Looking for non-conforming code formatting..."
 stage3-release/bin/zig fmt --check .. \
   --exclude ../test/cases/ \
   --exclude ../build-release
 
 # simultaneously test building self-hosted without LLVM and with 32-bit arm
-stage3-release/bin/zig build -Dtarget=arm-linux-musleabihf
+stage3-release/bin/zig build \
+  -Dtarget=arm-linux-musleabihf \
+  -Dno-lib
 
 # TODO: add -fqemu back to this line
-
 stage3-release/bin/zig build test docs \
   --maxrss 24696061952 \
   -fwasmtime \
@@ -68,10 +70,8 @@ stage3-release/bin/zig build test docs \
   --zig-lib-dir "$(pwd)/../lib"
 
 # Look for HTML errors.
-tidy --drop-empty-elements no -qe "stage3-release/doc/langref.html"
-
-# Produce the experimental std lib documentation.
-stage3-release/bin/zig test ../lib/std/std.zig -femit-docs -fno-emit-bin --zig-lib-dir ../lib
+# TODO: move this to a build.zig flag (-Denable-tidy)
+tidy --drop-empty-elements no -qe "../zig-out/doc/langref.html"
 
 # Ensure that updating the wasm binary from this commit will result in a viable build.
 stage3-release/bin/zig build update-zig1
@@ -91,6 +91,7 @@ cmake .. \
   -DZIG_TARGET_TRIPLE="$TARGET" \
   -DZIG_TARGET_MCPU="$MCPU" \
   -DZIG_STATIC=ON \
+  -DZIG_NO_LIB=ON \
   -GNinja
 
 unset CC
@@ -98,10 +99,11 @@ unset CXX
 
 ninja install
 
-stage3/bin/zig test ../test/behavior.zig -I../test
+stage3/bin/zig test ../test/behavior.zig
 stage3/bin/zig build -p stage4 \
   -Dstatic-llvm \
   -Dtarget=native-native-musl \
+  -Dno-lib \
   --search-prefix "$PREFIX" \
   --zig-lib-dir "$(pwd)/../lib"
-stage4/bin/zig test ../test/behavior.zig -I../test
+stage4/bin/zig test ../test/behavior.zig

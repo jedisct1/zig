@@ -8,6 +8,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const math = std.math;
+const mem = std.mem;
 const expect = std.testing.expect;
 
 const kernel = @import("trig.zig");
@@ -33,7 +34,7 @@ comptime {
 
 pub fn __tanh(x: f16) callconv(.C) f16 {
     // TODO: more efficient implementation
-    return @floatCast(f16, tanf(x));
+    return @floatCast(tanf(x));
 }
 
 pub fn tanf(x: f32) callconv(.C) f32 {
@@ -43,14 +44,14 @@ pub fn tanf(x: f32) callconv(.C) f32 {
     const t3pio2: f64 = 3.0 * math.pi / 2.0; // 0x4012D97C, 0x7F3321D2
     const t4pio2: f64 = 4.0 * math.pi / 2.0; // 0x401921FB, 0x54442D18
 
-    var ix = @bitCast(u32, x);
+    var ix: u32 = @bitCast(x);
     const sign = ix >> 31 != 0;
     ix &= 0x7fffffff;
 
     if (ix <= 0x3f490fda) { // |x| ~<= pi/4
         if (ix < 0x39800000) { // |x| < 2**-12
             // raise inexact if x!=0 and underflow if subnormal
-            math.doNotOptimizeAway(if (ix < 0x00800000) x / 0x1p120 else x + 0x1p120);
+            mem.doNotOptimizeAway(if (ix < 0x00800000) x / 0x1p120 else x + 0x1p120);
             return x;
         }
         return kernel.__tandf(x, false);
@@ -81,14 +82,14 @@ pub fn tanf(x: f32) callconv(.C) f32 {
 }
 
 pub fn tan(x: f64) callconv(.C) f64 {
-    var ix = @bitCast(u64, x) >> 32;
+    var ix = @as(u64, @bitCast(x)) >> 32;
     ix &= 0x7fffffff;
 
     // |x| ~< pi/4
     if (ix <= 0x3fe921fb) {
         if (ix < 0x3e400000) { // |x| < 2**-27
             // raise inexact if x!=0 and underflow if subnormal
-            math.doNotOptimizeAway(if (ix < 0x00100000) x / 0x1p120 else x + 0x1p120);
+            mem.doNotOptimizeAway(if (ix < 0x00100000) x / 0x1p120 else x + 0x1p120);
             return x;
         }
         return kernel.__tan(x, 0.0, false);
@@ -106,12 +107,12 @@ pub fn tan(x: f64) callconv(.C) f64 {
 
 pub fn __tanx(x: f80) callconv(.C) f80 {
     // TODO: more efficient implementation
-    return @floatCast(f80, tanq(x));
+    return @floatCast(tanq(x));
 }
 
 pub fn tanq(x: f128) callconv(.C) f128 {
     // TODO: more correct implementation
-    return tan(@floatCast(f64, x));
+    return tan(@floatCast(x));
 }
 
 pub fn tanl(x: c_longdouble) callconv(.C) c_longdouble {

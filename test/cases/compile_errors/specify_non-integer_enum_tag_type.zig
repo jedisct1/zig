@@ -1,11 +1,11 @@
-const Small = enum (f32) {
+const Small = enum(f32) {
     One,
     Two,
     Three,
 };
 
 export fn entry() void {
-    var x = Small.One;
+    const x = Small.One;
     _ = x;
 }
 
@@ -13,4 +13,4 @@ export fn entry() void {
 // backend=stage2
 // target=native
 //
-// :1:21: error: expected integer tag type, found 'f32'
+// :1:20: error: expected integer tag type, found 'f32'

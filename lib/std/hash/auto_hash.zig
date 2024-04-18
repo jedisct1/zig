@@ -1,7 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const mem = std.mem;
-const meta = std.meta;
 
 /// Describes how pointer types should be hashed.
 pub const HashStrategy = enum {
@@ -25,7 +24,7 @@ pub fn hashPointer(hasher: anytype, key: anytype, comptime strat: HashStrategy) 
 
     switch (info.Pointer.size) {
         .One => switch (strat) {
-            .Shallow => hash(hasher, @ptrToInt(key), .Shallow),
+            .Shallow => hash(hasher, @intFromPtr(key), .Shallow),
             .Deep => hash(hasher, key.*, .Shallow),
             .DeepRecursive => hash(hasher, key.*, .DeepRecursive),
         },
@@ -44,7 +43,7 @@ pub fn hashPointer(hasher: anytype, key: anytype, comptime strat: HashStrategy) 
         .Many,
         .C,
         => switch (strat) {
-            .Shallow => hash(hasher, @ptrToInt(key), .Shallow),
+            .Shallow => hash(hasher, @intFromPtr(key), .Shallow),
             else => @compileError(
                 \\ unknown-length pointers and C pointers cannot be hashed deeply.
                 \\ Consider providing your own hash function.
@@ -69,7 +68,7 @@ pub fn hash(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
         else => @TypeOf(hasher),
     };
 
-    if (strat == .Shallow and comptime meta.trait.hasUniqueRepresentation(Key)) {
+    if (strat == .Shallow and std.meta.hasUniqueRepresentation(Key)) {
         @call(.always_inline, Hasher.update, .{ hasher, mem.asBytes(&key) });
         return;
     }
@@ -91,21 +90,27 @@ pub fn hash(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
 
         // Help the optimizer see that hashing an int is easy by inlining!
         // TODO Check if the situation is better after #561 is resolved.
-        .Int => {
-            if (comptime meta.trait.hasUniqueRepresentation(Key)) {
-                @call(.always_inline, Hasher.update, .{ hasher, std.mem.asBytes(&key) });
-            } else {
-                // Take only the part containing the key value, the remaining
-                // bytes are undefined and must not be hashed!
-                const byte_size = comptime std.math.divCeil(comptime_int, @bitSizeOf(Key), 8) catch unreachable;
-                @call(.always_inline, Hasher.update, .{ hasher, std.mem.asBytes(&key)[0..byte_size] });
-            }
+        .Int => |int| switch (int.signedness) {
+            .signed => hash(hasher, @as(@Type(.{ .Int = .{
+                .bits = int.bits,
+                .signedness = .unsigned,
+            } }), @bitCast(key)), strat),
+            .unsigned => {
+                if (std.meta.hasUniqueRepresentation(Key)) {
+                    @call(.always_inline, Hasher.update, .{ hasher, std.mem.asBytes(&key) });
+                } else {
+                    // Take only the part containing the key value, the remaining
+                    // bytes are undefined and must not be hashed!
+                    const byte_size = comptime std.math.divCeil(comptime_int, @bitSizeOf(Key), 8) catch unreachable;
+                    @call(.always_inline, Hasher.update, .{ hasher, std.mem.asBytes(&key)[0..byte_size] });
+                }
+            },
         },
 
-        .Bool => hash(hasher, @boolToInt(key), strat),
-        .Enum => hash(hasher, @enumToInt(key), strat),
-        .ErrorSet => hash(hasher, @errorToInt(key), strat),
-        .AnyFrame, .Fn => hash(hasher, @ptrToInt(key), strat),
+        .Bool => hash(hasher, @intFromBool(key), strat),
+        .Enum => hash(hasher, @intFromEnum(key), strat),
+        .ErrorSet => hash(hasher, @intFromError(key), strat),
+        .AnyFrame, .Fn => hash(hasher, @intFromPtr(key), strat),
 
         .Pointer => @call(.always_inline, hashPointer, .{ hasher, key, strat }),
 
@@ -114,7 +119,7 @@ pub fn hash(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
         .Array => hashArray(hasher, key, strat),
 
         .Vector => |info| {
-            if (comptime meta.trait.hasUniqueRepresentation(Key)) {
+            if (std.meta.hasUniqueRepresentation(Key)) {
                 hasher.update(mem.asBytes(&key));
             } else {
                 comptime var i = 0;
@@ -134,7 +139,7 @@ pub fn hash(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
 
         .Union => |info| {
             if (info.tag_type) |tag_type| {
-                const tag = meta.activeTag(key);
+                const tag = std.meta.activeTag(key);
                 hash(hasher, tag, strat);
                 inline for (info.fields) |field| {
                     if (@field(tag_type, field.name) == tag) {
@@ -160,27 +165,21 @@ pub fn hash(hasher: anytype, key: anytype, comptime strat: HashStrategy) void {
     }
 }
 
-fn typeContainsSlice(comptime K: type) bool {
-    comptime {
-        if (meta.trait.isSlice(K)) {
-            return true;
-        }
-        if (meta.trait.is(.Struct)(K)) {
-            inline for (@typeInfo(K).Struct.fields) |field| {
+inline fn typeContainsSlice(comptime K: type) bool {
+    return switch (@typeInfo(K)) {
+        .Pointer => |info| info.size == .Slice,
+
+        inline .Struct, .Union => |info| {
+            inline for (info.fields) |field| {
                 if (typeContainsSlice(field.type)) {
                     return true;
                 }
             }
-        }
-        if (meta.trait.is(.Union)(K)) {
-            inline for (@typeInfo(K).Union.fields) |field| {
-                if (typeContainsSlice(field.type)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
+            return false;
+        },
+
+        else => false,
+    };
 }
 
 /// Provides generic hashing for any eligible type.
@@ -230,7 +229,7 @@ fn testHashDeepRecursive(key: anytype) u64 {
 
 test "typeContainsSlice" {
     comptime {
-        try testing.expect(!typeContainsSlice(meta.Tag(std.builtin.Type)));
+        try testing.expect(!typeContainsSlice(std.meta.Tag(std.builtin.Type)));
 
         try testing.expect(typeContainsSlice([]const u8));
         try testing.expect(!typeContainsSlice(u8));
@@ -274,6 +273,7 @@ test "hash slice shallow" {
     const array2 = [_]u32{ 1, 2, 3, 4, 5, 6 };
     // TODO audit deep/shallow - maybe it has the wrong behavior with respect to array pointers and slices
     var runtime_zero: usize = 0;
+    _ = &runtime_zero;
     const a = array1[runtime_zero..];
     const b = array2[runtime_zero..];
     const c = array1[runtime_zero..3];
@@ -343,7 +343,7 @@ test "testHash optional" {
     const b: ?u32 = null;
     try testing.expectEqual(testHash(a), testHash(@as(u32, 123)));
     try testing.expect(testHash(a) != testHash(b));
-    try testing.expectEqual(testHash(b), 0);
+    try testing.expectEqual(testHash(b), 0x409638ee2bde459); // wyhash empty input hash
 }
 
 test "testHash array" {
@@ -402,13 +402,13 @@ test "testHash union" {
 }
 
 test "testHash vector" {
-    const a: meta.Vector(4, u32) = [_]u32{ 1, 2, 3, 4 };
-    const b: meta.Vector(4, u32) = [_]u32{ 1, 2, 3, 5 };
+    const a: @Vector(4, u32) = [_]u32{ 1, 2, 3, 4 };
+    const b: @Vector(4, u32) = [_]u32{ 1, 2, 3, 5 };
     try testing.expect(testHash(a) == testHash(a));
     try testing.expect(testHash(a) != testHash(b));
 
-    const c: meta.Vector(4, u31) = [_]u31{ 1, 2, 3, 4 };
-    const d: meta.Vector(4, u31) = [_]u31{ 1, 2, 3, 5 };
+    const c: @Vector(4, u31) = [_]u31{ 1, 2, 3, 4 };
+    const d: @Vector(4, u31) = [_]u31{ 1, 2, 3, 5 };
     try testing.expect(testHash(c) == testHash(c));
     try testing.expect(testHash(c) != testHash(d));
 }

@@ -34,6 +34,7 @@ pub fn Decoder(comptime ReaderType: type) type {
         check: xz.Check,
         err: ?Error,
         to_read: ArrayListUnmanaged(u8),
+        read_pos: usize,
         block_count: usize,
 
         fn init(allocator: Allocator, in_reader: ReaderType, check: xz.Check) !Self {
@@ -43,6 +44,7 @@ pub fn Decoder(comptime ReaderType: type) type {
                 .check = check,
                 .err = null,
                 .to_read = .{},
+                .read_pos = 0,
                 .block_count = 0,
             };
         }
@@ -57,25 +59,22 @@ pub fn Decoder(comptime ReaderType: type) type {
 
         pub fn read(self: *Self, output: []u8) Error!usize {
             while (true) {
-                if (self.to_read.items.len > 0) {
-                    const input = self.to_read.items;
-                    const n = @min(input.len, output.len);
-                    @memcpy(output[0..n], input[0..n]);
-                    std.mem.copyForwards(u8, input, input[n..]);
-                    self.to_read.shrinkRetainingCapacity(input.len - n);
-                    if (self.to_read.items.len == 0 and self.err != null) {
-                        if (self.err.? == DecodeError.EndOfStreamWithNoError) {
-                            return n;
-                        }
-                        return self.err.?;
-                    }
+                const unread_len = self.to_read.items.len - self.read_pos;
+                if (unread_len > 0) {
+                    const n = @min(unread_len, output.len);
+                    @memcpy(output[0..n], self.to_read.items[self.read_pos..][0..n]);
+                    self.read_pos += n;
                     return n;
                 }
-                if (self.err != null) {
-                    if (self.err.? == DecodeError.EndOfStreamWithNoError) {
+                if (self.err) |e| {
+                    if (e == DecodeError.EndOfStreamWithNoError) {
                         return 0;
                     }
-                    return self.err.?;
+                    return e;
+                }
+                if (self.read_pos > 0) {
+                    self.to_read.shrinkRetainingCapacity(0);
+                    self.read_pos = 0;
                 }
                 self.readBlock() catch |e| {
                     self.err = e;
@@ -84,8 +83,6 @@ pub fn Decoder(comptime ReaderType: type) type {
         }
 
         fn readBlock(self: *Self) Error!void {
-            const unpacked_pos = self.to_read.items.len;
-
             var block_counter = std.io.countingReader(self.inner_reader);
             const block_reader = block_counter.reader();
 
@@ -108,7 +105,7 @@ pub fn Decoder(comptime ReaderType: type) type {
                     has_unpacked_size: bool,
                 };
 
-                const flags = @bitCast(Flags, try header_reader.readByte());
+                const flags = @as(Flags, @bitCast(try header_reader.readByte()));
                 const filter_count = @as(u3, flags.last_filter_index) + 1;
                 if (filter_count > 1)
                     return error.Unsupported;
@@ -124,12 +121,12 @@ pub fn Decoder(comptime ReaderType: type) type {
                     _,
                 };
 
-                const filter_id = @intToEnum(
+                const filter_id = @as(
                     FilterId,
-                    try std.leb.readULEB128(u64, header_reader),
+                    @enumFromInt(try std.leb.readULEB128(u64, header_reader)),
                 );
 
-                if (@enumToInt(filter_id) >= 0x4000_0000_0000_0000)
+                if (@intFromEnum(filter_id) >= 0x4000_0000_0000_0000)
                     return error.CorruptInput;
 
                 if (filter_id != .lzma2)
@@ -148,7 +145,7 @@ pub fn Decoder(comptime ReaderType: type) type {
                 }
 
                 const hash_a = header_hasher.hasher.final();
-                const hash_b = try header_reader.readIntLittle(u32);
+                const hash_b = try header_reader.readInt(u32, .little);
                 if (hash_a != hash_b)
                     return error.WrongChecksum;
             }
@@ -166,7 +163,7 @@ pub fn Decoder(comptime ReaderType: type) type {
                     return error.CorruptInput;
             }
 
-            const unpacked_bytes = self.to_read.items[unpacked_pos..];
+            const unpacked_bytes = self.to_read.items;
             if (unpacked_size) |s| {
                 if (s != unpacked_bytes.len)
                     return error.CorruptInput;
@@ -182,13 +179,13 @@ pub fn Decoder(comptime ReaderType: type) type {
                 .none => {},
                 .crc32 => {
                     const hash_a = Crc32.hash(unpacked_bytes);
-                    const hash_b = try self.inner_reader.readIntLittle(u32);
+                    const hash_b = try self.inner_reader.readInt(u32, .little);
                     if (hash_a != hash_b)
                         return error.WrongChecksum;
                 },
                 .crc64 => {
                     const hash_a = Crc64.hash(unpacked_bytes);
-                    const hash_b = try self.inner_reader.readIntLittle(u64);
+                    const hash_b = try self.inner_reader.readInt(u64, .little);
                     if (hash_a != hash_b)
                         return error.WrongChecksum;
                 },

@@ -1,4 +1,5 @@
 const std = @import("../../std.zig");
+const builtin = @import("builtin");
 const debug = std.debug;
 const math = std.math;
 const mem = std.mem;
@@ -137,7 +138,7 @@ pub const Rational = struct {
         debug.assert(@typeInfo(T) == .Float);
 
         const UnsignedInt = std.meta.Int(.unsigned, @typeInfo(T).Float.bits);
-        const f_bits = @bitCast(UnsignedInt, f);
+        const f_bits = @as(UnsignedInt, @bitCast(f));
 
         const exponent_bits = math.floatExponentBits(T);
         const exponent_bias = (1 << (exponent_bits - 1)) - 1;
@@ -146,7 +147,7 @@ pub const Rational = struct {
         const exponent_mask = (1 << exponent_bits) - 1;
         const mantissa_mask = (1 << mantissa_bits) - 1;
 
-        var exponent = @intCast(i16, (f_bits >> mantissa_bits) & exponent_mask);
+        var exponent = @as(i16, @intCast((f_bits >> mantissa_bits) & exponent_mask));
         var mantissa = f_bits & mantissa_mask;
 
         switch (exponent) {
@@ -177,9 +178,9 @@ pub const Rational = struct {
 
         try self.q.set(1);
         if (shift >= 0) {
-            try self.q.shiftLeft(&self.q, @intCast(usize, shift));
+            try self.q.shiftLeft(&self.q, @as(usize, @intCast(shift)));
         } else {
-            try self.p.shiftLeft(&self.p, @intCast(usize, -shift));
+            try self.p.shiftLeft(&self.p, @as(usize, @intCast(-shift)));
         }
 
         try self.reduce();
@@ -205,12 +206,12 @@ pub const Rational = struct {
         const ebias = (1 << (esize - 1)) - 1;
         const emin = 1 - ebias;
 
-        if (self.p.eqZero()) {
+        if (self.p.eqlZero()) {
             return 0;
         }
 
         // 1. left-shift a or sub so that a/b is in [1 << msize1, 1 << (msize2 + 1)]
-        var exp = @intCast(isize, self.p.bitCountTwosComp()) - @intCast(isize, self.q.bitCountTwosComp());
+        var exp = @as(isize, @intCast(self.p.bitCountTwosComp())) - @as(isize, @intCast(self.q.bitCountTwosComp()));
 
         var a2 = try self.p.clone();
         defer a2.deinit();
@@ -220,9 +221,9 @@ pub const Rational = struct {
 
         const shift = msize2 - exp;
         if (shift >= 0) {
-            try a2.shiftLeft(&a2, @intCast(usize, shift));
+            try a2.shiftLeft(&a2, @as(usize, @intCast(shift)));
         } else {
-            try b2.shiftLeft(&b2, @intCast(usize, -shift));
+            try b2.shiftLeft(&b2, @as(usize, @intCast(-shift)));
         }
 
         // 2. compute quotient and remainder
@@ -254,8 +255,8 @@ pub const Rational = struct {
         // 4. Rounding
         if (emin - msize <= exp and exp <= emin) {
             // denormal
-            const shift1 = @intCast(math.Log2Int(BitReprType), emin - (exp - 1));
-            const lost_bits = mantissa & ((@intCast(BitReprType, 1) << shift1) - 1);
+            const shift1 = @as(math.Log2Int(BitReprType), @intCast(emin - (exp - 1)));
+            const lost_bits = mantissa & ((@as(BitReprType, @intCast(1)) << shift1) - 1);
             have_rem = have_rem or lost_bits != 0;
             mantissa >>= shift1;
             exp = 2 - ebias;
@@ -276,7 +277,7 @@ pub const Rational = struct {
         }
         mantissa >>= 1;
 
-        const f = math.scalbn(@intToFloat(T, mantissa), @intCast(i32, exp - msize1));
+        const f = math.scalbn(@as(T, @floatFromInt(mantissa)), @as(i32, @intCast(exp - msize1)));
         if (math.isInf(f)) {
             exact = false;
         }
@@ -289,12 +290,12 @@ pub const Rational = struct {
         try self.p.set(p);
         try self.q.set(q);
 
-        self.p.setSign(@boolToInt(self.p.isPositive()) ^ @boolToInt(self.q.isPositive()) == 0);
+        self.p.setSign(@intFromBool(self.p.isPositive()) ^ @intFromBool(self.q.isPositive()) == 0);
         self.q.setSign(true);
 
         try self.reduce();
 
-        if (self.q.eqZero()) {
+        if (self.q.eqlZero()) {
             @panic("cannot set rational with denominator = 0");
         }
     }
@@ -310,7 +311,7 @@ pub const Rational = struct {
         try self.p.copy(a.toConst());
         try self.q.copy(b.toConst());
 
-        self.p.setSign(@boolToInt(self.p.isPositive()) ^ @boolToInt(self.q.isPositive()) == 0);
+        self.p.setSign(@intFromBool(self.p.isPositive()) ^ @intFromBool(self.q.isPositive()) == 0);
         self.q.setSign(true);
 
         try self.reduce();
@@ -333,8 +334,8 @@ pub const Rational = struct {
         r.q.swap(&other.q);
     }
 
-    /// Returns math.Order.lt, math.Order.eq, math.Order.gt if a < b, a == b or a
-    /// > b respectively.
+    /// Returns math.Order.lt, math.Order.eq, math.Order.gt if a < b, a == b or
+    /// a > b respectively.
     pub fn order(a: Rational, b: Rational) !math.Order {
         return cmpInternal(a, b, false);
     }
@@ -434,7 +435,7 @@ pub const Rational = struct {
     ///
     /// Returns an error if memory could not be allocated.
     pub fn div(r: *Rational, a: Rational, b: Rational) !void {
-        if (b.p.eqZero()) {
+        if (b.p.eqlZero()) {
             @panic("division by zero");
         }
 
@@ -477,7 +478,7 @@ fn extractLowBits(a: Int, comptime T: type) T {
     const t_bits = @typeInfo(T).Int.bits;
     const limb_bits = @typeInfo(Limb).Int.bits;
     if (t_bits <= limb_bits) {
-        return @truncate(T, a.limbs[0]);
+        return @as(T, @truncate(a.limbs[0]));
     } else {
         var r: T = 0;
         comptime var i: usize = 0;
@@ -492,7 +493,7 @@ fn extractLowBits(a: Int, comptime T: type) T {
     }
 }
 
-test "big.rational extractLowBits" {
+test extractLowBits {
     var a = try Int.initSet(testing.allocator, 0x11112222333344441234567887654321);
     defer a.deinit();
 
@@ -512,7 +513,7 @@ test "big.rational extractLowBits" {
     try testing.expect(a5 == 0x11112222333344441234567887654321);
 }
 
-test "big.rational set" {
+test "set" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
 
@@ -541,7 +542,7 @@ test "big.rational set" {
     try testing.expect((try a.q.to(i32)) == 1);
 }
 
-test "big.rational setFloat" {
+test "setFloat" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
 
@@ -566,7 +567,7 @@ test "big.rational setFloat" {
     try testing.expect((try a.q.to(u128)) == 70368744177664);
 }
 
-test "big.rational setFloatString" {
+test "setFloatString" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
 
@@ -577,7 +578,7 @@ test "big.rational setFloatString" {
     try testing.expect((try a.q.to(u128)) == 100000000000000000000000000000000000);
 }
 
-test "big.rational toFloat" {
+test "toFloat" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
 
@@ -590,10 +591,10 @@ test "big.rational toFloat" {
     try testing.expect((try a.toFloat(f64)) == 72.141593120712409172417410926841290461290467124);
 }
 
-test "big.rational set/to Float round-trip" {
+test "set/to Float round-trip" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
-    var prng = std.rand.DefaultPrng.init(0x5EED);
+    var prng = std.Random.DefaultPrng.init(0x5EED);
     const random = prng.random();
     var i: usize = 0;
     while (i < 512) : (i += 1) {
@@ -603,7 +604,7 @@ test "big.rational set/to Float round-trip" {
     }
 }
 
-test "big.rational copy" {
+test "copy" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
 
@@ -633,7 +634,7 @@ test "big.rational copy" {
     try testing.expect((try a.q.to(u32)) == 1);
 }
 
-test "big.rational negate" {
+test "negate" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
 
@@ -650,7 +651,7 @@ test "big.rational negate" {
     try testing.expect((try a.q.to(i32)) == 1);
 }
 
-test "big.rational abs" {
+test "abs" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
 
@@ -667,7 +668,7 @@ test "big.rational abs" {
     try testing.expect((try a.q.to(i32)) == 1);
 }
 
-test "big.rational swap" {
+test "swap" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
     var b = try Rational.init(testing.allocator);
@@ -691,7 +692,7 @@ test "big.rational swap" {
     try testing.expect((try b.q.to(u32)) == 23);
 }
 
-test "big.rational order" {
+test "order" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
     var b = try Rational.init(testing.allocator);
@@ -706,7 +707,7 @@ test "big.rational order" {
     try testing.expect((try a.order(b)) == .eq);
 }
 
-test "big.rational order/orderAbs with negative" {
+test "order/orderAbs with negative" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
     var b = try Rational.init(testing.allocator);
@@ -718,7 +719,7 @@ test "big.rational order/orderAbs with negative" {
     try testing.expect((try a.orderAbs(b)) == .lt);
 }
 
-test "big.rational add single-limb" {
+test "add single-limb" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
     var b = try Rational.init(testing.allocator);
@@ -733,7 +734,7 @@ test "big.rational add single-limb" {
     try testing.expect((try a.order(b)) == .eq);
 }
 
-test "big.rational add" {
+test "add" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
     var b = try Rational.init(testing.allocator);
@@ -749,7 +750,7 @@ test "big.rational add" {
     try testing.expect((try a.order(r)) == .eq);
 }
 
-test "big.rational sub" {
+test "sub" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
     var b = try Rational.init(testing.allocator);
@@ -765,7 +766,7 @@ test "big.rational sub" {
     try testing.expect((try a.order(r)) == .eq);
 }
 
-test "big.rational mul" {
+test "mul" {
     var a = try Rational.init(testing.allocator);
     defer a.deinit();
     var b = try Rational.init(testing.allocator);
@@ -781,7 +782,7 @@ test "big.rational mul" {
     try testing.expect((try a.order(r)) == .eq);
 }
 
-test "big.rational div" {
+test "div" {
     {
         var a = try Rational.init(testing.allocator);
         defer a.deinit();

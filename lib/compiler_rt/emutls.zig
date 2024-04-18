@@ -7,7 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common.zig");
 
-const abort = std.os.abort;
+const abort = std.posix.abort;
 const assert = std.debug.assert;
 const expect = std.testing.expect;
 
@@ -33,45 +33,38 @@ pub fn __emutls_get_address(control: *emutls_control) callconv(.C) *anyopaque {
 const simple_allocator = struct {
     /// Allocate a memory chunk for requested type. Return a pointer on the data.
     pub fn alloc(comptime T: type) *T {
-        return @ptrCast(*T, @alignCast(
-            @alignOf(T),
-            advancedAlloc(@alignOf(T), @sizeOf(T)),
-        ));
+        return @ptrCast(@alignCast(advancedAlloc(@alignOf(T), @sizeOf(T))));
     }
 
     /// Allocate a slice of T, with len elements.
     pub fn allocSlice(comptime T: type, len: usize) []T {
-        return @ptrCast([*]T, @alignCast(
-            @alignOf(T),
+        return @as([*]T, @ptrCast(@alignCast(
             advancedAlloc(@alignOf(T), @sizeOf(T) * len),
-        ))[0 .. len - 1];
+        )))[0 .. len - 1];
     }
 
     /// Allocate a memory chunk.
     pub fn advancedAlloc(alignment: u29, size: usize) [*]u8 {
-        const minimal_alignment = std.math.max(@alignOf(usize), alignment);
+        const minimal_alignment = @max(@alignOf(usize), alignment);
 
         var aligned_ptr: ?*anyopaque = undefined;
         if (std.c.posix_memalign(&aligned_ptr, minimal_alignment, size) != 0) {
             abort();
         }
 
-        return @ptrCast([*]u8, aligned_ptr);
+        return @ptrCast(aligned_ptr);
     }
 
     /// Resize a slice.
     pub fn reallocSlice(comptime T: type, slice: []T, len: usize) []T {
-        var c_ptr: *anyopaque = @ptrCast(*anyopaque, slice.ptr);
-        var new_array: [*]T = @ptrCast([*]T, @alignCast(
-            @alignOf(T),
-            std.c.realloc(c_ptr, @sizeOf(T) * len) orelse abort(),
-        ));
+        const c_ptr: *anyopaque = @ptrCast(slice.ptr);
+        const new_array: [*]T = @ptrCast(@alignCast(std.c.realloc(c_ptr, @sizeOf(T) * len) orelse abort()));
         return new_array[0..len];
     }
 
     /// Free a memory chunk allocated with simple_allocator.
     pub fn free(ptr: anytype) void {
-        std.c.free(@ptrCast(*anyopaque, ptr));
+        std.c.free(@ptrCast(ptr));
     }
 };
 
@@ -85,7 +78,7 @@ const ObjectArray = struct {
 
     /// create a new ObjectArray with n slots. must call deinit() to deallocate.
     pub fn init(n: usize) *ObjectArray {
-        var array = simple_allocator.alloc(ObjectArray);
+        const array = simple_allocator.alloc(ObjectArray);
 
         array.* = ObjectArray{
             .slots = simple_allocator.allocSlice(?ObjectPointer, n),
@@ -132,27 +125,27 @@ const ObjectArray = struct {
         if (self.slots[index] == null) {
             // initialize the slot
             const size = control.size;
-            const alignment = @truncate(u29, control.alignment);
+            const alignment: u29 = @truncate(control.alignment);
 
             var data = simple_allocator.advancedAlloc(alignment, size);
             errdefer simple_allocator.free(data);
 
             if (control.default_value) |value| {
                 // default value: copy the content to newly allocated object.
-                @memcpy(data[0..size], @ptrCast([*]const u8, value));
+                @memcpy(data[0..size], @as([*]const u8, @ptrCast(value)));
             } else {
                 // no default: return zeroed memory.
                 @memset(data[0..size], 0);
             }
 
-            self.slots[index] = @ptrCast(*anyopaque, data);
+            self.slots[index] = data;
         }
 
         return self.slots[index].?;
     }
 };
 
-// Global stucture for Thread Storage.
+// Global structure for Thread Storage.
 // It provides thread-safety for on-demand storage of Thread Objects.
 const current_thread_storage = struct {
     var key: std.c.pthread_key_t = undefined;
@@ -170,28 +163,22 @@ const current_thread_storage = struct {
 
         // make it to contains at least 16 objects (to avoid too much
         // reallocation at startup).
-        const size = std.math.max(16, index);
+        const size = @max(16, index);
 
         // create a new array and store it.
-        var array: *ObjectArray = ObjectArray.init(size);
+        const array: *ObjectArray = ObjectArray.init(size);
         current_thread_storage.setspecific(array);
         return array;
     }
 
     /// Return casted thread specific value.
     fn getspecific() ?*ObjectArray {
-        return @ptrCast(
-            ?*ObjectArray,
-            @alignCast(
-                @alignOf(ObjectArray),
-                std.c.pthread_getspecific(current_thread_storage.key),
-            ),
-        );
+        return @ptrCast(@alignCast(std.c.pthread_getspecific(current_thread_storage.key)));
     }
 
     /// Set casted thread specific value.
     fn setspecific(new: ?*ObjectArray) void {
-        if (std.c.pthread_setspecific(current_thread_storage.key, @ptrCast(*anyopaque, new)) != 0) {
+        if (std.c.pthread_setspecific(current_thread_storage.key, @ptrCast(new)) != 0) {
             abort();
         }
     }
@@ -205,10 +192,7 @@ const current_thread_storage = struct {
 
     /// Invoked by pthread specific destructor. the passed argument is the ObjectArray pointer.
     fn deinit(arrayPtr: *anyopaque) callconv(.C) void {
-        var array = @ptrCast(
-            *ObjectArray,
-            @alignCast(@alignOf(ObjectArray), arrayPtr),
-        );
+        var array: *ObjectArray = @ptrCast(@alignCast(arrayPtr));
         array.deinit();
     }
 };
@@ -262,7 +246,7 @@ const emutls_control = extern struct {
         // Two threads could race against the same emutls_control.
 
         // Use atomic for reading coherent value lockless.
-        const index_lockless = @atomicLoad(usize, &self.object.index, .Acquire);
+        const index_lockless = @atomicLoad(usize, &self.object.index, .acquire);
 
         if (index_lockless != 0) {
             // index is already initialized, return it.
@@ -280,7 +264,7 @@ const emutls_control = extern struct {
         }
 
         // Store a new index atomically (for having coherent index_lockless reading).
-        @atomicStore(usize, &self.object.index, emutls_control.next_index, .Release);
+        @atomicStore(usize, &self.object.index, emutls_control.next_index, .release);
 
         // Increment the next available index
         emutls_control.next_index += 1;
@@ -294,7 +278,7 @@ const emutls_control = extern struct {
             .size = @sizeOf(T),
             .alignment = @alignOf(T),
             .object = .{ .index = 0 },
-            .default_value = @ptrCast(?*const anyopaque, default_value),
+            .default_value = @ptrCast(default_value),
         };
     }
 
@@ -313,23 +297,20 @@ const emutls_control = extern struct {
     pub fn get_typed_pointer(self: *emutls_control, comptime T: type) *T {
         assert(self.size == @sizeOf(T));
         assert(self.alignment == @alignOf(T));
-        return @ptrCast(
-            *T,
-            @alignCast(@alignOf(T), self.getPointer()),
-        );
+        return @ptrCast(@alignCast(self.getPointer()));
     }
 };
 
 test "simple_allocator" {
     if (!builtin.link_libc or builtin.os.tag != .openbsd) return error.SkipZigTest;
 
-    var data1: *[64]u8 = simple_allocator.alloc([64]u8);
+    const data1: *[64]u8 = simple_allocator.alloc([64]u8);
     defer simple_allocator.free(data1);
     for (data1) |*c| {
         c.* = 0xff;
     }
 
-    var data2: [*]u8 = simple_allocator.advancedAlloc(@alignOf(u8), 64);
+    const data2: [*]u8 = simple_allocator.advancedAlloc(@alignOf(u8), 64);
     defer simple_allocator.free(data2);
     for (data2[0..63]) |*c| {
         c.* = 0xff;
@@ -343,7 +324,7 @@ test "__emutls_get_address zeroed" {
     try expect(ctl.object.index == 0);
 
     // retrieve a variable from ctl
-    var x = @ptrCast(*usize, @alignCast(@alignOf(usize), __emutls_get_address(&ctl)));
+    const x: *usize = @ptrCast(@alignCast(__emutls_get_address(&ctl)));
     try expect(ctl.object.index != 0); // index has been allocated for this ctl
     try expect(x.* == 0); // storage has been zeroed
 
@@ -351,7 +332,7 @@ test "__emutls_get_address zeroed" {
     x.* = 1234;
 
     // retrieve a variable from ctl (same ctl)
-    var y = @ptrCast(*usize, @alignCast(@alignOf(usize), __emutls_get_address(&ctl)));
+    const y: *usize = @ptrCast(@alignCast(__emutls_get_address(&ctl)));
 
     try expect(y.* == 1234); // same content that x.*
     try expect(x == y); // same pointer
@@ -364,7 +345,7 @@ test "__emutls_get_address with default_value" {
     var ctl = emutls_control.init(usize, &value);
     try expect(ctl.object.index == 0);
 
-    var x: *usize = @ptrCast(*usize, @alignCast(@alignOf(usize), __emutls_get_address(&ctl)));
+    const x: *usize = @ptrCast(@alignCast(__emutls_get_address(&ctl)));
     try expect(ctl.object.index != 0);
     try expect(x.* == 5678); // storage initialized with default value
 
@@ -373,17 +354,17 @@ test "__emutls_get_address with default_value" {
 
     try expect(value == 5678); // the default value didn't change
 
-    var y = @ptrCast(*usize, @alignCast(@alignOf(usize), __emutls_get_address(&ctl)));
+    const y: *usize = @ptrCast(@alignCast(__emutls_get_address(&ctl)));
     try expect(y.* == 9012); // the modified storage persists
 }
 
-test "test default_value with differents sizes" {
+test "test default_value with different sizes" {
     if (!builtin.link_libc or builtin.os.tag != .openbsd) return error.SkipZigTest;
 
     const testType = struct {
         fn _testType(comptime T: type, value: T) !void {
             var ctl = emutls_control.init(T, &value);
-            var x = ctl.get_typed_pointer(T);
+            const x = ctl.get_typed_pointer(T);
             try expect(x.* == value);
         }
     }._testType;

@@ -14,7 +14,7 @@ pub fn LimitedReader(comptime ReaderType: type) type {
         const Self = @This();
 
         pub fn read(self: *Self, dest: []u8) Error!usize {
-            const max_read = std.math.min(self.bytes_left, dest.len);
+            const max_read = @min(self.bytes_left, dest.len);
             const n = try self.inner_reader.read(dest[0..max_read]);
             self.bytes_left -= n;
             return n;
@@ -26,7 +26,7 @@ pub fn LimitedReader(comptime ReaderType: type) type {
     };
 }
 
-/// Returns an initialised `LimitedReader`
+/// Returns an initialised `LimitedReader`.
 /// `bytes_left` is a `u64` to be able to take 64 bit file offsets
 pub fn limitedReader(inner_reader: anytype, bytes_left: u64) LimitedReader(@TypeOf(inner_reader)) {
     return .{ .inner_reader = inner_reader, .bytes_left = bytes_left };

@@ -10,8 +10,8 @@ const linux = std.os.linux;
 const SYS = linux.SYS;
 const sockaddr = linux.sockaddr;
 const socklen_t = linux.socklen_t;
-const iovec = std.os.iovec;
-const iovec_const = std.os.iovec_const;
+const iovec = std.posix.iovec;
+const iovec_const = std.posix.iovec_const;
 const timespec = linux.timespec;
 
 pub fn syscall_pipe(fd: *[2]i32) usize {
@@ -29,7 +29,7 @@ pub fn syscall_pipe(fd: *[2]i32) usize {
         \\ clr %%o0
         \\2:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(SYS.pipe)),
+        : [number] "{g1}" (@intFromEnum(SYS.pipe)),
           [arg] "r" (fd),
         : "memory", "g3"
     );
@@ -53,7 +53,7 @@ pub fn syscall_fork() usize {
         \\ and %%o1, %%o0, %%o0
         \\ 2:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(SYS.fork)),
+        : [number] "{g1}" (@intFromEnum(SYS.fork)),
         : "memory", "xcc", "o1", "o2", "o3", "o4", "o5", "o7"
     );
 }
@@ -66,7 +66,7 @@ pub fn syscall0(number: SYS) usize {
         \\ neg %%o0
         \\ 1:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(number)),
+        : [number] "{g1}" (@intFromEnum(number)),
         : "memory", "xcc", "o1", "o2", "o3", "o4", "o5", "o7"
     );
 }
@@ -79,7 +79,7 @@ pub fn syscall1(number: SYS, arg1: usize) usize {
         \\ neg %%o0
         \\ 1:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(number)),
+        : [number] "{g1}" (@intFromEnum(number)),
           [arg1] "{o0}" (arg1),
         : "memory", "xcc", "o1", "o2", "o3", "o4", "o5", "o7"
     );
@@ -93,7 +93,7 @@ pub fn syscall2(number: SYS, arg1: usize, arg2: usize) usize {
         \\ neg %%o0
         \\ 1:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(number)),
+        : [number] "{g1}" (@intFromEnum(number)),
           [arg1] "{o0}" (arg1),
           [arg2] "{o1}" (arg2),
         : "memory", "xcc", "o1", "o2", "o3", "o4", "o5", "o7"
@@ -108,7 +108,7 @@ pub fn syscall3(number: SYS, arg1: usize, arg2: usize, arg3: usize) usize {
         \\ neg %%o0
         \\ 1:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(number)),
+        : [number] "{g1}" (@intFromEnum(number)),
           [arg1] "{o0}" (arg1),
           [arg2] "{o1}" (arg2),
           [arg3] "{o2}" (arg3),
@@ -124,7 +124,7 @@ pub fn syscall4(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize)
         \\ neg %%o0
         \\ 1:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(number)),
+        : [number] "{g1}" (@intFromEnum(number)),
           [arg1] "{o0}" (arg1),
           [arg2] "{o1}" (arg2),
           [arg3] "{o2}" (arg3),
@@ -141,7 +141,7 @@ pub fn syscall5(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize,
         \\ neg %%o0
         \\ 1:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(number)),
+        : [number] "{g1}" (@intFromEnum(number)),
           [arg1] "{o0}" (arg1),
           [arg2] "{o1}" (arg2),
           [arg3] "{o2}" (arg3),
@@ -167,7 +167,7 @@ pub fn syscall6(
         \\ neg %%o0
         \\ 1:
         : [ret] "={o0}" (-> usize),
-        : [number] "{g1}" (@enumToInt(number)),
+        : [number] "{g1}" (@intFromEnum(number)),
           [arg1] "{o0}" (arg1),
           [arg2] "{o1}" (arg2),
           [arg3] "{o2}" (arg3),
@@ -190,33 +190,10 @@ pub const restore = restore_rt;
 pub fn restore_rt() callconv(.C) void {
     return asm volatile ("t 0x6d"
         :
-        : [number] "{g1}" (@enumToInt(SYS.rt_sigreturn)),
+        : [number] "{g1}" (@intFromEnum(SYS.rt_sigreturn)),
         : "memory", "xcc", "o0", "o1", "o2", "o3", "o4", "o5", "o7"
     );
 }
-
-pub const O = struct {
-    pub const CREAT = 0x200;
-    pub const EXCL = 0x800;
-    pub const NOCTTY = 0x8000;
-    pub const TRUNC = 0x400;
-    pub const APPEND = 0x8;
-    pub const NONBLOCK = 0x4000;
-    pub const SYNC = 0x802000;
-    pub const DSYNC = 0x2000;
-    pub const RSYNC = SYNC;
-    pub const DIRECTORY = 0x10000;
-    pub const NOFOLLOW = 0x20000;
-    pub const CLOEXEC = 0x400000;
-
-    pub const ASYNC = 0x40;
-    pub const DIRECT = 0x100000;
-    pub const LARGEFILE = 0;
-    pub const NOATIME = 0x200000;
-    pub const PATH = 0x1000000;
-    pub const TMPFILE = 0x2010000;
-    pub const NDELAY = NONBLOCK | 0x4;
-};
 
 pub const F = struct {
     pub const DUPFD = 0;
@@ -246,19 +223,6 @@ pub const LOCK = struct {
     pub const EX = 2;
     pub const NB = 4;
     pub const UN = 8;
-};
-
-pub const MAP = struct {
-    /// stack-like segment
-    pub const GROWSDOWN = 0x0200;
-    /// ETXTBSY
-    pub const DENYWRITE = 0x0800;
-    /// mark it as an executable
-    pub const EXECUTABLE = 0x1000;
-    /// pages are locked
-    pub const LOCKED = 0x0100;
-    /// don't check for reservations
-    pub const NORESERVE = 0x0040;
 };
 
 pub const VDSO = struct {
@@ -445,7 +409,7 @@ pub const ucontext_t = extern struct {
     sigmask: u64,
     mcontext: mcontext_t,
     stack: stack_t,
-    sigmask: sigset_t,
+    sigset: sigset_t,
 };
 
 pub const rlimit_resource = enum(c_int) {

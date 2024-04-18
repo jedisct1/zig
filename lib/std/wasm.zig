@@ -198,10 +198,10 @@ pub const Opcode = enum(u8) {
 /// Returns the integer value of an `Opcode`. Used by the Zig compiler
 /// to write instructions to the wasm binary file
 pub fn opcode(op: Opcode) u8 {
-    return @enumToInt(op);
+    return @intFromEnum(op);
 }
 
-test "Wasm - opcodes" {
+test "opcodes" {
     // Ensure our opcodes values remain intact as certain values are skipped due to them being reserved
     const i32_const = opcode(.i32_const);
     const end = opcode(.end);
@@ -216,7 +216,7 @@ test "Wasm - opcodes" {
     try testing.expectEqual(@as(u16, 0xC4), i64_extend32_s);
 }
 
-/// Opcodes that require a prefix `0xFC`
+/// Opcodes that require a prefix `0xFC`.
 /// Each opcode represents a varuint32, meaning
 /// they are encoded as leb128 in binary.
 pub const MiscOpcode = enum(u32) {
@@ -244,7 +244,7 @@ pub const MiscOpcode = enum(u32) {
 /// Returns the integer value of an `MiscOpcode`. Used by the Zig compiler
 /// to write instructions to the wasm binary file
 pub fn miscOpcode(op: MiscOpcode) u32 {
-    return @enumToInt(op);
+    return @intFromEnum(op);
 }
 
 /// Simd opcodes that require a prefix `0xFD`.
@@ -515,10 +515,10 @@ pub const SimdOpcode = enum(u32) {
 /// Returns the integer value of an `SimdOpcode`. Used by the Zig compiler
 /// to write instructions to the wasm binary file
 pub fn simdOpcode(op: SimdOpcode) u32 {
-    return @enumToInt(op);
+    return @intFromEnum(op);
 }
 
-/// Simd opcodes that require a prefix `0xFE`.
+/// Atomic opcodes that require a prefix `0xFE`.
 /// Each opcode represents a varuint32, meaning
 /// they are encoded as leb128 in binary.
 pub const AtomicsOpcode = enum(u32) {
@@ -595,7 +595,7 @@ pub const AtomicsOpcode = enum(u32) {
 /// Returns the integer value of an `AtomicsOpcode`. Used by the Zig compiler
 /// to write instructions to the wasm binary file
 pub fn atomicsOpcode(op: AtomicsOpcode) u32 {
-    return @enumToInt(op);
+    return @intFromEnum(op);
 }
 
 /// Enum representing all Wasm value types as per spec:
@@ -610,7 +610,7 @@ pub const Valtype = enum(u8) {
 
 /// Returns the integer value of a `Valtype`
 pub fn valtype(value: Valtype) u8 {
-    return @enumToInt(value);
+    return @intFromEnum(value);
 }
 
 /// Reference types, where the funcref references to a function regardless of its type
@@ -622,10 +622,10 @@ pub const RefType = enum(u8) {
 
 /// Returns the integer value of a `Reftype`
 pub fn reftype(value: RefType) u8 {
-    return @enumToInt(value);
+    return @intFromEnum(value);
 }
 
-test "Wasm - valtypes" {
+test "valtypes" {
     const _i32 = valtype(.i32);
     const _i64 = valtype(.i64);
     const _f32 = valtype(.f32);
@@ -649,11 +649,11 @@ pub const Limits = struct {
     };
 
     pub fn hasFlag(limits: Limits, flag: Flags) bool {
-        return limits.flags & @enumToInt(flag) != 0;
+        return limits.flags & @intFromEnum(flag) != 0;
     }
 
     pub fn setFlag(limits: *Limits, flag: Flags) void {
-        limits.flags |= @enumToInt(flag);
+        limits.flags |= @intFromEnum(flag);
     }
 };
 
@@ -790,10 +790,10 @@ pub const Section = enum(u8) {
 
 /// Returns the integer value of a given `Section`
 pub fn section(val: Section) u8 {
-    return @enumToInt(val);
+    return @intFromEnum(val);
 }
 
-/// The kind of the type when importing or exporting to/from the host environment
+/// The kind of the type when importing or exporting to/from the host environment.
 /// https://webassembly.github.io/spec/core/syntax/modules.html
 pub const ExternalKind = enum(u8) {
     function,
@@ -804,7 +804,7 @@ pub const ExternalKind = enum(u8) {
 
 /// Returns the integer value of a given `ExternalKind`
 pub fn externalKind(val: ExternalKind) u8 {
-    return @enumToInt(val);
+    return @intFromEnum(val);
 }
 
 /// Defines the enum values for each subsection id for the "Names" custom section

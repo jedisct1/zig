@@ -4,6 +4,7 @@ const crypto = std.crypto;
 const fmt = std.fmt;
 const io = std.io;
 const mem = std.mem;
+const sha3 = crypto.hash.sha3;
 const testing = std.testing;
 
 const EncodingError = crypto.errors.EncodingError;
@@ -26,7 +27,11 @@ pub const EcdsaSecp256k1Sha256oSha256 = Ecdsa(crypto.ecc.Secp256k1, crypto.hash.
 
 /// Elliptic Curve Digital Signature Algorithm (ECDSA).
 pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
-    const Hmac = crypto.auth.hmac.Hmac(Hash);
+    const Prf = switch (Hash) {
+        sha3.Shake128 => sha3.KMac128,
+        sha3.Shake256 => sha3.KMac256,
+        else => crypto.auth.hmac.Hmac(Hash),
+    };
 
     return struct {
         /// Length (in bytes) of optional random bytes, for non-deterministic signatures.
@@ -122,9 +127,9 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
             pub fn toDer(self: Signature, buf: *[der_encoded_max_length]u8) []u8 {
                 var fb = io.fixedBufferStream(buf);
                 const w = fb.writer();
-                const r_len = @intCast(u8, self.r.len + (self.r[0] >> 7));
-                const s_len = @intCast(u8, self.s.len + (self.s[0] >> 7));
-                const seq_len = @intCast(u8, 2 + r_len + 2 + s_len);
+                const r_len = @as(u8, @intCast(self.r.len + (self.r[0] >> 7)));
+                const s_len = @as(u8, @intCast(self.s.len + (self.s[0] >> 7)));
+                const seq_len = @as(u8, @intCast(2 + r_len + 2 + s_len));
                 w.writeAll(&[_]u8{ 0x30, seq_len }) catch unreachable;
                 w.writeAll(&[_]u8{ 0x02, r_len }) catch unreachable;
                 if (self.r[0] >> 7 != 0) {
@@ -201,7 +206,7 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
                 const scalar_encoded_length = Curve.scalar.encoded_length;
                 const h_len = @max(Hash.digest_length, scalar_encoded_length);
                 var h: [h_len]u8 = [_]u8{0} ** h_len;
-                var h_slice = h[h_len - Hash.digest_length .. h_len];
+                const h_slice = h[h_len - Hash.digest_length .. h_len];
                 self.h.final(h_slice);
 
                 std.debug.assert(h.len >= scalar_encoded_length);
@@ -209,17 +214,17 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
 
                 const k = deterministicScalar(h_slice.*, self.secret_key.bytes, self.noise);
 
-                const p = try Curve.basePoint.mul(k.toBytes(.Big), .Big);
-                const xs = p.affineCoordinates().x.toBytes(.Big);
+                const p = try Curve.basePoint.mul(k.toBytes(.big), .big);
+                const xs = p.affineCoordinates().x.toBytes(.big);
                 const r = reduceToScalar(Curve.Fe.encoded_length, xs);
                 if (r.isZero()) return error.IdentityElement;
 
                 const k_inv = k.invert();
-                const zrs = z.add(r.mul(try Curve.scalar.Scalar.fromBytes(self.secret_key.bytes, .Big)));
+                const zrs = z.add(r.mul(try Curve.scalar.Scalar.fromBytes(self.secret_key.bytes, .big)));
                 const s = k_inv.mul(zrs);
                 if (s.isZero()) return error.IdentityElement;
 
-                return Signature{ .r = r.toBytes(.Big), .s = s.toBytes(.Big) };
+                return Signature{ .r = r.toBytes(.big), .s = s.toBytes(.big) };
             }
         };
 
@@ -232,8 +237,8 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
             public_key: PublicKey,
 
             fn init(sig: Signature, public_key: PublicKey) (IdentityElementError || NonCanonicalError)!Verifier {
-                const r = try Curve.scalar.Scalar.fromBytes(sig.r, .Big);
-                const s = try Curve.scalar.Scalar.fromBytes(sig.s, .Big);
+                const r = try Curve.scalar.Scalar.fromBytes(sig.r, .big);
+                const s = try Curve.scalar.Scalar.fromBytes(sig.s, .big);
                 if (r.isZero() or s.isZero()) return error.IdentityElement;
 
                 return Verifier{
@@ -262,11 +267,11 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
                 }
 
                 const s_inv = self.s.invert();
-                const v1 = z.mul(s_inv).toBytes(.Little);
-                const v2 = self.r.mul(s_inv).toBytes(.Little);
-                const v1g = try Curve.basePoint.mulPublic(v1, .Little);
-                const v2pk = try self.public_key.p.mulPublic(v2, .Little);
-                const vxs = v1g.add(v2pk).affineCoordinates().x.toBytes(.Big);
+                const v1 = z.mul(s_inv).toBytes(.little);
+                const v2 = self.r.mul(s_inv).toBytes(.little);
+                const v1g = try Curve.basePoint.mulPublic(v1, .little);
+                const v2pk = try self.public_key.p.mulPublic(v2, .little);
+                const vxs = v1g.add(v2pk).affineCoordinates().x.toBytes(.big);
                 const vr = reduceToScalar(Curve.Fe.encoded_length, vxs);
                 if (!self.r.equivalent(vr)) {
                     return error.SignatureVerificationFailed;
@@ -295,13 +300,13 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
                 }
                 const h = [_]u8{0x00} ** Hash.digest_length;
                 const k0 = [_]u8{0x01} ** SecretKey.encoded_length;
-                const secret_key = deterministicScalar(h, k0, seed_).toBytes(.Big);
+                const secret_key = deterministicScalar(h, k0, seed_).toBytes(.big);
                 return fromSecretKey(SecretKey{ .bytes = secret_key });
             }
 
             /// Return the public key corresponding to the secret key.
             pub fn fromSecretKey(secret_key: SecretKey) IdentityElementError!KeyPair {
-                const public_key = try Curve.basePoint.mul(secret_key.bytes, .Big);
+                const public_key = try Curve.basePoint.mul(secret_key.bytes, .big);
                 return KeyPair{ .secret_key = secret_key, .public_key = PublicKey{ .p = public_key } };
             }
 
@@ -326,11 +331,11 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
             if (unreduced_len >= 48) {
                 var xs = [_]u8{0} ** 64;
                 @memcpy(xs[xs.len - s.len ..], s[0..]);
-                return Curve.scalar.Scalar.fromBytes64(xs, .Big);
+                return Curve.scalar.Scalar.fromBytes64(xs, .big);
             }
             var xs = [_]u8{0} ** 48;
             @memcpy(xs[xs.len - s.len ..], s[0..]);
-            return Curve.scalar.Scalar.fromBytes48(xs, .Big);
+            return Curve.scalar.Scalar.fromBytes48(xs, .big);
         }
 
         // Create a deterministic scalar according to a secret key and optional noise.
@@ -350,28 +355,28 @@ pub fn Ecdsa(comptime Curve: type, comptime Hash: type) type {
             if (noise) |n| @memcpy(m_z, &n);
             @memcpy(m_x, &secret_key);
             @memcpy(m_h, &h);
-            Hmac.create(&k, &m, &k);
-            Hmac.create(m_v, m_v, &k);
+            Prf.create(&k, &m, &k);
+            Prf.create(m_v, m_v, &k);
             m_i.* = 0x01;
-            Hmac.create(&k, &m, &k);
-            Hmac.create(m_v, m_v, &k);
+            Prf.create(&k, &m, &k);
+            Prf.create(m_v, m_v, &k);
             while (true) {
                 var t_off: usize = 0;
                 while (t_off < t.len) : (t_off += m_v.len) {
                     const t_end = @min(t_off + m_v.len, t.len);
-                    Hmac.create(m_v, m_v, &k);
+                    Prf.create(m_v, m_v, &k);
                     @memcpy(t[t_off..t_end], m_v[0 .. t_end - t_off]);
                 }
-                if (Curve.scalar.Scalar.fromBytes(t, .Big)) |s| return s else |_| {}
+                if (Curve.scalar.Scalar.fromBytes(t, .big)) |s| return s else |_| {}
                 m_i.* = 0x00;
-                Hmac.create(&k, m[0 .. m_v.len + 1], &k);
-                Hmac.create(m_v, m_v, &k);
+                Prf.create(&k, m[0 .. m_v.len + 1], &k);
+                Prf.create(m_v, m_v, &k);
             }
         }
     };
 }
 
-test "ECDSA - Basic operations over EcdsaP384Sha384" {
+test "Basic operations over EcdsaP384Sha384" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
     const Scheme = EcdsaP384Sha384;
@@ -387,7 +392,7 @@ test "ECDSA - Basic operations over EcdsaP384Sha384" {
     try sig2.verify(msg, kp.public_key);
 }
 
-test "ECDSA - Basic operations over Secp256k1" {
+test "Basic operations over Secp256k1" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
     const Scheme = EcdsaSecp256k1Sha256oSha256;
@@ -403,7 +408,7 @@ test "ECDSA - Basic operations over Secp256k1" {
     try sig2.verify(msg, kp.public_key);
 }
 
-test "ECDSA - Basic operations over EcdsaP384Sha256" {
+test "Basic operations over EcdsaP384Sha256" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
     const Scheme = Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256);
@@ -419,7 +424,7 @@ test "ECDSA - Basic operations over EcdsaP384Sha256" {
     try sig2.verify(msg, kp.public_key);
 }
 
-test "ECDSA - Verifying a existing signature with EcdsaP384Sha256" {
+test "Verifying a existing signature with EcdsaP384Sha256" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
     const Scheme = Ecdsa(crypto.ecc.P384, crypto.hash.sha2.Sha256);
@@ -463,7 +468,7 @@ const TestVector = struct {
     result: enum { valid, invalid, acceptable },
 };
 
-test "ECDSA - Test vectors from Project Wycheproof" {
+test "Test vectors from Project Wycheproof" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
     const vectors = [_]TestVector{
@@ -877,7 +882,7 @@ fn tvTry(vector: TestVector) !void {
     try sig.verify(msg, pk);
 }
 
-test "ECDSA - Sec1 encoding/decoding" {
+test "Sec1 encoding/decoding" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
     const Scheme = EcdsaP384Sha384;

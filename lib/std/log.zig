@@ -18,12 +18,12 @@
 //! ```
 //! const std = @import("std");
 //!
-//! pub const std_options = struct {
+//! pub const std_options = .{
 //!     // Set the log level to info
-//!     pub const log_level = .info;
+//!     .log_level = .info,
 //!
 //!     // Define logFn to override the std implementation
-//!     pub const logFn = myLogFn;
+//!     .logFn = myLogFn,
 //! };
 //!
 //! pub fn myLogFn(
@@ -36,7 +36,7 @@
 //!     // .my_project, .nice_library and the default
 //!     const scope_prefix = "(" ++ switch (scope) {
 //!         .my_project, .nice_library, std.log.default_log_scope => @tagName(scope),
-//!         else => if (@enumToInt(level) <= @enumToInt(std.log.Level.err))
+//!         else => if (@intFromEnum(level) <= @intFromEnum(std.log.Level.err))
 //!             @tagName(scope)
 //!         else
 //!             return,
@@ -128,9 +128,9 @@ fn log(
 /// Determine if a specific log message level and scope combination are enabled for logging.
 pub fn logEnabled(comptime message_level: Level, comptime scope: @Type(.EnumLiteral)) bool {
     inline for (scope_levels) |scope_level| {
-        if (scope_level.scope == scope) return @enumToInt(message_level) <= @enumToInt(scope_level.level);
+        if (scope_level.scope == scope) return @intFromEnum(message_level) <= @intFromEnum(scope_level.level);
     }
-    return @enumToInt(message_level) <= @enumToInt(level);
+    return @intFromEnum(message_level) <= @intFromEnum(level);
 }
 
 /// Determine if a specific log message level using the default log scope is enabled for logging.
@@ -149,9 +149,15 @@ pub fn defaultLog(
     const level_txt = comptime message_level.asText();
     const prefix2 = if (scope == .default) ": " else "(" ++ @tagName(scope) ++ "): ";
     const stderr = std.io.getStdErr().writer();
+    var bw = std.io.bufferedWriter(stderr);
+    const writer = bw.writer();
+
     std.debug.getStderrMutex().lock();
     defer std.debug.getStderrMutex().unlock();
-    nosuspend stderr.print(level_txt ++ prefix2 ++ format ++ "\n", args) catch return;
+    nosuspend {
+        writer.print(level_txt ++ prefix2 ++ format ++ "\n", args) catch return;
+        bw.flush() catch return;
+    }
 }
 
 /// Returns a scoped logging namespace that logs all messages using the scope

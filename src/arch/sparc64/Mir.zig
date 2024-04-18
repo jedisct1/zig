@@ -356,9 +356,9 @@ pub const Inst = struct {
     };
 
     // Make sure we don't accidentally make instructions bigger than expected.
-    // Note that in Debug builds, Zig is allowed to insert a secret field for safety checks.
+    // Note that in safety builds, Zig is allowed to insert a secret field for safety checks.
     comptime {
-        if (builtin.mode != .Debug and builtin.mode != .ReleaseSafe) {
+        if (!std.debug.runtime_safety) {
             assert(@sizeOf(Data) == 8);
         }
     }
@@ -379,7 +379,7 @@ pub fn extraData(mir: Mir, comptime T: type, index: usize) struct { data: T, end
     inline for (fields) |field| {
         @field(result, field.name) = switch (field.type) {
             u32 => mir.extra[i],
-            i32 => @bitCast(i32, mir.extra[i]),
+            i32 => @as(i32, @bitCast(mir.extra[i])),
             else => @compileError("bad field type"),
         };
         i += 1;

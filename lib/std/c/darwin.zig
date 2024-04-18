@@ -4,7 +4,7 @@ const assert = std.debug.assert;
 const macho = std.macho;
 const native_arch = builtin.target.cpu.arch;
 const maxInt = std.math.maxInt;
-const iovec_const = std.os.iovec_const;
+const iovec_const = std.posix.iovec_const;
 
 pub const aarch64 = @import("darwin/aarch64.zig");
 pub const x86_64 = @import("darwin/x86_64.zig");
@@ -51,19 +51,19 @@ pub const EXC = enum(exception_type_t) {
 
 pub const EXC_SOFT_SIGNAL = 0x10003;
 
-pub const EXC_MASK_BAD_ACCESS = 1 << @enumToInt(EXC.BAD_ACCESS);
-pub const EXC_MASK_BAD_INSTRUCTION = 1 << @enumToInt(EXC.BAD_INSTRUCTION);
-pub const EXC_MASK_ARITHMETIC = 1 << @enumToInt(EXC.ARITHMETIC);
-pub const EXC_MASK_EMULATION = 1 << @enumToInt(EXC.EMULATION);
-pub const EXC_MASK_SOFTWARE = 1 << @enumToInt(EXC.SOFTWARE);
-pub const EXC_MASK_BREAKPOINT = 1 << @enumToInt(EXC.BREAKPOINT);
-pub const EXC_MASK_SYSCALL = 1 << @enumToInt(EXC.SYSCALL);
-pub const EXC_MASK_MACH_SYSCALL = 1 << @enumToInt(EXC.MACH_SYSCALL);
-pub const EXC_MASK_RPC_ALERT = 1 << @enumToInt(EXC.RPC_ALERT);
-pub const EXC_MASK_CRASH = 1 << @enumToInt(EXC.CRASH);
-pub const EXC_MASK_RESOURCE = 1 << @enumToInt(EXC.RESOURCE);
-pub const EXC_MASK_GUARD = 1 << @enumToInt(EXC.GUARD);
-pub const EXC_MASK_CORPSE_NOTIFY = 1 << @enumToInt(EXC.CORPSE_NOTIFY);
+pub const EXC_MASK_BAD_ACCESS = 1 << @intFromEnum(EXC.BAD_ACCESS);
+pub const EXC_MASK_BAD_INSTRUCTION = 1 << @intFromEnum(EXC.BAD_INSTRUCTION);
+pub const EXC_MASK_ARITHMETIC = 1 << @intFromEnum(EXC.ARITHMETIC);
+pub const EXC_MASK_EMULATION = 1 << @intFromEnum(EXC.EMULATION);
+pub const EXC_MASK_SOFTWARE = 1 << @intFromEnum(EXC.SOFTWARE);
+pub const EXC_MASK_BREAKPOINT = 1 << @intFromEnum(EXC.BREAKPOINT);
+pub const EXC_MASK_SYSCALL = 1 << @intFromEnum(EXC.SYSCALL);
+pub const EXC_MASK_MACH_SYSCALL = 1 << @intFromEnum(EXC.MACH_SYSCALL);
+pub const EXC_MASK_RPC_ALERT = 1 << @intFromEnum(EXC.RPC_ALERT);
+pub const EXC_MASK_CRASH = 1 << @intFromEnum(EXC.CRASH);
+pub const EXC_MASK_RESOURCE = 1 << @intFromEnum(EXC.RESOURCE);
+pub const EXC_MASK_GUARD = 1 << @intFromEnum(EXC.GUARD);
+pub const EXC_MASK_CORPSE_NOTIFY = 1 << @intFromEnum(EXC.CORPSE_NOTIFY);
 pub const EXC_MASK_MACHINE = arch_bits.EXC_MASK_MACHINE;
 
 pub const EXC_MASK_ALL = EXC_MASK_BAD_ACCESS |
@@ -148,12 +148,10 @@ pub const ucontext_t = extern struct {
     link: ?*ucontext_t,
     mcsize: u64,
     mcontext: *mcontext_t,
+    __mcontext_data: mcontext_t,
 };
 
-pub const mcontext_t = extern struct {
-    es: arch_bits.exception_state,
-    ss: arch_bits.thread_state,
-};
+pub const mcontext_t = arch_bits.mcontext_t;
 
 extern "c" fn __error() *c_int;
 pub extern "c" fn NSVersionOfRunTimeLibrary(library_name: [*:0]const u8) u32;
@@ -163,92 +161,15 @@ pub extern "c" fn _dyld_get_image_header(image_index: u32) ?*mach_header;
 pub extern "c" fn _dyld_get_image_vmaddr_slide(image_index: u32) usize;
 pub extern "c" fn _dyld_get_image_name(image_index: u32) [*:0]const u8;
 
-pub const COPYFILE = struct {
-    pub const ACL = 1 << 0;
-    pub const STAT = 1 << 1;
-    pub const XATTR = 1 << 2;
-    pub const DATA = 1 << 3;
-    pub const SECURITY = COPYFILE.STAT | COPYFILE.ACL;
-    pub const METADATA = COPYFILE.SECURITY | COPYFILE.XATTR;
-    pub const ALL = COPYFILE.METADATA | COPYFILE.DATA;
-    pub const RECURSIVE = 1 << 15;
-    pub const CHECK = 1 << 16;
-    pub const EXCL = 1 << 17;
-    pub const NOFOLLOW_SRC = 1 << 18;
-    pub const NOFOLLOW_DST = 1 << 19;
-    pub const MOVE = 1 << 20;
-    pub const UNLINK = 1 << 21;
-    pub const NOFOLLOW = COPYFILE.NOFOLLOW_SRC | NOFOLLOW_DST;
-    pub const PACK = 1 << 22;
-    pub const UNPACK = 1 << 23;
-    pub const CLONE = 1 << 24;
-    pub const CLONE_FORCE = 1 << 25;
-    pub const RUN_IN_PLACE = 1 << 26;
-    pub const DATA_SPARSE = 1 << 27;
-    pub const PRESERVE_DST_TRACKED = 1 << 28;
-    pub const VERBOSE = 1 << 30;
-    pub const RECURSE_ERROR = 0;
-    pub const RECURSE_FILE = 1;
-    pub const RECURSE_DIR = 2;
-    pub const RECURSE_DIR_CLEANUP = 3;
-    pub const COPY_DATA = 4;
-    pub const COPY_XATTR = 5;
-    pub const START = 1;
-    pub const FINISH = 2;
-    pub const ERR = 3;
-    pub const PROGRESS = 4;
-    pub const CONTINUE = 0;
-    pub const SKIP = 1;
-    pub const QUIT = 2;
-    pub const STATE_SRC_FD = 1;
-    pub const STATE_SRC_FILENAME = 2;
-    pub const STATE_DST_FD = 3;
-    pub const STATE_DST_FILENAME = 4;
-    pub const STATE_QUARANTINE = 5;
-    pub const STATE_STATUS_CB = 6;
-    pub const STATE_STATUS_CTX = 7;
-    pub const STATE_COPIED = 8;
-    pub const STATE_XATTRNAME = 9;
-    pub const STATE_WAS_CLONED = 10;
-    pub const STATE_SRC_BSIZE = 11;
-    pub const STATE_DST_BSIZE = 12;
-    pub const STATE_BSIZE = 13;
-    pub const DISABLE_VAR: [*]u8 = "COPYFILE_DISABLE";
-};
+pub const COPYFILE_ACL = 1 << 0;
+pub const COPYFILE_STAT = 1 << 1;
+pub const COPYFILE_XATTR = 1 << 2;
+pub const COPYFILE_DATA = 1 << 3;
 
 pub const copyfile_state_t = *opaque {};
-pub const copyfile_flags_t = u32;
-pub extern "c" fn fcopyfile(from: fd_t, to: fd_t, state: ?copyfile_state_t, flags: copyfile_flags_t) c_int;
-pub extern "c" fn copyfile(from: [*:0]u8, to: [*:0]u8, state: ?copyfile_state_t, flags: copyfile_flags_t) c_int;
-pub extern "c" fn copyfile_state_alloc() copyfile_state_t;
-pub extern "c" fn copyfile_state_free(state: copyfile_state_t) void;
-pub extern "c" fn copyfile_state_get(s: copyfile_state_t, flag: u32, dst: ?*anyopaque) c_int;
-pub extern "c" fn copyfile_state_set(s: copyfile_state_t, flag: u32, dst: ?*const anyopaque) c_int;
-
-pub extern "c" fn @"realpath$DARWIN_EXTSN"(noalias file_name: [*:0]const u8, noalias resolved_name: [*]u8) ?[*:0]u8;
-pub const realpath = @"realpath$DARWIN_EXTSN";
+pub extern "c" fn fcopyfile(from: fd_t, to: fd_t, state: ?copyfile_state_t, flags: u32) c_int;
 
 pub extern "c" fn __getdirentries64(fd: c_int, buf_ptr: [*]u8, buf_len: usize, basep: *i64) isize;
-
-const private = struct {
-    extern "c" fn fstat(fd: fd_t, buf: *Stat) c_int;
-    /// On x86_64 Darwin, fstat has to be manually linked with $INODE64 suffix to
-    /// force 64bit version.
-    /// Note that this is fixed on aarch64 and no longer necessary.
-    extern "c" fn @"fstat$INODE64"(fd: fd_t, buf: *Stat) c_int;
-
-    extern "c" fn fstatat(dirfd: fd_t, path: [*:0]const u8, stat_buf: *Stat, flags: u32) c_int;
-    /// On x86_64 Darwin, fstatat has to be manually linked with $INODE64 suffix to
-    /// force 64bit version.
-    /// Note that this is fixed on aarch64 and no longer necessary.
-    extern "c" fn @"fstatat$INODE64"(dirfd: fd_t, path_name: [*:0]const u8, buf: *Stat, flags: u32) c_int;
-
-    extern "c" fn readdir(dir: *std.c.DIR) ?*dirent;
-    extern "c" fn @"readdir$INODE64"(dir: *std.c.DIR) ?*dirent;
-};
-pub const fstat = if (native_arch == .aarch64) private.fstat else private.@"fstat$INODE64";
-pub const fstatat = if (native_arch == .aarch64) private.fstatat else private.@"fstatat$INODE64";
-pub const readdir = if (native_arch == .aarch64) private.readdir else private.@"readdir$INODE64";
 
 pub extern "c" fn mach_absolute_time() u64;
 pub extern "c" fn mach_continuous_time() u64;
@@ -281,7 +202,7 @@ var dummy_execute_header: mach_hdr = undefined;
 pub extern var _mh_execute_header: mach_hdr;
 comptime {
     if (builtin.target.isDarwin()) {
-        @export(dummy_execute_header, .{ .name = "_mh_execute_header", .linkage = .Weak });
+        @export(dummy_execute_header, .{ .name = "_mh_execute_header", .linkage = .weak });
     }
 }
 
@@ -922,21 +843,7 @@ pub const qos_class_t = enum(c_uint) {
     QOS_CLASS_UNSPECIFIED = 0x00,
 };
 
-pub const pthread_mutex_t = extern struct {
-    __sig: c_long = 0x32AAABA7,
-    __opaque: [__PTHREAD_MUTEX_SIZE__]u8 = [_]u8{0} ** __PTHREAD_MUTEX_SIZE__,
-};
-pub const pthread_cond_t = extern struct {
-    __sig: c_long = 0x3CB0B1BB,
-    __opaque: [__PTHREAD_COND_SIZE__]u8 = [_]u8{0} ** __PTHREAD_COND_SIZE__,
-};
-pub const pthread_rwlock_t = extern struct {
-    __sig: c_long = 0x2DA8B3B4,
-    __opaque: [192]u8 = [_]u8{0} ** 192,
-};
 pub const sem_t = c_int;
-const __PTHREAD_MUTEX_SIZE__ = if (@sizeOf(usize) == 8) 56 else 40;
-const __PTHREAD_COND_SIZE__ = if (@sizeOf(usize) == 8) 40 else 24;
 
 pub const pthread_attr_t = extern struct {
     __sig: c_long,
@@ -951,35 +858,7 @@ pub extern "c" fn pthread_attr_get_qos_class_np(attr: *pthread_attr_t, qos_class
 pub extern "c" fn pthread_set_qos_class_self_np(qos_class: qos_class_t, relative_priority: c_int) c_int;
 pub extern "c" fn pthread_get_qos_class_np(pthread: std.c.pthread_t, qos_class: *qos_class_t, relative_priority: *c_int) c_int;
 
-pub const CCryptorStatus = enum(i32) {
-    /// Operation completed
-    kCCSuccess = 0,
-    /// Illegal parameter
-    kCCParamError = -4300,
-    /// Provided buffer too small
-    kCCBufferTooSmall = -4301,
-    /// Failed memory allocation
-    kCCMemoryFailure = -4302,
-    /// Size alignment issue
-    kCCAlignmentError = -4303,
-    /// Decoding issue
-    kCCDecodeError = -4304,
-    /// Call not implemented
-    kCCUnimplemented = -4305,
-    kCCOverflow = -4306,
-    kCCRNGFailure = -4307,
-    /// Unspecified error
-    kCCUnspecifiedError = -4308,
-    kCCCallSequenceError = -4309,
-    kCCKeySizeError = -4310,
-    /// Invalid key
-    kCCInvalidKey = -4311,
-};
-
-pub const CCRNGStatus = CCryptorStatus;
-
 pub extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
-pub extern "c" fn CCRandomGenerateBytes(bytes: ?*anyopaque, count: usize) CCRNGStatus;
 
 // Grand Central Dispatch is exposed by libSystem.
 pub extern "c" fn dispatch_release(object: *anyopaque) void;
@@ -1044,9 +923,6 @@ pub extern "c" fn os_unfair_lock_unlock(o: os_unfair_lock_t) void;
 pub extern "c" fn os_unfair_lock_trylock(o: os_unfair_lock_t) bool;
 pub extern "c" fn os_unfair_lock_assert_owner(o: os_unfair_lock_t) void;
 pub extern "c" fn os_unfair_lock_assert_not_owner(o: os_unfair_lock_t) void;
-
-// XXX: close -> close$NOCANCEL
-// XXX: getdirentries -> _getdirentries64
 
 // See: https://opensource.apple.com/source/xnu/xnu-6153.141.1/bsd/sys/_types.h.auto.html
 // TODO: audit mode_t/pid_t, should likely be u16/i32
@@ -1177,17 +1053,17 @@ pub const sigset_t = u32;
 pub const empty_sigset: sigset_t = 0;
 
 pub const SIG = struct {
-    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
-    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
-    pub const HOLD = @intToPtr(?Sigaction.handler_fn, 5);
+    pub const ERR: ?Sigaction.handler_fn = @ptrFromInt(maxInt(usize));
+    pub const DFL: ?Sigaction.handler_fn = @ptrFromInt(0);
+    pub const IGN: ?Sigaction.handler_fn = @ptrFromInt(1);
+    pub const HOLD: ?Sigaction.handler_fn = @ptrFromInt(5);
 
     /// block specified signal set
-    pub const _BLOCK = 1;
+    pub const BLOCK = 1;
     /// unblock specified signal set
-    pub const _UNBLOCK = 2;
+    pub const UNBLOCK = 2;
     /// set specified signal set
-    pub const _SETMASK = 3;
+    pub const SETMASK = 3;
     /// hangup
     pub const HUP = 1;
     /// interrupt
@@ -1263,7 +1139,7 @@ pub const siginfo_t = extern struct {
     pid: pid_t,
     uid: uid_t,
     status: c_int,
-    addr: *anyopaque,
+    addr: *allowzero anyopaque,
     value: extern union {
         int: c_int,
         ptr: *anyopaque,
@@ -1274,8 +1150,8 @@ pub const siginfo_t = extern struct {
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with function name.
 pub const Sigaction = extern struct {
-    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
-    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
+    pub const handler_fn = *align(1) const fn (i32) callconv(.C) void;
+    pub const sigaction_fn = *const fn (i32, *const siginfo_t, ?*anyopaque) callconv(.C) void;
 
     handler: extern union {
         handler: ?handler_fn,
@@ -1286,16 +1162,12 @@ pub const Sigaction = extern struct {
 };
 
 pub const dirent = extern struct {
-    d_ino: u64,
-    d_seekoff: u64,
-    d_reclen: u16,
-    d_namlen: u16,
-    d_type: u8,
-    d_name: [1024]u8,
-
-    pub fn reclen(self: dirent) u16 {
-        return self.d_reclen;
-    }
+    ino: u64,
+    seekoff: u64,
+    reclen: u16,
+    namlen: u16,
+    type: u8,
+    name: [1024]u8,
 };
 
 /// Renamed from `kevent` to `Kevent` to avoid conflict with function name.
@@ -1394,26 +1266,6 @@ pub const PROT = struct {
     pub const COPY: vm_prot_t = 0x10;
 };
 
-pub const MAP = struct {
-    /// allocated from memory, swap space
-    pub const ANONYMOUS = 0x1000;
-    /// map from file (default)
-    pub const FILE = 0x0000;
-    /// interpret addr exactly
-    pub const FIXED = 0x0010;
-    /// region may contain semaphores
-    pub const HASSEMAPHORE = 0x0200;
-    /// changes are private
-    pub const PRIVATE = 0x0002;
-    /// share changes
-    pub const SHARED = 0x0001;
-    /// don't cache pages for this mapping
-    pub const NOCACHE = 0x0400;
-    /// don't reserve needed swap area
-    pub const NORESERVE = 0x0040;
-    pub const FAILED = @intToPtr(*anyopaque, maxInt(usize));
-};
-
 pub const MSF = struct {
     pub const ASYNC = 0x1;
     pub const INVALIDATE = 0x2;
@@ -1449,49 +1301,6 @@ pub const F_OK = 0;
 pub const X_OK = 1;
 pub const W_OK = 2;
 pub const R_OK = 4;
-
-pub const O = struct {
-    pub const PATH = 0x0000;
-    /// open for reading only
-    pub const RDONLY = 0x0000;
-    /// open for writing only
-    pub const WRONLY = 0x0001;
-    /// open for reading and writing
-    pub const RDWR = 0x0002;
-    /// do not block on open or for data to become available
-    pub const NONBLOCK = 0x0004;
-    /// append on each write
-    pub const APPEND = 0x0008;
-    /// create file if it does not exist
-    pub const CREAT = 0x0200;
-    /// truncate size to 0
-    pub const TRUNC = 0x0400;
-    /// error if CREAT and the file exists
-    pub const EXCL = 0x0800;
-    /// atomically obtain a shared lock
-    pub const SHLOCK = 0x0010;
-    /// atomically obtain an exclusive lock
-    pub const EXLOCK = 0x0020;
-    /// do not follow symlinks
-    pub const NOFOLLOW = 0x0100;
-    /// allow open of symlinks
-    pub const SYMLINK = 0x200000;
-    /// descriptor requested for event notifications only
-    pub const EVTONLY = 0x8000;
-    /// mark as close-on-exec
-    pub const CLOEXEC = 0x1000000;
-    pub const ACCMODE = 3;
-    pub const ALERT = 536870912;
-    pub const ASYNC = 64;
-    pub const DIRECTORY = 1048576;
-    pub const DP_GETRAWENCRYPTED = 1;
-    pub const DP_GETRAWUNENCRYPTED = 2;
-    pub const DSYNC = 4194304;
-    pub const FSYNC = SYNC;
-    pub const NOCTTY = 131072;
-    pub const POPUP = 2147483648;
-    pub const SYNC = 128;
-};
 
 pub const SEEK = struct {
     pub const SET = 0x0;
@@ -1879,7 +1688,7 @@ pub const W = struct {
     pub const UNTRACED = 0x00000002;
 
     pub fn EXITSTATUS(x: u32) u8 {
-        return @intCast(u8, x >> 8);
+        return @as(u8, @intCast(x >> 8));
     }
     pub fn TERMSIG(x: u32) u32 {
         return status(x);
@@ -2463,7 +2272,7 @@ pub const KernE = enum(u32) {
 pub const mach_msg_return_t = kern_return_t;
 
 pub fn getMachMsgError(err: mach_msg_return_t) MachMsgE {
-    return @intToEnum(MachMsgE, @truncate(u32, @intCast(usize, err)));
+    return @as(MachMsgE, @enumFromInt(@as(u32, @truncate(@as(usize, @intCast(err))))));
 }
 
 /// All special error code bits defined below.
@@ -2633,18 +2442,6 @@ pub const S = struct {
 
 pub const HOST_NAME_MAX = 72;
 
-pub const AT = struct {
-    pub const FDCWD = -2;
-    /// Use effective ids in access check
-    pub const EACCESS = 0x0010;
-    /// Act on the symlink itself not the target
-    pub const SYMLINK_NOFOLLOW = 0x0020;
-    /// Act on target of symlink
-    pub const SYMLINK_FOLLOW = 0x0040;
-    /// Path refers to directory
-    pub const REMOVEDIR = 0x0080;
-};
-
 pub const addrinfo = extern struct {
     flags: i32,
     family: i32,
@@ -2665,10 +2462,10 @@ pub const RTLD = struct {
     pub const NODELETE = 0x80;
     pub const FIRST = 0x100;
 
-    pub const NEXT = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -1)));
-    pub const DEFAULT = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -2)));
-    pub const SELF = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -3)));
-    pub const MAIN_ONLY = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -5)));
+    pub const NEXT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))));
+    pub const DEFAULT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -2)))));
+    pub const SELF = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -3)))));
+    pub const MAIN_ONLY = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -5)))));
 };
 
 pub const F = struct {
@@ -2892,176 +2689,11 @@ pub const SHUT = struct {
     pub const RDWR = 2;
 };
 
-// Term
-pub const V = struct {
-    pub const EOF = 0;
-    pub const EOL = 1;
-    pub const EOL2 = 2;
-    pub const ERASE = 3;
-    pub const WERASE = 4;
-    pub const KILL = 5;
-    pub const REPRINT = 6;
-    pub const INTR = 8;
-    pub const QUIT = 9;
-    pub const SUSP = 10;
-    pub const DSUSP = 11;
-    pub const START = 12;
-    pub const STOP = 13;
-    pub const LNEXT = 14;
-    pub const DISCARD = 15;
-    pub const MIN = 16;
-    pub const TIME = 17;
-    pub const STATUS = 18;
-};
-
-pub const NCCS = 20; // 2 spares (7, 19)
-
-pub const cc_t = u8;
-pub const speed_t = u64;
-pub const tcflag_t = u64;
-
-pub const IGNBRK: tcflag_t = 0x00000001; // ignore BREAK condition
-pub const BRKINT: tcflag_t = 0x00000002; // map BREAK to SIGINTR
-pub const IGNPAR: tcflag_t = 0x00000004; // ignore (discard) parity errors
-pub const PARMRK: tcflag_t = 0x00000008; // mark parity and framing errors
-pub const INPCK: tcflag_t = 0x00000010; // enable checking of parity errors
-pub const ISTRIP: tcflag_t = 0x00000020; // strip 8th bit off chars
-pub const INLCR: tcflag_t = 0x00000040; // map NL into CR
-pub const IGNCR: tcflag_t = 0x00000080; // ignore CR
-pub const ICRNL: tcflag_t = 0x00000100; // map CR to NL (ala CRMOD)
-pub const IXON: tcflag_t = 0x00000200; // enable output flow control
-pub const IXOFF: tcflag_t = 0x00000400; // enable input flow control
-pub const IXANY: tcflag_t = 0x00000800; // any char will restart after stop
-pub const IMAXBEL: tcflag_t = 0x00002000; // ring bell on input queue full
-pub const IUTF8: tcflag_t = 0x00004000; // maintain state for UTF-8 VERASE
-
-pub const OPOST: tcflag_t = 0x00000001; //enable following output processing
-pub const ONLCR: tcflag_t = 0x00000002; // map NL to CR-NL (ala CRMOD)
-pub const OXTABS: tcflag_t = 0x00000004; // expand tabs to spaces
-pub const ONOEOT: tcflag_t = 0x00000008; // discard EOT's (^D) on output)
-
-pub const OCRNL: tcflag_t = 0x00000010; // map CR to NL on output
-pub const ONOCR: tcflag_t = 0x00000020; // no CR output at column 0
-pub const ONLRET: tcflag_t = 0x00000040; // NL performs CR function
-pub const OFILL: tcflag_t = 0x00000080; // use fill characters for delay
-pub const NLDLY: tcflag_t = 0x00000300; // \n delay
-pub const TABDLY: tcflag_t = 0x00000c04; // horizontal tab delay
-pub const CRDLY: tcflag_t = 0x00003000; // \r delay
-pub const FFDLY: tcflag_t = 0x00004000; // form feed delay
-pub const BSDLY: tcflag_t = 0x00008000; // \b delay
-pub const VTDLY: tcflag_t = 0x00010000; // vertical tab delay
-pub const OFDEL: tcflag_t = 0x00020000; // fill is DEL, else NUL
-
-pub const NL0: tcflag_t = 0x00000000;
-pub const NL1: tcflag_t = 0x00000100;
-pub const NL2: tcflag_t = 0x00000200;
-pub const NL3: tcflag_t = 0x00000300;
-pub const TAB0: tcflag_t = 0x00000000;
-pub const TAB1: tcflag_t = 0x00000400;
-pub const TAB2: tcflag_t = 0x00000800;
-pub const TAB3: tcflag_t = 0x00000004;
-pub const CR0: tcflag_t = 0x00000000;
-pub const CR1: tcflag_t = 0x00001000;
-pub const CR2: tcflag_t = 0x00002000;
-pub const CR3: tcflag_t = 0x00003000;
-pub const FF0: tcflag_t = 0x00000000;
-pub const FF1: tcflag_t = 0x00004000;
-pub const BS0: tcflag_t = 0x00000000;
-pub const BS1: tcflag_t = 0x00008000;
-pub const VT0: tcflag_t = 0x00000000;
-pub const VT1: tcflag_t = 0x00010000;
-
-pub const CIGNORE: tcflag_t = 0x00000001; // ignore control flags
-pub const CSIZE: tcflag_t = 0x00000300; // character size mask
-pub const CS5: tcflag_t = 0x00000000; //    5 bits (pseudo)
-pub const CS6: tcflag_t = 0x00000100; //    6 bits
-pub const CS7: tcflag_t = 0x00000200; //    7 bits
-pub const CS8: tcflag_t = 0x00000300; //    8 bits
-pub const CSTOPB: tcflag_t = 0x0000040; // send 2 stop bits
-pub const CREAD: tcflag_t = 0x00000800; // enable receiver
-pub const PARENB: tcflag_t = 0x00001000; // parity enable
-pub const PARODD: tcflag_t = 0x00002000; // odd parity, else even
-pub const HUPCL: tcflag_t = 0x00004000; // hang up on last close
-pub const CLOCAL: tcflag_t = 0x00008000; // ignore modem status lines
-pub const CCTS_OFLOW: tcflag_t = 0x00010000; // CTS flow control of output
-pub const CRTSCTS: tcflag_t = (CCTS_OFLOW | CRTS_IFLOW);
-pub const CRTS_IFLOW: tcflag_t = 0x00020000; // RTS flow control of input
-pub const CDTR_IFLOW: tcflag_t = 0x00040000; // DTR flow control of input
-pub const CDSR_OFLOW: tcflag_t = 0x00080000; // DSR flow control of output
-pub const CCAR_OFLOW: tcflag_t = 0x00100000; // DCD flow control of output
-pub const MDMBUF: tcflag_t = 0x00100000; // old name for CCAR_OFLOW
-
-pub const ECHOKE: tcflag_t = 0x00000001; // visual erase for line kill
-pub const ECHOE: tcflag_t = 0x00000002; // visually erase chars
-pub const ECHOK: tcflag_t = 0x00000004; // echo NL after line kill
-pub const ECHO: tcflag_t = 0x00000008; // enable echoing
-pub const ECHONL: tcflag_t = 0x00000010; // echo NL even if ECHO is off
-pub const ECHOPRT: tcflag_t = 0x00000020; // visual erase mode for hardcopy
-pub const ECHOCTL: tcflag_t = 0x00000040; // echo control chars as ^(Char)
-pub const ISIG: tcflag_t = 0x00000080; // enable signals INTR, QUIT, [D]SUSP
-pub const ICANON: tcflag_t = 0x00000100; // canonicalize input lines
-pub const ALTWERASE: tcflag_t = 0x00000200; // use alternate WERASE algorithm
-pub const IEXTEN: tcflag_t = 0x00000400; // enable DISCARD and LNEXT
-pub const EXTPROC: tcflag_t = 0x00000800; // external processing
-pub const TOSTOP: tcflag_t = 0x00400000; // stop background jobs from output
-pub const FLUSHO: tcflag_t = 0x00800000; // output being flushed (state)
-pub const NOKERNINFO: tcflag_t = 0x02000000; // no kernel output from VSTATUS
-pub const PENDIN: tcflag_t = 0x20000000; // XXX retype pending input (state)
-pub const NOFLSH: tcflag_t = 0x80000000; // don't flush after interrupt
-
-pub const TCSANOW: tcflag_t = 0; // make change immediate
-pub const TCSADRAIN: tcflag_t = 1; // drain output, then change
-pub const TCSAFLUSH: tcflag_t = 2; // drain output, flush input
-pub const TCSASOFT: tcflag_t = 0x10; // flag - don't alter h.w. state
 pub const TCSA = enum(c_uint) {
     NOW,
     DRAIN,
     FLUSH,
     _,
-};
-
-pub const B0: tcflag_t = 0;
-pub const B50: tcflag_t = 50;
-pub const B75: tcflag_t = 75;
-pub const B110: tcflag_t = 110;
-pub const B134: tcflag_t = 134;
-pub const B150: tcflag_t = 150;
-pub const B200: tcflag_t = 200;
-pub const B300: tcflag_t = 300;
-pub const B600: tcflag_t = 600;
-pub const B1200: tcflag_t = 1200;
-pub const B1800: tcflag_t = 1800;
-pub const B2400: tcflag_t = 2400;
-pub const B4800: tcflag_t = 4800;
-pub const B9600: tcflag_t = 9600;
-pub const B19200: tcflag_t = 19200;
-pub const B38400: tcflag_t = 38400;
-pub const B7200: tcflag_t = 7200;
-pub const B14400: tcflag_t = 14400;
-pub const B28800: tcflag_t = 28800;
-pub const B57600: tcflag_t = 57600;
-pub const B76800: tcflag_t = 76800;
-pub const B115200: tcflag_t = 115200;
-pub const B230400: tcflag_t = 230400;
-pub const EXTA: tcflag_t = 19200;
-pub const EXTB: tcflag_t = 38400;
-
-pub const TCIFLUSH: tcflag_t = 1;
-pub const TCOFLUSH: tcflag_t = 2;
-pub const TCIOFLUSH: tcflag_t = 3;
-pub const TCOOFF: tcflag_t = 1;
-pub const TCOON: tcflag_t = 2;
-pub const TCIOFF: tcflag_t = 3;
-pub const TCION: tcflag_t = 4;
-
-pub const termios = extern struct {
-    iflag: tcflag_t, // input flags
-    oflag: tcflag_t, // output flags
-    cflag: tcflag_t, // control flags
-    lflag: tcflag_t, // local flags
-    cc: [NCCS]cc_t, // control chars
-    ispeed: speed_t align(8), // input speed
-    ospeed: speed_t, // output speed
 };
 
 pub const winsize = extern struct {
@@ -3112,6 +2744,8 @@ pub const CPUFAMILY = enum(u32) {
     ARM_VORTEX_TEMPEST = 0x07d34b9f,
     ARM_LIGHTNING_THUNDER = 0x462504d2,
     ARM_FIRESTORM_ICESTORM = 0x1b588bb3,
+    ARM_BLIZZARD_AVALANCHE = 0xda33d83d,
+    ARM_EVEREST_SAWTOOTH = 0x8765edea,
     _,
 };
 
@@ -3192,238 +2826,13 @@ pub extern "c" fn posix_spawnp(
     env: [*:null]?[*:0]const u8,
 ) c_int;
 
-pub const PosixSpawn = struct {
-    const errno = std.os.errno;
-    const unexpectedErrno = std.os.unexpectedErrno;
-
-    pub const Error = error{
-        SystemResources,
-        InvalidFileDescriptor,
-        NameTooLong,
-        TooBig,
-        PermissionDenied,
-        InputOutput,
-        FileSystem,
-        FileNotFound,
-        InvalidExe,
-        NotDir,
-        FileBusy,
-        /// Returned when the child fails to execute either in the pre-exec() initialization step, or
-        /// when exec(3) is invoked.
-        ChildExecFailed,
-    } || std.os.UnexpectedError;
-
-    pub const Attr = struct {
-        attr: posix_spawnattr_t,
-
-        pub fn init() Error!Attr {
-            var attr: posix_spawnattr_t = undefined;
-            switch (errno(posix_spawnattr_init(&attr))) {
-                .SUCCESS => return Attr{ .attr = attr },
-                .NOMEM => return error.SystemResources,
-                .INVAL => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn deinit(self: *Attr) void {
-            defer self.* = undefined;
-            switch (errno(posix_spawnattr_destroy(&self.attr))) {
-                .SUCCESS => return,
-                .INVAL => unreachable, // Invalid parameters.
-                else => unreachable,
-            }
-        }
-
-        pub fn get(self: Attr) Error!u16 {
-            var flags: c_short = undefined;
-            switch (errno(posix_spawnattr_getflags(&self.attr, &flags))) {
-                .SUCCESS => return @bitCast(u16, flags),
-                .INVAL => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn set(self: *Attr, flags: u16) Error!void {
-            switch (errno(posix_spawnattr_setflags(&self.attr, @bitCast(c_short, flags)))) {
-                .SUCCESS => return,
-                .INVAL => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-    };
-
-    pub const Actions = struct {
-        actions: posix_spawn_file_actions_t,
-
-        pub fn init() Error!Actions {
-            var actions: posix_spawn_file_actions_t = undefined;
-            switch (errno(posix_spawn_file_actions_init(&actions))) {
-                .SUCCESS => return Actions{ .actions = actions },
-                .NOMEM => return error.SystemResources,
-                .INVAL => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn deinit(self: *Actions) void {
-            defer self.* = undefined;
-            switch (errno(posix_spawn_file_actions_destroy(&self.actions))) {
-                .SUCCESS => return,
-                .INVAL => unreachable, // Invalid parameters.
-                else => unreachable,
-            }
-        }
-
-        pub fn open(self: *Actions, fd: fd_t, path: []const u8, flags: u32, mode: mode_t) Error!void {
-            const posix_path = try std.os.toPosixPath(path);
-            return self.openZ(fd, &posix_path, flags, mode);
-        }
-
-        pub fn openZ(self: *Actions, fd: fd_t, path: [*:0]const u8, flags: u32, mode: mode_t) Error!void {
-            switch (errno(posix_spawn_file_actions_addopen(&self.actions, fd, path, @bitCast(c_int, flags), mode))) {
-                .SUCCESS => return,
-                .BADF => return error.InvalidFileDescriptor,
-                .NOMEM => return error.SystemResources,
-                .NAMETOOLONG => return error.NameTooLong,
-                .INVAL => unreachable, // the value of file actions is invalid
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn close(self: *Actions, fd: fd_t) Error!void {
-            switch (errno(posix_spawn_file_actions_addclose(&self.actions, fd))) {
-                .SUCCESS => return,
-                .BADF => return error.InvalidFileDescriptor,
-                .NOMEM => return error.SystemResources,
-                .INVAL => unreachable, // the value of file actions is invalid
-                .NAMETOOLONG => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn dup2(self: *Actions, fd: fd_t, newfd: fd_t) Error!void {
-            switch (errno(posix_spawn_file_actions_adddup2(&self.actions, fd, newfd))) {
-                .SUCCESS => return,
-                .BADF => return error.InvalidFileDescriptor,
-                .NOMEM => return error.SystemResources,
-                .INVAL => unreachable, // the value of file actions is invalid
-                .NAMETOOLONG => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn inherit(self: *Actions, fd: fd_t) Error!void {
-            switch (errno(posix_spawn_file_actions_addinherit_np(&self.actions, fd))) {
-                .SUCCESS => return,
-                .BADF => return error.InvalidFileDescriptor,
-                .NOMEM => return error.SystemResources,
-                .INVAL => unreachable, // the value of file actions is invalid
-                .NAMETOOLONG => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn chdir(self: *Actions, path: []const u8) Error!void {
-            const posix_path = try std.os.toPosixPath(path);
-            return self.chdirZ(&posix_path);
-        }
-
-        pub fn chdirZ(self: *Actions, path: [*:0]const u8) Error!void {
-            switch (errno(posix_spawn_file_actions_addchdir_np(&self.actions, path))) {
-                .SUCCESS => return,
-                .NOMEM => return error.SystemResources,
-                .NAMETOOLONG => return error.NameTooLong,
-                .BADF => unreachable,
-                .INVAL => unreachable, // the value of file actions is invalid
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-
-        pub fn fchdir(self: *Actions, fd: fd_t) Error!void {
-            switch (errno(posix_spawn_file_actions_addfchdir_np(&self.actions, fd))) {
-                .SUCCESS => return,
-                .BADF => return error.InvalidFileDescriptor,
-                .NOMEM => return error.SystemResources,
-                .INVAL => unreachable, // the value of file actions is invalid
-                .NAMETOOLONG => unreachable,
-                else => |err| return unexpectedErrno(err),
-            }
-        }
-    };
-
-    pub fn spawn(
-        path: []const u8,
-        actions: ?Actions,
-        attr: ?Attr,
-        argv: [*:null]?[*:0]const u8,
-        envp: [*:null]?[*:0]const u8,
-    ) Error!pid_t {
-        const posix_path = try std.os.toPosixPath(path);
-        return spawnZ(&posix_path, actions, attr, argv, envp);
-    }
-
-    pub fn spawnZ(
-        path: [*:0]const u8,
-        actions: ?Actions,
-        attr: ?Attr,
-        argv: [*:null]?[*:0]const u8,
-        envp: [*:null]?[*:0]const u8,
-    ) Error!pid_t {
-        var pid: pid_t = undefined;
-        switch (errno(posix_spawn(
-            &pid,
-            path,
-            if (actions) |a| &a.actions else null,
-            if (attr) |a| &a.attr else null,
-            argv,
-            envp,
-        ))) {
-            .SUCCESS => return pid,
-            .@"2BIG" => return error.TooBig,
-            .NOMEM => return error.SystemResources,
-            .BADF => return error.InvalidFileDescriptor,
-            .ACCES => return error.PermissionDenied,
-            .IO => return error.InputOutput,
-            .LOOP => return error.FileSystem,
-            .NAMETOOLONG => return error.NameTooLong,
-            .NOENT => return error.FileNotFound,
-            .NOEXEC => return error.InvalidExe,
-            .NOTDIR => return error.NotDir,
-            .TXTBSY => return error.FileBusy,
-            .BADARCH => return error.InvalidExe,
-            .BADEXEC => return error.InvalidExe,
-            .FAULT => unreachable,
-            .INVAL => unreachable,
-            else => |err| return unexpectedErrno(err),
-        }
-    }
-
-    pub fn waitpid(pid: pid_t, flags: u32) Error!std.os.WaitPidResult {
-        var status: c_int = undefined;
-        while (true) {
-            const rc = waitpid(pid, &status, @intCast(c_int, flags));
-            switch (errno(rc)) {
-                .SUCCESS => return std.os.WaitPidResult{
-                    .pid = @intCast(pid_t, rc),
-                    .status = @bitCast(u32, status),
-                },
-                .INTR => continue,
-                .CHILD => return error.ChildExecFailed,
-                .INVAL => unreachable, // Invalid flags.
-                else => unreachable,
-            }
-        }
-    }
-};
-
 pub fn getKernError(err: kern_return_t) KernE {
-    return @intToEnum(KernE, @truncate(u32, @intCast(usize, err)));
+    return @as(KernE, @enumFromInt(@as(u32, @truncate(@as(usize, @intCast(err))))));
 }
 
-pub fn unexpectedKernError(err: KernE) std.os.UnexpectedError {
-    if (std.os.unexpected_error_tracing) {
-        std.debug.print("unexpected error: {d}\n", .{@enumToInt(err)});
+pub fn unexpectedKernError(err: KernE) std.posix.UnexpectedError {
+    if (std.posix.unexpected_error_tracing) {
+        std.debug.print("unexpected error: {d}\n", .{@intFromEnum(err)});
         std.debug.dumpCurrentStackTrace(null);
     }
     return error.Unexpected;
@@ -3433,7 +2842,7 @@ pub const MachError = error{
     /// Not enough permissions held to perform the requested kernel
     /// call.
     PermissionDenied,
-} || std.os.UnexpectedError;
+} || std.posix.UnexpectedError;
 
 pub const MachTask = extern struct {
     port: mach_port_name_t,
@@ -3442,8 +2851,8 @@ pub const MachTask = extern struct {
         return self.port != TASK_NULL;
     }
 
-    pub fn pidForTask(self: MachTask) MachError!std.os.pid_t {
-        var pid: std.os.pid_t = undefined;
+    pub fn pidForTask(self: MachTask) MachError!std.c.pid_t {
+        var pid: std.c.pid_t = undefined;
         switch (getKernError(pid_for_task(self.port, &pid))) {
             .SUCCESS => return pid,
             .FAILURE => return error.PermissionDenied,
@@ -3455,7 +2864,7 @@ pub const MachTask = extern struct {
         var out_port: mach_port_name_t = undefined;
         switch (getKernError(mach_port_allocate(
             self.port,
-            @enumToInt(right),
+            @intFromEnum(right),
             &out_port,
         ))) {
             .SUCCESS => return .{ .port = out_port },
@@ -3473,7 +2882,7 @@ pub const MachTask = extern struct {
             self.port,
             port.port,
             port.port,
-            @enumToInt(msg),
+            @intFromEnum(msg),
         ))) {
             .SUCCESS => return,
             .FAILURE => return error.PermissionDenied,
@@ -3585,9 +2994,9 @@ pub const MachTask = extern struct {
                 .top => VM_REGION_TOP_INFO,
             },
             switch (tag) {
-                .basic => @ptrCast(vm_region_info_t, &info.info.basic),
-                .extended => @ptrCast(vm_region_info_t, &info.info.extended),
-                .top => @ptrCast(vm_region_info_t, &info.info.top),
+                .basic => @as(vm_region_info_t, @ptrCast(&info.info.basic)),
+                .extended => @as(vm_region_info_t, @ptrCast(&info.info.extended)),
+                .top => @as(vm_region_info_t, @ptrCast(&info.info.top)),
             },
             &count,
             &objname,
@@ -3640,8 +3049,8 @@ pub const MachTask = extern struct {
             &base_len,
             &nesting,
             switch (tag) {
-                .short => @ptrCast(vm_region_recurse_info_t, &info.info.short),
-                .full => @ptrCast(vm_region_recurse_info_t, &info.info.full),
+                .short => @as(vm_region_recurse_info_t, @ptrCast(&info.info.short)),
+                .full => @as(vm_region_recurse_info_t, @ptrCast(&info.info.full)),
             },
             &count,
         ))) {
@@ -3665,7 +3074,7 @@ pub const MachTask = extern struct {
     }
 
     fn setProtectionImpl(task: MachTask, address: u64, len: usize, set_max: bool, prot: vm_prot_t) MachError!void {
-        switch (getKernError(mach_vm_protect(task.port, address, len, @boolToInt(set_max), prot))) {
+        switch (getKernError(mach_vm_protect(task.port, address, len, @intFromBool(set_max), prot))) {
             .SUCCESS => return,
             .FAILURE => return error.PermissionDenied,
             else => |err| return unexpectedKernError(err),
@@ -3700,8 +3109,8 @@ pub const MachTask = extern struct {
             switch (getKernError(mach_vm_write(
                 task.port,
                 curr_addr,
-                @ptrToInt(out_buf.ptr),
-                @intCast(mach_msg_type_number_t, curr_size),
+                @intFromPtr(out_buf.ptr),
+                @as(mach_msg_type_number_t, @intCast(curr_size)),
             ))) {
                 .SUCCESS => {},
                 .FAILURE => return error.PermissionDenied,
@@ -3752,7 +3161,7 @@ pub const MachTask = extern struct {
                 else => |err| return unexpectedKernError(err),
             }
 
-            @memcpy(out_buf[0..curr_bytes_read], @intToPtr([*]const u8, vm_memory));
+            @memcpy(out_buf[0..curr_bytes_read], @as([*]const u8, @ptrFromInt(vm_memory)));
             _ = vm_deallocate(mach_task_self(), vm_memory, curr_bytes_read);
 
             out_buf = out_buf[curr_bytes_read..];
@@ -3782,10 +3191,10 @@ pub const MachTask = extern struct {
             switch (getKernError(task_info(
                 task.port,
                 TASK_VM_INFO,
-                @ptrCast(task_info_t, &vm_info),
+                @as(task_info_t, @ptrCast(&vm_info)),
                 &info_count,
             ))) {
-                .SUCCESS => return @intCast(usize, vm_info.page_size),
+                .SUCCESS => return @as(usize, @intCast(vm_info.page_size)),
                 else => {},
             }
         }
@@ -3802,7 +3211,7 @@ pub const MachTask = extern struct {
         switch (getKernError(task_info(
             task.port,
             MACH_TASK_BASIC_INFO,
-            @ptrCast(task_info_t, &info),
+            @as(task_info_t, @ptrCast(&info)),
             &count,
         ))) {
             .SUCCESS => return info,
@@ -3831,8 +3240,8 @@ pub const MachTask = extern struct {
             const self_task = machTaskForSelf();
             _ = vm_deallocate(
                 self_task.port,
-                @ptrToInt(list.buf.ptr),
-                @intCast(vm_size_t, list.buf.len * @sizeOf(mach_port_t)),
+                @intFromPtr(list.buf.ptr),
+                @as(vm_size_t, @intCast(list.buf.len * @sizeOf(mach_port_t))),
             );
         }
     };
@@ -3841,7 +3250,7 @@ pub const MachTask = extern struct {
         var thread_list: mach_port_array_t = undefined;
         var thread_count: mach_msg_type_number_t = undefined;
         switch (getKernError(task_threads(task.port, &thread_list, &thread_count))) {
-            .SUCCESS => return ThreadList{ .buf = @ptrCast([*]MachThread, thread_list)[0..thread_count] },
+            .SUCCESS => return ThreadList{ .buf = @as([*]MachThread, @ptrCast(thread_list))[0..thread_count] },
             else => |err| return unexpectedKernError(err),
         }
     }
@@ -3860,7 +3269,7 @@ pub const MachThread = extern struct {
         switch (getKernError(thread_info(
             thread.port,
             THREAD_BASIC_INFO,
-            @ptrCast(thread_info_t, &info),
+            @as(thread_info_t, @ptrCast(&info)),
             &count,
         ))) {
             .SUCCESS => return info,
@@ -3874,7 +3283,7 @@ pub const MachThread = extern struct {
         switch (getKernError(thread_info(
             thread.port,
             THREAD_IDENTIFIER_INFO,
-            @ptrCast(thread_info_t, &info),
+            @as(thread_info_t, @ptrCast(&info)),
             &count,
         ))) {
             .SUCCESS => return info,
@@ -3883,7 +3292,7 @@ pub const MachThread = extern struct {
     }
 };
 
-pub fn machTaskForPid(pid: std.os.pid_t) MachError!MachTask {
+pub fn machTaskForPid(pid: std.c.pid_t) MachError!MachTask {
     var port: mach_port_name_t = undefined;
     switch (getKernError(task_for_pid(mach_task_self(), pid, &port))) {
         .SUCCESS => {},
@@ -3928,230 +3337,3 @@ pub extern "c" fn os_signpost_interval_begin(log: os_log_t, signpos: os_signpost
 pub extern "c" fn os_signpost_interval_end(log: os_log_t, signpos: os_signpost_id_t, func: [*]const u8, ...) void;
 pub extern "c" fn os_signpost_id_make_with_pointer(log: os_log_t, ptr: ?*anyopaque) os_signpost_id_t;
 pub extern "c" fn os_signpost_enabled(log: os_log_t) bool;
-
-pub extern "c" fn proc_listpids(tpe: u32, tinfo: u32, buffer: ?*anyopaque, buffersize: c_int) c_int;
-pub extern "c" fn proc_listallpids(buffer: ?*anyopaque, buffersize: c_int) c_int;
-pub extern "c" fn proc_listpgrppids(pgrpid: pid_t, buffer: ?*anyopaque, buffersize: c_int) c_int;
-pub extern "c" fn proc_listchildpids(ppid: pid_t, buffer: ?*anyopaque, buffersize: c_int) c_int;
-pub extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, buffersize: c_int) c_int;
-pub extern "c" fn proc_name(pid: c_int, buffer: ?*anyopaque, buffersize: u32) c_int;
-pub extern "c" fn proc_pidpath(pid: c_int, buffer: ?*anyopaque, buffersize: u32) c_int;
-
-pub const MIN = struct {
-    pub const INCORE = 0x1;
-    pub const REFERENCED = 0x2;
-    pub const MODIFIED = 0x4;
-    pub const REFERENCED_OTHER = 0x8;
-    pub const MODIFIED_OTHER = 0x10;
-    pub const PAGED_OUT = 0x20;
-    pub const COPIED = 0x40;
-    pub const ANONYMOUS = 0x80;
-};
-
-pub extern "c" fn mincore(addr: *align(std.mem.page_size) const anyopaque, length: usize, vec: [*]u8) c_int;
-pub extern "c" fn os_proc_available_memory() usize;
-
-pub const thread_affinity_policy = extern struct {
-    tag: integer_t,
-};
-
-pub const thread_policy_flavor_t = natural_t;
-pub const thread_policy_t = [*]integer_t;
-pub const thread_affinity_policy_data_t = thread_affinity_policy;
-pub const thread_affinity_policy_t = [*]thread_affinity_policy;
-
-pub const THREAD_AFFINITY = struct {
-    pub const POLICY = 0;
-    pub const POLICY_COUNT = @intCast(mach_msg_type_number_t, @sizeOf(thread_affinity_policy_data_t) / @sizeOf(integer_t));
-};
-
-/// cpu affinity api
-/// albeit it is also available on arm64, it always fails as in this architecture there is no sense of
-/// individual cpus (high performance cpus group and low consumption one), thus the pthread QOS api is more appropriate in this case.
-pub extern "c" fn thread_affinity_get(thread: thread_act_t, flavor: thread_policy_flavor_t, info: thread_policy_t, infocnt: [*]mach_msg_type_number_t, default: *boolean_t) kern_return_t;
-pub extern "c" fn thread_affinity_set(thread: thread_act_t, flavor: thread_policy_flavor_t, info: thread_policy_t, infocnt: mach_msg_type_number_t) kern_return_t;
-
-pub const cpu_type_t = integer_t;
-pub const cpu_subtype_t = integer_t;
-pub const cpu_threadtype_t = integer_t;
-pub const host_flavor_t = integer_t;
-pub const host_info_t = *integer_t;
-pub const host_info64_t = *integer_t;
-pub const host_can_has_debugger_info = extern struct {
-    can_has_debugger: boolean_t,
-};
-pub const host_can_has_debugger_info_data_t = host_can_has_debugger_info;
-pub const host_can_has_debugger_info_t = *host_can_has_debugger_info;
-
-pub const host_sched_info = extern struct {
-    min_timeout: integer_t,
-    min_quantum: integer_t,
-};
-pub const host_sched_info_data_t = host_sched_info;
-pub const host_sched_info_t = *host_sched_info;
-
-pub const kernel_resource_sizes = extern struct {
-    task: natural_t,
-    thread: natural_t,
-    port: natural_t,
-    memory_region: natural_t,
-    memory_object: natural_t,
-};
-
-pub const kernel_resource_sizes_data_t = kernel_resource_sizes;
-pub const kernel_resource_sizes_t = *kernel_resource_sizes;
-
-pub const host_priority_info = extern struct {
-    kernel_priority: integer_t,
-    system_priority: integer_t,
-    server_priority: integer_t,
-    user_priority: integer_t,
-    depress_priority: integer_t,
-    idle_priority: integer_t,
-    minimum_priority: integer_t,
-    maximum_priority: integer_t,
-};
-
-pub const host_priority_info_data_t = host_priority_info;
-pub const host_priority_info_t = *host_priority_info;
-
-pub const CPU_STATE_MAX = 4;
-
-pub const host_cpu_load_info = extern struct {
-    cpu_ticks: [CPU_STATE_MAX]natural_t,
-};
-
-pub const host_cpu_load_info_data_t = host_cpu_load_info;
-pub const host_cpu_load_info_t = *host_cpu_load_info;
-
-pub const host_load_info = extern struct {
-    avenrun: [3]integer_t,
-    mach_factor: [3]integer_t,
-};
-
-pub const host_load_info_data_t = host_load_info;
-pub const host_load_info_t = *host_load_info;
-
-pub const host_preferred_user_arch = extern struct {
-    cpu_type: cpu_type_t,
-    cpu_subtype: cpu_subtype_t,
-};
-
-pub const host_preferred_user_arch_data_t = host_preferred_user_arch;
-pub const host_preferred_user_arch_t = *host_preferred_user_arch;
-
-fn HostCount(comptime HT: type) mach_msg_type_number_t {
-    return @intCast(mach_msg_type_number_t, @sizeOf(HT) / @sizeOf(integer_t));
-}
-
-pub const HOST = struct {
-    pub const BASIC_INFO = 1;
-    pub const SCHED_INFO = 3;
-    pub const RESOURCE_SIZES = 4;
-    pub const PRIORITY_INFO = 5;
-    pub const SEMAPHORE_TRAPS = 7;
-    pub const MACH_MSG_TRAPS = 8;
-    pub const VM_PURGEABLE = 9;
-    pub const DEBUG_INFO_INTERNAL = 10;
-    pub const CAN_HAS_DEBUGGER = 11;
-    pub const PREFERRED_USER_ARCH = 12;
-    pub const LOAD_INFO = 1;
-    pub const VM_INFO = 2;
-    pub const CPU_LOAD_INFO = 3;
-    pub const VM_INFO64 = 4;
-    pub const EXTMOD_INFO64 = 5;
-    pub const EXPIRED_TASK_INFO = 6;
-    pub const CAN_HAS_DEBUGGER_COUNT = HostCount(host_can_has_debugger_info_data_t);
-    pub const SCHED_INFO_COUNT = HostCount(host_sched_info_data_t);
-    pub const RESOURCES_SIZES_COUNT = HostCount(kernel_resource_sizes_data_t);
-    pub const PRIORITY_INFO_COUNT = HostCount(host_priority_info_data_t);
-    pub const CPU_LOAD_INFO_COUNT = HostCount(host_cpu_load_info_data_t);
-    pub const LOAD_INFO_COUNT = HostCount(host_load_info_data_t);
-    pub const PREFERRED_USER_ARCH_COUNT = HostCount(host_preferred_user_arch_data_t);
-    pub const VM_INFO_COUNT = HostCount(vm_statistics_data_t);
-    pub const VM_INFO64_COUNT = HostCount(vm_statistics64_data_t);
-    pub const EXTMOD_INFO64_COUNT = HostCount(vm_extmod_statistics_data_t);
-};
-
-pub const host_basic_info = packed struct(u32) {
-    max_cpus: integer_t,
-    avail_cpus: integer_t,
-    memory_size: natural_t,
-    cpu_type: cpu_type_t,
-    cpu_subtype: cpu_subtype_t,
-    cpu_threadtype: cpu_threadtype_t,
-    physical_cpu: integer_t,
-    physical_cpu_max: integer_t,
-    logical_cpu: integer_t,
-    logical_cpu_max: integer_t,
-    max_mem: u64,
-};
-
-pub extern "c" fn host_info(host: host_t, flavor: host_flavor_t, info_out: host_info_t, info_outCnt: [*]mach_msg_type_number_t) kern_return_t;
-pub extern "c" fn host_statistics(priv: host_t, flavor: host_flavor_t, info_out: host_info_t, info_outCnt: [*]mach_msg_type_number_t) kern_return_t;
-pub extern "c" fn host_statistics64(priv: host_t, flavor: host_flavor_t, info_out: host_info64_t, info64_outCnt: [*]mach_msg_type_number_t) kern_return_t;
-
-pub const vm_statistics = extern struct {
-    free_count: natural_t,
-    active_count: natural_t,
-    inactive_count: natural_t,
-    wire_count: natural_t,
-    zero_fill_count: natural_t,
-    reactivations: natural_t,
-    pageins: natural_t,
-    pageouts: natural_t,
-    faults: natural_t,
-    cow_faults: natural_t,
-    lookups: natural_t,
-    hits: natural_t,
-    purgeable_count: natural_t,
-    purges: natural_t,
-    speculative_count: natural_t,
-};
-
-pub const vm_statistics_t = *vm_statistics;
-pub const vm_statistics_data_t = vm_statistics;
-
-pub const vm_statistics64 align(8) = extern struct {
-    free_count: natural_t,
-    active_count: natural_t,
-    inactive_count: natural_t,
-    wire_count: natural_t,
-    zero_fill_count: u64,
-    reactivations: u64,
-    pageins: u64,
-    pageouts: u64,
-    faults: u64,
-    cow_faults: u64,
-    lookups: u64,
-    hits: u64,
-    purges: u64,
-    purgeable_count: natural_t,
-    speculative_count: natural_t,
-    decompressions: u64,
-    compressions: u64,
-    swapins: u64,
-    swapouts: u64,
-    compressor_page_count: natural_t,
-    throttled_count: natural_t,
-    external_page_count: natural_t,
-    internal_page_count: natural_t,
-    total_uncompressed_pages_in_compressor: u64,
-};
-
-pub const vm_statistics64_t = *vm_statistics64;
-pub const vm_statistics64_data_t = vm_statistics64;
-
-pub const vm_extmod_statistics align(8) = extern struct {
-    task_for_pid_count: i64,
-    task_for_pid_caller_count: i64,
-    thread_creation_count: i64,
-    thread_creation_caller_count: i64,
-    thread_set_state_count: i64,
-    thread_set_state_caller_count: i64,
-};
-
-pub const vm_extmod_statistics_t = *vm_extmod_statistics;
-pub const vm_extmod_statistics_data_t = vm_extmod_statistics;
-
-pub extern "c" fn vm_stats(info: ?*anyopaque, count: *c_uint) kern_return_t;

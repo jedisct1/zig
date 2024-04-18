@@ -33,6 +33,7 @@
 const std = @import("std.zig");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
 /// Returns the optimal static bit set type for the specified number
 /// of elements: either `IntegerBitSet` or `ArrayBitSet`,
@@ -119,19 +120,19 @@ pub fn IntegerBitSet(comptime size: u16) type {
             if (range.start == range.end) return;
             if (MaskInt == u0) return;
 
-            const start_bit = @intCast(ShiftInt, range.start);
+            const start_bit = @as(ShiftInt, @intCast(range.start));
 
             var mask = std.math.boolMask(MaskInt, true) << start_bit;
             if (range.end != bit_length) {
-                const end_bit = @intCast(ShiftInt, range.end);
-                mask &= std.math.boolMask(MaskInt, true) >> @truncate(ShiftInt, @as(usize, @bitSizeOf(MaskInt)) - @as(usize, end_bit));
+                const end_bit = @as(ShiftInt, @intCast(range.end));
+                mask &= std.math.boolMask(MaskInt, true) >> @as(ShiftInt, @truncate(@as(usize, @bitSizeOf(MaskInt)) - @as(usize, end_bit)));
             }
             self.mask &= ~mask;
 
             mask = std.math.boolMask(MaskInt, value) << start_bit;
             if (range.end != bit_length) {
-                const end_bit = @intCast(ShiftInt, range.end);
-                mask &= std.math.boolMask(MaskInt, value) >> @truncate(ShiftInt, @as(usize, @bitSizeOf(MaskInt)) - @as(usize, end_bit));
+                const end_bit = @as(ShiftInt, @intCast(range.end));
+                mask &= std.math.boolMask(MaskInt, value) >> @as(ShiftInt, @truncate(@as(usize, @bitSizeOf(MaskInt)) - @as(usize, end_bit)));
             }
             self.mask |= mask;
         }
@@ -292,7 +293,7 @@ pub fn IntegerBitSet(comptime size: u16) type {
                         .reverse => {
                             const leading_zeroes = @clz(self.bits_remain);
                             const top_bit = (@bitSizeOf(MaskInt) - 1) - leading_zeroes;
-                            self.bits_remain &= (@as(MaskInt, 1) << @intCast(ShiftInt, top_bit)) - 1;
+                            self.bits_remain &= (@as(MaskInt, 1) << @as(ShiftInt, @intCast(top_bit))) - 1;
                             return top_bit;
                         },
                     }
@@ -302,11 +303,11 @@ pub fn IntegerBitSet(comptime size: u16) type {
 
         fn maskBit(index: usize) MaskInt {
             if (MaskInt == u0) return 0;
-            return @as(MaskInt, 1) << @intCast(ShiftInt, index);
+            return @as(MaskInt, 1) << @as(ShiftInt, @intCast(index));
         }
         fn boolMaskBit(index: usize, value: bool) MaskInt {
             if (MaskInt == u0) return 0;
-            return @as(MaskInt, @boolToInt(value)) << @intCast(ShiftInt, index);
+            return @as(MaskInt, @intFromBool(value)) << @as(ShiftInt, @intCast(index));
         }
     };
 }
@@ -442,10 +443,10 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
             if (num_masks == 0) return;
 
             const start_mask_index = maskIndex(range.start);
-            const start_bit = @truncate(ShiftInt, range.start);
+            const start_bit = @as(ShiftInt, @truncate(range.start));
 
             const end_mask_index = maskIndex(range.end);
-            const end_bit = @truncate(ShiftInt, range.end);
+            const end_bit = @as(ShiftInt, @truncate(range.end));
 
             if (start_mask_index == end_mask_index) {
                 var mask1 = std.math.boolMask(MaskInt, true) << start_bit;
@@ -634,13 +635,13 @@ pub fn ArrayBitSet(comptime MaskIntType: type, comptime size: usize) type {
         }
 
         fn maskBit(index: usize) MaskInt {
-            return @as(MaskInt, 1) << @truncate(ShiftInt, index);
+            return @as(MaskInt, 1) << @as(ShiftInt, @truncate(index));
         }
         fn maskIndex(index: usize) usize {
             return index >> @bitSizeOf(ShiftInt);
         }
         fn boolMaskBit(index: usize, value: bool) MaskInt {
-            return @as(MaskInt, @boolToInt(value)) << @intCast(ShiftInt, index);
+            return @as(MaskInt, @intFromBool(value)) << @as(ShiftInt, @intCast(index));
         }
     };
 }
@@ -669,7 +670,7 @@ pub const DynamicBitSetUnmanaged = struct {
 
     // Don't modify this value.  Ideally it would go in const data so
     // modifications would cause a bus error, but the only way
-    // to discard a const qualifier is through ptrToInt, which
+    // to discard a const qualifier is through intFromPtr, which
     // cannot currently round trip at comptime.
     var empty_masks_data = [_]MaskInt{ 0, undefined };
     const empty_masks_ptr = empty_masks_data[1..2];
@@ -731,7 +732,7 @@ pub const DynamicBitSetUnmanaged = struct {
             // set the padding bits in the old last item to 1
             if (fill and old_masks > 0) {
                 const old_padding_bits = old_masks * @bitSizeOf(MaskInt) - old_len;
-                const old_mask = (~@as(MaskInt, 0)) >> @intCast(ShiftInt, old_padding_bits);
+                const old_mask = (~@as(MaskInt, 0)) >> @as(ShiftInt, @intCast(old_padding_bits));
                 self.masks[old_masks - 1] |= ~old_mask;
             }
 
@@ -745,7 +746,7 @@ pub const DynamicBitSetUnmanaged = struct {
         // Zero out the padding bits
         if (new_len > 0) {
             const padding_bits = new_masks * @bitSizeOf(MaskInt) - new_len;
-            const last_item_mask = (~@as(MaskInt, 0)) >> @intCast(ShiftInt, padding_bits);
+            const last_item_mask = (~@as(MaskInt, 0)) >> @as(ShiftInt, @intCast(padding_bits));
             self.masks[new_masks - 1] &= last_item_mask;
         }
 
@@ -753,7 +754,7 @@ pub const DynamicBitSetUnmanaged = struct {
         self.bit_length = new_len;
     }
 
-    /// deinitializes the array and releases its memory.
+    /// Deinitializes the array and releases its memory.
     /// The passed allocator must be the same one used for
     /// init* or resize in the past.
     pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -816,10 +817,10 @@ pub const DynamicBitSetUnmanaged = struct {
         if (range.start == range.end) return;
 
         const start_mask_index = maskIndex(range.start);
-        const start_bit = @truncate(ShiftInt, range.start);
+        const start_bit = @as(ShiftInt, @truncate(range.start));
 
         const end_mask_index = maskIndex(range.end);
-        const end_bit = @truncate(ShiftInt, range.end);
+        const end_bit = @as(ShiftInt, @truncate(range.end));
 
         if (start_mask_index == end_mask_index) {
             var mask1 = std.math.boolMask(MaskInt, true) << start_bit;
@@ -858,6 +859,18 @@ pub const DynamicBitSetUnmanaged = struct {
         self.masks[maskIndex(index)] &= ~maskBit(index);
     }
 
+    /// Set all bits to 0.
+    pub fn unsetAll(self: *Self) void {
+        const masks_len = numMasks(self.bit_length);
+        @memset(self.masks[0..masks_len], 0);
+    }
+
+    /// Set all bits to 1.
+    pub fn setAll(self: *Self) void {
+        const masks_len = numMasks(self.bit_length);
+        @memset(self.masks[0..masks_len], std.math.maxInt(MaskInt));
+    }
+
     /// Flips a specific bit in the bit set
     pub fn toggle(self: *Self, index: usize) void {
         assert(index < self.bit_length);
@@ -887,7 +900,7 @@ pub const DynamicBitSetUnmanaged = struct {
         }
 
         const padding_bits = num_masks * @bitSizeOf(MaskInt) - bit_length;
-        const last_item_mask = (~@as(MaskInt, 0)) >> @intCast(ShiftInt, padding_bits);
+        const last_item_mask = (~@as(MaskInt, 0)) >> @as(ShiftInt, @intCast(padding_bits));
         self.masks[num_masks - 1] &= last_item_mask;
     }
 
@@ -996,7 +1009,7 @@ pub const DynamicBitSetUnmanaged = struct {
     pub fn iterator(self: *const Self, comptime options: IteratorOptions) Iterator(options) {
         const num_masks = numMasks(self.bit_length);
         const padding_bits = num_masks * @bitSizeOf(MaskInt) - self.bit_length;
-        const last_item_mask = (~@as(MaskInt, 0)) >> @intCast(ShiftInt, padding_bits);
+        const last_item_mask = (~@as(MaskInt, 0)) >> @as(ShiftInt, @intCast(padding_bits));
         return Iterator(options).init(self.masks[0..num_masks], last_item_mask);
     }
 
@@ -1005,13 +1018,13 @@ pub const DynamicBitSetUnmanaged = struct {
     }
 
     fn maskBit(index: usize) MaskInt {
-        return @as(MaskInt, 1) << @truncate(ShiftInt, index);
+        return @as(MaskInt, 1) << @as(ShiftInt, @truncate(index));
     }
     fn maskIndex(index: usize) usize {
         return index >> @bitSizeOf(ShiftInt);
     }
     fn boolMaskBit(index: usize, value: bool) MaskInt {
-        return @as(MaskInt, @boolToInt(value)) << @intCast(ShiftInt, index);
+        return @as(MaskInt, @intFromBool(value)) << @as(ShiftInt, @intCast(index));
     }
     fn numMasks(bit_length: usize) usize {
         return (bit_length + (@bitSizeOf(MaskInt) - 1)) / @bitSizeOf(MaskInt);
@@ -1058,7 +1071,7 @@ pub const DynamicBitSet = struct {
         try self.unmanaged.resize(self.allocator, new_len, fill);
     }
 
-    /// deinitializes the array and releases its memory.
+    /// Deinitializes the array and releases its memory.
     /// The passed allocator must be the same one used for
     /// init* or resize in the past.
     pub fn deinit(self: *Self) void {
@@ -1255,7 +1268,7 @@ fn BitSetIterator(comptime MaskInt: type, comptime options: IteratorOptions) typ
                 .reverse => {
                     const leading_zeroes = @clz(self.bits_remain);
                     const top_bit = (@bitSizeOf(MaskInt) - 1) - leading_zeroes;
-                    const no_top_bit_mask = (@as(MaskInt, 1) << @intCast(ShiftInt, top_bit)) - 1;
+                    const no_top_bit_mask = (@as(MaskInt, 1) << @as(ShiftInt, @intCast(top_bit))) - 1;
                     self.bits_remain &= no_top_bit_mask;
                     return top_bit + self.bit_offset;
                 },
@@ -1635,8 +1648,8 @@ fn testStaticBitSet(comptime Set: type) !void {
     try testPureBitSet(Set);
 }
 
-test "IntegerBitSet" {
-    if (@import("builtin").zig_backend == .stage2_c) return error.SkipZigTest;
+test IntegerBitSet {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
     try testStaticBitSet(IntegerBitSet(0));
     try testStaticBitSet(IntegerBitSet(1));
@@ -1648,7 +1661,7 @@ test "IntegerBitSet" {
     try testStaticBitSet(IntegerBitSet(127));
 }
 
-test "ArrayBitSet" {
+test ArrayBitSet {
     inline for (.{ 0, 1, 2, 31, 32, 33, 63, 64, 65, 254, 500, 3000 }) |size| {
         try testStaticBitSet(ArrayBitSet(u8, size));
         try testStaticBitSet(ArrayBitSet(u16, size));
@@ -1658,7 +1671,7 @@ test "ArrayBitSet" {
     }
 }
 
-test "DynamicBitSetUnmanaged" {
+test DynamicBitSetUnmanaged {
     const allocator = std.testing.allocator;
     var a = try DynamicBitSetUnmanaged.initEmpty(allocator, 300);
     try testing.expectEqual(@as(usize, 0), a.count());
@@ -1711,7 +1724,7 @@ test "DynamicBitSetUnmanaged" {
     }
 }
 
-test "DynamicBitSet" {
+test DynamicBitSet {
     const allocator = std.testing.allocator;
     var a = try DynamicBitSet.initEmpty(allocator, 300);
     try testing.expectEqual(@as(usize, 0), a.count());
@@ -1752,7 +1765,7 @@ test "DynamicBitSet" {
     }
 }
 
-test "StaticBitSet" {
+test StaticBitSet {
     try testing.expectEqual(IntegerBitSet(0), StaticBitSet(0));
     try testing.expectEqual(IntegerBitSet(5), StaticBitSet(5));
     try testing.expectEqual(IntegerBitSet(@bitSizeOf(usize)), StaticBitSet(@bitSizeOf(usize)));

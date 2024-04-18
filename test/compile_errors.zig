@@ -2,9 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Cases = @import("src/Cases.zig");
 
-pub fn addCases(ctx: *Cases) !void {
+pub fn addCases(ctx: *Cases, b: *std.Build) !void {
     {
-        const case = ctx.obj("multiline error messages", .{});
+        const case = ctx.obj("multiline error messages", b.host);
 
         case.addError(
             \\comptime {
@@ -39,7 +39,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("isolated carriage return in multiline string literal", .{});
+        const case = ctx.obj("isolated carriage return in multiline string literal", b.host);
 
         case.addError("const foo = \\\\\test\r\r rogue carriage return\n;", &[_][]const u8{
             ":1:19: error: expected ';' after declaration",
@@ -48,7 +48,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("missing semicolon at EOF", .{});
+        const case = ctx.obj("missing semicolon at EOF", b.host);
         case.addError(
             \\const foo = 1
         , &[_][]const u8{
@@ -57,7 +57,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("argument causes error", .{});
+        const case = ctx.obj("argument causes error", b.host);
 
         case.addError(
             \\pub export fn entry() void {
@@ -80,7 +80,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("astgen failure in file struct", .{});
+        const case = ctx.obj("astgen failure in file struct", b.host);
 
         case.addError(
             \\pub export fn entry() void {
@@ -95,7 +95,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("invalid store to comptime field", .{});
+        const case = ctx.obj("invalid store to comptime field", b.host);
 
         case.addError(
             \\const a = @import("a.zig");
@@ -119,7 +119,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("file in multiple modules", .{});
+        const case = ctx.obj("file in multiple modules", b.host);
         case.addDepModule("foo", "foo.zig");
 
         case.addError(
@@ -129,7 +129,7 @@ pub fn addCases(ctx: *Cases) !void {
             \\}
         , &[_][]const u8{
             ":1:1: error: file exists in multiple modules",
-            ":1:1: note: root of module root.foo",
+            ":1:1: note: root of module foo",
             ":3:17: note: imported from module root",
         });
         case.addSourceFile("foo.zig",
@@ -138,7 +138,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("wrong same named struct", .{});
+        const case = ctx.obj("wrong same named struct", b.host);
 
         case.addError(
             \\const a = @import("a.zig");
@@ -172,7 +172,7 @@ pub fn addCases(ctx: *Cases) !void {
     }
 
     {
-        const case = ctx.obj("non-printable invalid character", .{});
+        const case = ctx.obj("non-printable invalid character", b.host);
 
         case.addError("\xff\xfe" ++
             \\export fn foo() bool {
@@ -182,5 +182,39 @@ pub fn addCases(ctx: *Cases) !void {
             ":1:1: error: expected type expression, found 'invalid bytes'",
             ":1:1: note: invalid byte: '\\xff'",
         });
+    }
+
+    {
+        const case = ctx.obj("imported generic method call with invalid param", b.host);
+
+        case.addError(
+            \\pub const import = @import("import.zig");
+            \\
+            \\export fn callComptimeBoolFunctionWithRuntimeBool(x: bool) void {
+            \\    import.comptimeBoolFunction(x);
+            \\}
+            \\
+            \\export fn callComptimeAnytypeFunctionWithRuntimeBool(x: bool) void {
+            \\    import.comptimeAnytypeFunction(x);
+            \\}
+            \\
+            \\export fn callAnytypeFunctionWithRuntimeComptimeOnlyType(x: u32) void {
+            \\    const S = struct { x: u32, y: type };
+            \\    import.anytypeFunction(S{ .x = x, .y = u32 });
+            \\}
+        , &[_][]const u8{
+            ":4:33: error: runtime-known argument passed to comptime parameter",
+            ":1:38: note: declared comptime here",
+            ":8:36: error: runtime-known argument passed to comptime parameter",
+            ":2:41: note: declared comptime here",
+            ":13:32: error: unable to resolve comptime value",
+            ":13:32: note: initializer of comptime only struct must be comptime-known",
+        });
+
+        case.addSourceFile("import.zig",
+            \\pub fn comptimeBoolFunction(comptime _: bool) void {}
+            \\pub fn comptimeAnytypeFunction(comptime _: anytype) void {}
+            \\pub fn anytypeFunction(_: anytype) void {}
+        );
     }
 }

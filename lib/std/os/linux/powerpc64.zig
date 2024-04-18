@@ -3,8 +3,8 @@ const maxInt = std.math.maxInt;
 const linux = std.os.linux;
 const SYS = linux.SYS;
 const socklen_t = linux.socklen_t;
-const iovec = std.os.iovec;
-const iovec_const = std.os.iovec_const;
+const iovec = std.posix.iovec;
+const iovec_const = std.posix.iovec_const;
 const uid_t = linux.uid_t;
 const gid_t = linux.gid_t;
 const pid_t = linux.pid_t;
@@ -20,7 +20,7 @@ pub fn syscall0(number: SYS) usize {
         \\ neg 3, 3
         \\ 1:
         : [ret] "={r3}" (-> usize),
-        : [number] "{r0}" (@enumToInt(number)),
+        : [number] "{r0}" (@intFromEnum(number)),
         : "memory", "cr0", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"
     );
 }
@@ -32,7 +32,7 @@ pub fn syscall1(number: SYS, arg1: usize) usize {
         \\ neg 3, 3
         \\ 1:
         : [ret] "={r3}" (-> usize),
-        : [number] "{r0}" (@enumToInt(number)),
+        : [number] "{r0}" (@intFromEnum(number)),
           [arg1] "{r3}" (arg1),
         : "memory", "cr0", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"
     );
@@ -45,7 +45,7 @@ pub fn syscall2(number: SYS, arg1: usize, arg2: usize) usize {
         \\ neg 3, 3
         \\ 1:
         : [ret] "={r3}" (-> usize),
-        : [number] "{r0}" (@enumToInt(number)),
+        : [number] "{r0}" (@intFromEnum(number)),
           [arg1] "{r3}" (arg1),
           [arg2] "{r4}" (arg2),
         : "memory", "cr0", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"
@@ -59,7 +59,7 @@ pub fn syscall3(number: SYS, arg1: usize, arg2: usize, arg3: usize) usize {
         \\ neg 3, 3
         \\ 1:
         : [ret] "={r3}" (-> usize),
-        : [number] "{r0}" (@enumToInt(number)),
+        : [number] "{r0}" (@intFromEnum(number)),
           [arg1] "{r3}" (arg1),
           [arg2] "{r4}" (arg2),
           [arg3] "{r5}" (arg3),
@@ -74,7 +74,7 @@ pub fn syscall4(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize)
         \\ neg 3, 3
         \\ 1:
         : [ret] "={r3}" (-> usize),
-        : [number] "{r0}" (@enumToInt(number)),
+        : [number] "{r0}" (@intFromEnum(number)),
           [arg1] "{r3}" (arg1),
           [arg2] "{r4}" (arg2),
           [arg3] "{r5}" (arg3),
@@ -90,7 +90,7 @@ pub fn syscall5(number: SYS, arg1: usize, arg2: usize, arg3: usize, arg4: usize,
         \\ neg 3, 3
         \\ 1:
         : [ret] "={r3}" (-> usize),
-        : [number] "{r0}" (@enumToInt(number)),
+        : [number] "{r0}" (@intFromEnum(number)),
           [arg1] "{r3}" (arg1),
           [arg2] "{r4}" (arg2),
           [arg3] "{r5}" (arg3),
@@ -115,7 +115,7 @@ pub fn syscall6(
         \\ neg 3, 3
         \\ 1:
         : [ret] "={r3}" (-> usize),
-        : [number] "{r0}" (@enumToInt(number)),
+        : [number] "{r0}" (@intFromEnum(number)),
           [arg1] "{r3}" (arg1),
           [arg2] "{r4}" (arg2),
           [arg3] "{r5}" (arg3),
@@ -133,36 +133,14 @@ pub extern fn clone(func: CloneFn, stack: usize, flags: usize, arg: usize, ptid:
 
 pub const restore = restore_rt;
 
-pub fn restore_rt() callconv(.Naked) void {
-    return asm volatile ("sc"
+pub fn restore_rt() callconv(.Naked) noreturn {
+    asm volatile (
+        \\ sc
         :
-        : [number] "{r0}" (@enumToInt(SYS.rt_sigreturn)),
+        : [number] "{r0}" (@intFromEnum(SYS.rt_sigreturn)),
         : "memory", "cr0", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"
     );
 }
-
-pub const O = struct {
-    pub const CREAT = 0o100;
-    pub const EXCL = 0o200;
-    pub const NOCTTY = 0o400;
-    pub const TRUNC = 0o1000;
-    pub const APPEND = 0o2000;
-    pub const NONBLOCK = 0o4000;
-    pub const DSYNC = 0o10000;
-    pub const SYNC = 0o4010000;
-    pub const RSYNC = 0o4010000;
-    pub const DIRECTORY = 0o40000;
-    pub const NOFOLLOW = 0o100000;
-    pub const CLOEXEC = 0o2000000;
-
-    pub const ASYNC = 0o20000;
-    pub const DIRECT = 0o400000;
-    pub const LARGEFILE = 0o200000;
-    pub const NOATIME = 0o1000000;
-    pub const PATH = 0o10000000;
-    pub const TMPFILE = 0o20200000;
-    pub const NDELAY = NONBLOCK;
-};
 
 pub const F = struct {
     pub const DUPFD = 0;
@@ -195,19 +173,6 @@ pub const LOCK = struct {
     pub const EX = 2;
     pub const UN = 8;
     pub const NB = 4;
-};
-
-pub const MAP = struct {
-    /// stack-like segment
-    pub const GROWSDOWN = 0x0100;
-    /// ETXTBSY
-    pub const DENYWRITE = 0x0800;
-    /// mark it as an executable
-    pub const EXECUTABLE = 0x1000;
-    /// pages are locked
-    pub const LOCKED = 0x0080;
-    /// don't check for reservations
-    pub const NORESERVE = 0x0040;
 };
 
 pub const VDSO = struct {

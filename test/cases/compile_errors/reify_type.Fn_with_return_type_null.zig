@@ -1,14 +1,15 @@
 const Foo = @Type(.{
     .Fn = .{
         .calling_convention = .Unspecified,
-        .alignment = 0,
         .is_generic = false,
         .is_var_args = false,
         .return_type = null,
         .params = &.{},
     },
 });
-comptime { _ = Foo; }
+comptime {
+    _ = Foo;
+}
 
 // error
 // backend=stage2

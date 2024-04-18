@@ -6,6 +6,7 @@
 
 const std = @import("../std.zig");
 const math = std.math;
+const mem = std.mem;
 const expect = std.testing.expect;
 
 /// Returns the natural logarithm of 1 + x with greater accuracy when x is near zero.
@@ -33,8 +34,8 @@ fn log1p_32(x: f32) f32 {
     const Lg3: f32 = 0x91e9ee.0p-25;
     const Lg4: f32 = 0xf89e26.0p-26;
 
-    const u = @bitCast(u32, x);
-    var ix = u;
+    const u: u32 = @bitCast(x);
+    const ix = u;
     var k: i32 = 1;
     var f: f32 = undefined;
     var c: f32 = undefined;
@@ -56,7 +57,7 @@ fn log1p_32(x: f32) f32 {
         if ((ix << 1) < (0x33800000 << 1)) {
             // underflow if subnormal
             if (ix & 0x7F800000 == 0) {
-                math.doNotOptimizeAway(x * x);
+                mem.doNotOptimizeAway(x * x);
             }
             return x;
         }
@@ -72,9 +73,9 @@ fn log1p_32(x: f32) f32 {
 
     if (k != 0) {
         const uf = 1 + x;
-        var iu = @bitCast(u32, uf);
+        var iu = @as(u32, @bitCast(uf));
         iu += 0x3F800000 - 0x3F3504F3;
-        k = @intCast(i32, iu >> 23) - 0x7F;
+        k = @as(i32, @intCast(iu >> 23)) - 0x7F;
 
         // correction to avoid underflow in c / u
         if (k < 25) {
@@ -86,7 +87,7 @@ fn log1p_32(x: f32) f32 {
 
         // u into [sqrt(2)/2, sqrt(2)]
         iu = (iu & 0x007FFFFF) + 0x3F3504F3;
-        f = @bitCast(f32, iu) - 1;
+        f = @as(f32, @bitCast(iu)) - 1;
     }
 
     const s = f / (2.0 + f);
@@ -96,7 +97,7 @@ fn log1p_32(x: f32) f32 {
     const t2 = z * (Lg1 + w * Lg3);
     const R = t2 + t1;
     const hfsq = 0.5 * f * f;
-    const dk = @intToFloat(f32, k);
+    const dk = @as(f32, @floatFromInt(k));
 
     return s * (hfsq + R) + (dk * ln2_lo + c) - hfsq + f + dk * ln2_hi;
 }
@@ -112,8 +113,8 @@ fn log1p_64(x: f64) f64 {
     const Lg6: f64 = 1.531383769920937332e-01;
     const Lg7: f64 = 1.479819860511658591e-01;
 
-    var ix = @bitCast(u64, x);
-    var hx = @intCast(u32, ix >> 32);
+    const ix: u64 = @bitCast(x);
+    const hx: u32 = @intCast(ix >> 32);
     var k: i32 = 1;
     var c: f64 = undefined;
     var f: f64 = undefined;
@@ -150,10 +151,10 @@ fn log1p_64(x: f64) f64 {
 
     if (k != 0) {
         const uf = 1 + x;
-        const hu = @bitCast(u64, uf);
-        var iu = @intCast(u32, hu >> 32);
+        const hu = @as(u64, @bitCast(uf));
+        var iu = @as(u32, @intCast(hu >> 32));
         iu += 0x3FF00000 - 0x3FE6A09E;
-        k = @intCast(i32, iu >> 20) - 0x3FF;
+        k = @as(i32, @intCast(iu >> 20)) - 0x3FF;
 
         // correction to avoid underflow in c / u
         if (k < 54) {
@@ -166,7 +167,7 @@ fn log1p_64(x: f64) f64 {
         // u into [sqrt(2)/2, sqrt(2)]
         iu = (iu & 0x000FFFFF) + 0x3FE6A09E;
         const iq = (@as(u64, iu) << 32) | (hu & 0xFFFFFFFF);
-        f = @bitCast(f64, iq) - 1;
+        f = @as(f64, @bitCast(iq)) - 1;
     }
 
     const hfsq = 0.5 * f * f;
@@ -176,17 +177,17 @@ fn log1p_64(x: f64) f64 {
     const t1 = w * (Lg2 + w * (Lg4 + w * Lg6));
     const t2 = z * (Lg1 + w * (Lg3 + w * (Lg5 + w * Lg7)));
     const R = t2 + t1;
-    const dk = @intToFloat(f64, k);
+    const dk = @as(f64, @floatFromInt(k));
 
     return s * (hfsq + R) + (dk * ln2_lo + c) - hfsq + f + dk * ln2_hi;
 }
 
-test "math.log1p" {
+test log1p {
     try expect(log1p(@as(f32, 0.0)) == log1p_32(0.0));
     try expect(log1p(@as(f64, 0.0)) == log1p_64(0.0));
 }
 
-test "math.log1p_32" {
+test log1p_32 {
     const epsilon = 0.000001;
 
     try expect(math.approxEqAbs(f32, log1p_32(0.0), 0.0, epsilon));
@@ -198,7 +199,7 @@ test "math.log1p_32" {
     try expect(math.approxEqAbs(f32, log1p_32(123123.234375), 11.720949, epsilon));
 }
 
-test "math.log1p_64" {
+test log1p_64 {
     const epsilon = 0.000001;
 
     try expect(math.approxEqAbs(f64, log1p_64(0.0), 0.0, epsilon));
@@ -210,19 +211,19 @@ test "math.log1p_64" {
     try expect(math.approxEqAbs(f64, log1p_64(123123.234375), 11.720949, epsilon));
 }
 
-test "math.log1p_32.special" {
+test "log1p_32.special" {
     try expect(math.isPositiveInf(log1p_32(math.inf(f32))));
-    try expect(log1p_32(0.0) == 0.0);
-    try expect(log1p_32(-0.0) == -0.0);
+    try expect(math.isPositiveZero(log1p_32(0.0)));
+    try expect(math.isNegativeZero(log1p_32(-0.0)));
     try expect(math.isNegativeInf(log1p_32(-1.0)));
     try expect(math.isNan(log1p_32(-2.0)));
     try expect(math.isNan(log1p_32(math.nan(f32))));
 }
 
-test "math.log1p_64.special" {
+test "log1p_64.special" {
     try expect(math.isPositiveInf(log1p_64(math.inf(f64))));
-    try expect(log1p_64(0.0) == 0.0);
-    try expect(log1p_64(-0.0) == -0.0);
+    try expect(math.isPositiveZero(log1p_64(0.0)));
+    try expect(math.isNegativeZero(log1p_64(-0.0)));
     try expect(math.isNegativeInf(log1p_64(-1.0)));
     try expect(math.isNan(log1p_64(-2.0)));
     try expect(math.isNan(log1p_64(math.nan(f64))));

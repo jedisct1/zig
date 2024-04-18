@@ -20,8 +20,8 @@ pub fn TrailerFlags(comptime Fields: type) type {
 
         pub const ActiveFields = std.enums.EnumFieldStruct(FieldEnum, bool, false);
         pub const FieldValues = blk: {
-            comptime var fields: [bit_count]Type.StructField = undefined;
-            inline for (@typeInfo(Fields).Struct.fields, 0..) |struct_field, i| {
+            var fields: [bit_count]Type.StructField = undefined;
+            for (@typeInfo(Fields).Struct.fields, 0..) |struct_field, i| {
                 fields[i] = Type.StructField{
                     .name = struct_field.name,
                     .type = ?struct_field.type,
@@ -32,7 +32,7 @@ pub fn TrailerFlags(comptime Fields: type) type {
             }
             break :blk @Type(.{
                 .Struct = .{
-                    .layout = .Auto,
+                    .layout = .auto,
                     .fields = &fields,
                     .decls = &.{},
                     .is_tuple = false,
@@ -43,7 +43,7 @@ pub fn TrailerFlags(comptime Fields: type) type {
         pub const Self = @This();
 
         pub fn has(self: Self, comptime field: FieldEnum) bool {
-            const field_index = @enumToInt(field);
+            const field_index = @intFromEnum(field);
             return (self.bits & (1 << field_index)) != 0;
         }
 
@@ -54,7 +54,7 @@ pub fn TrailerFlags(comptime Fields: type) type {
         }
 
         pub fn setFlag(self: *Self, comptime field: FieldEnum) void {
-            const field_index = @enumToInt(field);
+            const field_index = @intFromEnum(field);
             self.bits |= 1 << field_index;
         }
 
@@ -72,7 +72,7 @@ pub fn TrailerFlags(comptime Fields: type) type {
         pub fn setMany(self: Self, p: [*]align(@alignOf(Fields)) u8, fields: FieldValues) void {
             inline for (@typeInfo(Fields).Struct.fields, 0..) |field, i| {
                 if (@field(fields, field.name)) |value|
-                    self.set(p, @intToEnum(FieldEnum, i), value);
+                    self.set(p, @as(FieldEnum, @enumFromInt(i)), value);
             }
         }
 
@@ -89,32 +89,32 @@ pub fn TrailerFlags(comptime Fields: type) type {
             if (@sizeOf(Field(field)) == 0)
                 return undefined;
             const off = self.offset(field);
-            return @ptrCast(*Field(field), @alignCast(@alignOf(Field(field)), p + off));
+            return @ptrCast(@alignCast(p + off));
         }
 
         pub fn ptrConst(self: Self, p: [*]align(@alignOf(Fields)) const u8, comptime field: FieldEnum) *const Field(field) {
             if (@sizeOf(Field(field)) == 0)
                 return undefined;
             const off = self.offset(field);
-            return @ptrCast(*const Field(field), @alignCast(@alignOf(Field(field)), p + off));
+            return @ptrCast(@alignCast(p + off));
         }
 
         pub fn offset(self: Self, comptime field: FieldEnum) usize {
             var off: usize = 0;
             inline for (@typeInfo(Fields).Struct.fields, 0..) |field_info, i| {
                 const active = (self.bits & (1 << i)) != 0;
-                if (i == @enumToInt(field)) {
+                if (i == @intFromEnum(field)) {
                     assert(active);
-                    return mem.alignForwardGeneric(usize, off, @alignOf(field_info.type));
+                    return mem.alignForward(usize, off, @alignOf(field_info.type));
                 } else if (active) {
-                    off = mem.alignForwardGeneric(usize, off, @alignOf(field_info.type));
+                    off = mem.alignForward(usize, off, @alignOf(field_info.type));
                     off += @sizeOf(field_info.type);
                 }
             }
         }
 
         pub fn Field(comptime field: FieldEnum) type {
-            return @typeInfo(Fields).Struct.fields[@enumToInt(field)].type;
+            return @typeInfo(Fields).Struct.fields[@intFromEnum(field)].type;
         }
 
         pub fn sizeInBytes(self: Self) usize {
@@ -123,7 +123,7 @@ pub fn TrailerFlags(comptime Fields: type) type {
                 if (@sizeOf(field.type) == 0)
                     continue;
                 if ((self.bits & (1 << i)) != 0) {
-                    off = mem.alignForwardGeneric(usize, off, @alignOf(field.type));
+                    off = mem.alignForward(usize, off, @alignOf(field.type));
                     off += @sizeOf(field.type);
                 }
             }
@@ -132,7 +132,7 @@ pub fn TrailerFlags(comptime Fields: type) type {
     };
 }
 
-test "TrailerFlags" {
+test TrailerFlags {
     const Flags = TrailerFlags(struct {
         a: i32,
         b: bool,

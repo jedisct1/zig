@@ -1,6 +1,6 @@
 export fn entry() void {
-    var x: u32 = 0;
-    switch(x) {}
+    const x: u32 = 0;
+    switch (x) {}
 }
 
 // error

@@ -1,10 +1,10 @@
 const A = struct {
-    x : i32,
-    y : i32,
-    z : i32,
+    x: i32,
+    y: i32,
+    z: i32,
 };
 export fn f() void {
-    const a = A {
+    const a = A{
         .z = 1,
         .y = 2,
         .x = 3,
@@ -17,5 +17,6 @@ export fn f() void {
 // backend=stage2
 // target=native
 //
-// :11:10: error: duplicate field
-// :8:10: note: other field here
+// :8:10: error: duplicate struct field name
+// :11:10: note: duplicate name here
+// :7:16: note: struct declared here

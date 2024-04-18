@@ -2,17 +2,17 @@ const builtin = @import("builtin");
 const std = @import("../std.zig");
 const assert = std.debug.assert;
 const maxInt = std.math.maxInt;
-const iovec = std.os.iovec;
+const iovec = std.posix.iovec;
 
 extern "c" threadlocal var errno: c_int;
 pub fn _errno() *c_int {
     return &errno;
 }
 
-pub extern "c" fn getdents(fd: c_int, buf_ptr: [*]u8, nbytes: usize) usize;
+pub extern "c" fn getdents(fd: c_int, buf_ptr: [*]u8, nbytes: usize) c_int;
 pub extern "c" fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) c_int;
 pub extern "c" fn getrandom(buf_ptr: [*]u8, buf_len: usize, flags: c_uint) isize;
-pub extern "c" fn pipe2(fds: *[2]fd_t, flags: u32) c_int;
+pub extern "c" fn pipe2(fds: *[2]fd_t, flags: std.c.O) c_int;
 pub extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
 
 pub const dl_iterate_phdr_callback = *const fn (info: *dl_phdr_info, size: usize, data: ?*anyopaque) callconv(.C) c_int;
@@ -21,13 +21,6 @@ pub extern "c" fn dl_iterate_phdr(callback: dl_iterate_phdr_callback, data: ?*an
 pub extern "c" fn lwp_gettid() c_int;
 
 pub extern "c" fn posix_memalign(memptr: *?*anyopaque, alignment: usize, size: usize) c_int;
-
-pub const pthread_mutex_t = extern struct {
-    inner: ?*anyopaque = null,
-};
-pub const pthread_cond_t = extern struct {
-    inner: ?*anyopaque = null,
-};
 
 pub const pthread_attr_t = extern struct { // copied from freebsd
     __size: [56]u8,
@@ -54,6 +47,56 @@ pub const uid_t = u32;
 pub const gid_t = u32;
 pub const time_t = isize;
 pub const suseconds_t = c_long;
+
+pub const ucontext_t = extern struct {
+    sigmask: sigset_t,
+    mcontext: mcontext_t,
+    link: ?*ucontext_t,
+    stack: stack_t,
+    cofunc: ?*fn (?*ucontext_t, ?*anyopaque) void,
+    arg: ?*void,
+    _spare: [4]c_int,
+};
+
+pub const mcontext_t = extern struct {
+    onstack: register_t, // XXX - sigcontext compat.
+    rdi: register_t,
+    rsi: register_t,
+    rdx: register_t,
+    rcx: register_t,
+    r8: register_t,
+    r9: register_t,
+    rax: register_t,
+    rbx: register_t,
+    rbp: register_t,
+    r10: register_t,
+    r11: register_t,
+    r12: register_t,
+    r13: register_t,
+    r14: register_t,
+    r15: register_t,
+    xflags: register_t,
+    trapno: register_t,
+    addr: register_t,
+    flags: register_t,
+    err: register_t,
+    rip: register_t,
+    cs: register_t,
+    rflags: register_t,
+    rsp: register_t, // machine state
+    ss: register_t,
+
+    len: c_uint, // sizeof(mcontext_t)
+    fpformat: c_uint,
+    ownedfp: c_uint,
+    reserved: c_uint,
+    unused: [8]c_uint,
+
+    // NOTE! 64-byte aligned as of here. Also must match savefpu structure.
+    fpregs: [256]c_int align(64),
+};
+
+pub const register_t = isize;
 
 pub const E = enum(u16) {
     /// No error occurred.
@@ -169,28 +212,6 @@ pub const PROT = struct {
     pub const EXEC = 4;
 };
 
-pub const MAP = struct {
-    pub const FILE = 0;
-    pub const FAILED = @intToPtr(*anyopaque, maxInt(usize));
-    pub const ANONYMOUS = ANON;
-    pub const COPY = PRIVATE;
-    pub const SHARED = 1;
-    pub const PRIVATE = 2;
-    pub const FIXED = 16;
-    pub const RENAME = 32;
-    pub const NORESERVE = 64;
-    pub const INHERIT = 128;
-    pub const NOEXTEND = 256;
-    pub const HASSEMAPHORE = 512;
-    pub const STACK = 1024;
-    pub const NOSYNC = 2048;
-    pub const ANON = 4096;
-    pub const VPAGETABLE = 8192;
-    pub const TRYFIXED = 65536;
-    pub const NOCORE = 131072;
-    pub const SIZEALIGN = 262144;
-};
-
 pub const MSF = struct {
     pub const ASYNC = 1;
     pub const INVALIDATE = 2;
@@ -207,7 +228,7 @@ pub const W = struct {
     pub const TRAPPED = 0x0020;
 
     pub fn EXITSTATUS(s: u32) u8 {
-        return @intCast(u8, (s & 0xff00) >> 8);
+        return @as(u8, @intCast((s & 0xff00) >> 8));
     }
     pub fn TERMSIG(s: u32) u32 {
         return s & 0x7f;
@@ -219,7 +240,7 @@ pub const W = struct {
         return TERMSIG(s) == 0;
     }
     pub fn IFSTOPPED(s: u32) bool {
-        return @truncate(u16, (((s & 0xffff) *% 0x10001) >> 8)) > 0x7f00;
+        return @as(u16, @truncate((((s & 0xffff) *% 0x10001) >> 8))) > 0x7f00;
     }
     pub fn IFSIGNALED(s: u32) bool {
         return (s & 0xffff) -% 1 < 0xff;
@@ -362,35 +383,6 @@ pub const X_OK = 1; // test for execute or search permission
 pub const W_OK = 2; // test for write permission
 pub const R_OK = 4; // test for read permission
 
-pub const O = struct {
-    pub const RDONLY = 0;
-    pub const NDELAY = NONBLOCK;
-    pub const WRONLY = 1;
-    pub const RDWR = 2;
-    pub const ACCMODE = 3;
-    pub const NONBLOCK = 4;
-    pub const APPEND = 8;
-    pub const SHLOCK = 16;
-    pub const EXLOCK = 32;
-    pub const ASYNC = 64;
-    pub const FSYNC = 128;
-    pub const SYNC = 128;
-    pub const NOFOLLOW = 256;
-    pub const CREAT = 512;
-    pub const TRUNC = 1024;
-    pub const EXCL = 2048;
-    pub const NOCTTY = 32768;
-    pub const DIRECT = 65536;
-    pub const CLOEXEC = 131072;
-    pub const FBLOCKING = 262144;
-    pub const FNONBLOCKING = 524288;
-    pub const FAPPEND = 1048576;
-    pub const FOFFSET = 2097152;
-    pub const FSYNCWRITE = 4194304;
-    pub const FASYNCWRITE = 8388608;
-    pub const DIRECTORY = 134217728;
-};
-
 pub const SEEK = struct {
     pub const SET = 0;
     pub const CUR = 1;
@@ -426,24 +418,16 @@ pub const F = struct {
 
 pub const FD_CLOEXEC = 1;
 
-pub const AT = struct {
-    pub const FDCWD = -328243;
-    pub const SYMLINK_NOFOLLOW = 1;
-    pub const REMOVEDIR = 2;
-    pub const EACCESS = 4;
-    pub const SYMLINK_FOLLOW = 8;
-};
-
 pub const dirent = extern struct {
-    d_fileno: c_ulong,
-    d_namlen: u16,
-    d_type: u8,
-    d_unused1: u8,
-    d_unused2: u32,
-    d_name: [256]u8,
+    fileno: c_ulong,
+    namlen: u16,
+    type: u8,
+    unused1: u8,
+    unused2: u32,
+    name: [256]u8,
 
     pub fn reclen(self: dirent) u16 {
-        return (@offsetOf(dirent, "d_name") + self.d_namlen + 1 + 7) & ~@as(u16, 7);
+        return (@offsetOf(dirent, "name") + self.namlen + 1 + 7) & ~@as(u16, 7);
     }
 };
 
@@ -510,6 +494,12 @@ pub const sockaddr = extern struct {
         addr: [16]u8,
         scope_id: u32,
     };
+
+    pub const un = extern struct {
+        len: u8 = @sizeOf(un),
+        family: sa_family_t = AF.UNIX,
+        path: [104]u8,
+    };
 };
 
 pub const Kevent = extern struct {
@@ -573,6 +563,13 @@ pub const NOTE_FFCTRLMASK = 3221225472;
 pub const NOTE_FFCOPY = 3221225472;
 pub const NOTE_PCTRLMASK = 4026531840;
 
+pub const TCSA = enum(c_uint) {
+    NOW,
+    DRAIN,
+    FLUSH,
+    _,
+};
+
 pub const stack_t = extern struct {
     sp: [*]u8,
     size: isize,
@@ -619,9 +616,9 @@ pub const S = struct {
 pub const BADSIG = SIG.ERR;
 
 pub const SIG = struct {
-    pub const DFL = @intToPtr(?Sigaction.handler_fn, 0);
-    pub const IGN = @intToPtr(?Sigaction.handler_fn, 1);
-    pub const ERR = @intToPtr(?Sigaction.handler_fn, maxInt(usize));
+    pub const DFL: ?Sigaction.handler_fn = @ptrFromInt(0);
+    pub const IGN: ?Sigaction.handler_fn = @ptrFromInt(1);
+    pub const ERR: ?Sigaction.handler_fn = @ptrFromInt(maxInt(usize));
 
     pub const BLOCK = 1;
     pub const UNBLOCK = 2;
@@ -671,7 +668,7 @@ pub const siginfo_t = extern struct {
     pid: c_int,
     uid: uid_t,
     status: c_int,
-    addr: ?*anyopaque,
+    addr: *allowzero anyopaque,
     value: sigval,
     band: c_long,
     __spare__: [7]c_int,
@@ -693,8 +690,8 @@ pub const empty_sigset = sigset_t{ .__bits = [_]c_uint{0} ** _SIG_WORDS };
 pub const sig_atomic_t = c_int;
 
 pub const Sigaction = extern struct {
-    pub const handler_fn = *const fn (c_int) align(1) callconv(.C) void;
-    pub const sigaction_fn = *const fn (c_int, *const siginfo_t, ?*const anyopaque) callconv(.C) void;
+    pub const handler_fn = *align(1) const fn (i32) callconv(.C) void;
+    pub const sigaction_fn = *const fn (i32, *const siginfo_t, ?*anyopaque) callconv(.C) void;
 
     /// signal handler
     handler: extern union {
@@ -705,7 +702,7 @@ pub const Sigaction = extern struct {
     mask: sigset_t,
 };
 
-pub const sig_t = *const fn (c_int) callconv(.C) void;
+pub const sig_t = *const fn (i32) callconv(.C) void;
 
 pub const SOCK = struct {
     pub const STREAM = 1;
@@ -847,6 +844,8 @@ pub const EAI = enum(c_int) {
     _,
 };
 
+pub const IFNAMESIZE = 16;
+
 pub const AI = struct {
     pub const PASSIVE = 0x00000001;
     pub const CANONNAME = 0x00000002;
@@ -870,10 +869,10 @@ pub const RTLD = struct {
     pub const NODELETE = 0x01000;
     pub const NOLOAD = 0x02000;
 
-    pub const NEXT = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -1)));
-    pub const DEFAULT = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -2)));
-    pub const SELF = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -3)));
-    pub const ALL = @intToPtr(*anyopaque, @bitCast(usize, @as(isize, -4)));
+    pub const NEXT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -1)))));
+    pub const DEFAULT = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -2)))));
+    pub const SELF = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -3)))));
+    pub const ALL = @as(*anyopaque, @ptrFromInt(@as(usize, @bitCast(@as(isize, -4)))));
 };
 
 pub const dl_phdr_info = extern struct {
@@ -1142,21 +1141,4 @@ pub const POLL = struct {
     pub const ERR = 0x0008;
     pub const HUP = 0x0010;
     pub const NVAL = 0x0020;
-};
-
-pub const SIGEV = struct {
-    pub const NONE = 0;
-    pub const SIGNAL = 1;
-    pub const THREAD = 2;
-};
-
-pub const sigevent = extern struct {
-    sigev_notify: c_int,
-    __sigev_u: extern union {
-        __sigev_signo: c_int,
-        __sigev_notify_kqueue: c_int,
-        __sigev_notify_attributes: ?*pthread_attr_t,
-    },
-    sigev_value: sigval,
-    sigev_notify_function: ?*const fn (sigval) callconv(.C) void,
 };

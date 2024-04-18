@@ -333,6 +333,14 @@ const known_options = [_]KnownOpt{
         .ident = "no_function_sections",
     },
     .{
+        .name = "fdata-sections",
+        .ident = "data_sections",
+    },
+    .{
+        .name = "fno-data-sections",
+        .ident = "no_data_sections",
+    },
+    .{
         .name = "fbuiltin",
         .ident = "builtin",
     },
@@ -520,6 +528,14 @@ const known_options = [_]KnownOpt{
         .name = "x",
         .ident = "x",
     },
+    .{
+        .name = "ObjC",
+        .ident = "force_load_objc",
+    },
+    .{
+        .name = "municode",
+        .ident = "mingw_unicode_entry_point",
+    },
 };
 
 const blacklisted_options = [_][]const u8{};
@@ -591,7 +607,7 @@ pub fn main() anyerror!void {
 
         for (all_features, 0..) |feat, i| {
             const llvm_name = feat.llvm_name orelse continue;
-            const zig_feat = @intToEnum(Feature, i);
+            const zig_feat = @as(Feature, @enumFromInt(i));
             const zig_name = @tagName(zig_feat);
             try llvm_to_zig_cpu_features.put(llvm_name, zig_name);
         }
@@ -605,7 +621,7 @@ pub fn main() anyerror!void {
         try std.fmt.allocPrint(allocator, "-I={s}/clang/include/clang/Driver", .{llvm_src_root}),
     };
 
-    const child_result = try std.ChildProcess.exec(.{
+    const child_result = try std.ChildProcess.run(.{
         .allocator = allocator,
         .argv = &child_args,
         .max_output_bytes = 100 * 1024 * 1024,
@@ -624,9 +640,9 @@ pub fn main() anyerror!void {
         },
     };
 
-    var parser = json.Parser.init(allocator, .alloc_if_needed);
-    const tree = try parser.parse(json_text);
-    const root_map = &tree.root.object;
+    const parsed = try json.parseFromSlice(json.Value, allocator, json_text, .{});
+    defer parsed.deinit();
+    const root_map = &parsed.value.object;
 
     var all_objects = std.ArrayList(*json.ObjectMap).init(allocator);
     {
@@ -646,7 +662,7 @@ pub fn main() anyerror!void {
     }
     // Some options have multiple matches. As an example, "-Wl,foo" matches both
     // "W" and "Wl,". So we sort this list in order of descending priority.
-    std.sort.sort(*json.ObjectMap, all_objects.items, {}, objectLessThan);
+    std.mem.sort(*json.ObjectMap, all_objects.items, {}, objectLessThan);
 
     var buffered_stdout = std.io.bufferedWriter(std.io.getStdOut().writer());
     const stdout = buffered_stdout.writer();
@@ -790,7 +806,7 @@ const Syntax = union(enum) {
 };
 
 fn objSyntax(obj: *json.ObjectMap) ?Syntax {
-    const num_args = @intCast(u8, obj.get("NumArgs").?.integer);
+    const num_args = @as(u8, @intCast(obj.get("NumArgs").?.integer));
     for (obj.get("!superclasses").?.array.items) |superclass_json| {
         const superclass = superclass_json.string;
         if (std.mem.eql(u8, superclass, "Joined")) {

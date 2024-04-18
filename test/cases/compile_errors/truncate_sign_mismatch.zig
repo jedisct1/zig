@@ -1,18 +1,18 @@
 export fn entry1() i8 {
     var x: u32 = 10;
-    return @truncate(i8, x);
+    return @truncate((&x).*);
 }
 export fn entry2() u8 {
     var x: i32 = -10;
-    return @truncate(u8, x);
+    return @truncate((&x).*);
 }
 export fn entry3() i8 {
     comptime var x: u32 = 10;
-    return @truncate(i8, x);
+    return @truncate((&x).*);
 }
 export fn entry4() u8 {
     comptime var x: i32 = -10;
-    return @truncate(u8, x);
+    return @truncate((&x).*);
 }
 
 // error
