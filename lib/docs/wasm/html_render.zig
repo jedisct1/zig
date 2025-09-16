@@ -395,8 +395,5 @@ fn unindent(s: []const u8, indent: usize) []const u8 {
 
 pub fn resolveDeclLink(decl_index: Decl.Index, out: *ArrayList(u8)) Oom!void {
     const decl = decl_index.get();
-    switch (decl.categorize()) {
-        .alias => |alias_decl| try alias_decl.get().fqn(out),
-        else => try decl.fqn(out),
-    }
+    try decl.fqn(out);
 }
