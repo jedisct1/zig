@@ -18933,6 +18933,104 @@ fn addToInferredErrorSetPtr(sema: *Sema, ies: *InferredErrorSet, op_ty: Type) !v
     }
 }
 
+fn isPointerToStackAllocation(sema: *Sema, ptr: Air.Inst.Ref) CompileError!bool {
+    const inst = ptr.toIndex() orelse return false;
+    const tag = sema.air_instructions.items(.tag)[@intFromEnum(inst)];
+
+    // Simple: Any .alloc instruction that isn't ret_ptr is a stack allocation
+    if (tag == .alloc) {
+        // This should catch local variable allocations
+        return true;
+    }
+
+    // These are safe - not stack allocations
+    if (tag == .ret_ptr or tag == .arg) {
+        return false;
+    }
+
+    // For derived pointers, recursively check the source
+    const data = sema.air_instructions.items(.data)[@intFromEnum(inst)];
+
+    return switch (tag) {
+        // Simple ty_op instructions - check the operand
+        .bitcast,
+        .optional_payload_ptr,
+        .unwrap_errunion_payload_ptr,
+        .array_to_slice,
+        .struct_field_ptr_index_0,
+        .struct_field_ptr_index_1,
+        .struct_field_ptr_index_2,
+        .struct_field_ptr_index_3,
+        => try sema.isPointerToStackAllocation(data.ty_op.operand),
+
+        // Instructions with binary operands in extra data
+        .ptr_elem_ptr, .ptr_add, .ptr_sub => blk: {
+            const tmp_air = sema.getTmpAir();
+            const bin = tmp_air.extraData(Air.Bin, data.ty_pl.payload).data;
+            break :blk try sema.isPointerToStackAllocation(bin.lhs);
+        },
+
+        // Struct field pointer needs special handling
+        .struct_field_ptr => blk: {
+            const tmp_air = sema.getTmpAir();
+            const extra = tmp_air.extraData(Air.StructField, data.ty_pl.payload).data;
+            break :blk try sema.isPointerToStackAllocation(extra.struct_operand);
+        },
+
+        else => false,
+    };
+}
+
+fn isSliceToStackAllocation(sema: *Sema, slice_ref: Air.Inst.Ref) CompileError!bool {
+    const inst = slice_ref.toIndex() orelse return false;
+    const tag = sema.air_instructions.items(.tag)[@intFromEnum(inst)];
+    const data = sema.air_instructions.items(.data)[@intFromEnum(inst)];
+
+    return switch (tag) {
+        // Slice creation from pointer + length
+        .slice => blk: {
+            const tmp_air = sema.getTmpAir();
+            const bin = tmp_air.extraData(Air.Bin, data.ty_pl.payload).data;
+            // Check if the pointer part points to stack
+            const ptr = bin.lhs;
+            // Always check the pointer, not just when it's a load
+            break :blk try sema.isPointerToStackAllocation(ptr);
+        },
+
+        // Array to slice conversion - check the array pointer
+        .array_to_slice => try sema.isPointerToStackAllocation(data.ty_op.operand),
+
+        // Getting pointer from a slice - recursively check the slice
+        .slice_ptr => try sema.isSliceToStackAllocation(data.ty_op.operand),
+
+        // Getting pointer to slice element - check if source slice is stack-allocated
+        .slice_elem_ptr => blk: {
+            const bin_op = data.bin_op;
+            // The slice is in lhs, index is in rhs
+            break :blk try sema.isSliceToStackAllocation(bin_op.lhs);
+        },
+
+        // Getting value from slice element - check source slice
+        .slice_elem_val => blk: {
+            const bin_op = data.bin_op;
+            // The slice is in lhs, index is in rhs
+            break :blk try sema.isSliceToStackAllocation(bin_op.lhs);
+        },
+
+        // Getting internal slice pointers - check the source
+        .ptr_slice_ptr_ptr, .ptr_slice_len_ptr => blk: {
+            // These get internal fields of a slice
+            // The operand is a pointer to a slice, so we need to check if that points to stack
+            break :blk try sema.isPointerToStackAllocation(data.ty_op.operand);
+        },
+
+        // Safe cases
+        .arg => false,
+
+        else => false,
+    };
+}
+
 fn analyzeRet(
     sema: *Sema,
     block: *Block,
@@ -18948,6 +19046,20 @@ fn analyzeRet(
     if (sema.fn_ret_ty_ies != null and sema.fn_ret_ty.zigTypeTag(zcu) == .error_union) {
         try sema.addToInferredErrorSet(uncasted_operand);
     }
+
+    // Check for returning pointers or slices to stack-allocated memory
+    const operand_ty = sema.typeOf(uncasted_operand);
+    if (operand_ty.isSlice(zcu)) {
+        // Check if this is a slice of stack-allocated memory
+        if (try sema.isSliceToStackAllocation(uncasted_operand)) {
+            return sema.fail(block, operand_src, "cannot return slice of stack-allocated memory", .{});
+        }
+    } else if (operand_ty.isPtrAtRuntime(zcu)) {
+        if (try sema.isPointerToStackAllocation(uncasted_operand)) {
+            return sema.fail(block, operand_src, "cannot return pointer to stack-allocated memory", .{});
+        }
+    }
+
     const operand = sema.coerceExtra(block, sema.fn_ret_ty, uncasted_operand, operand_src, .{ .is_ret = true }) catch |err| switch (err) {
         error.NotCoercible => unreachable,
         else => |e| return e,
@@ -30230,6 +30342,7 @@ fn storePtr2(
         return sema.fail(block, ptr_src, "cannot assign to constant", .{});
 
     const elem_ty = ptr_ty.childType(zcu);
+
 
     // To generate better code for tuples, we detect a tuple operand here, and
     // analyze field loads and stores directly. This avoids an extra allocation + memcpy
