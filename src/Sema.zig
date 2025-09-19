@@ -18936,22 +18936,12 @@ fn addToInferredErrorSetPtr(sema: *Sema, ies: *InferredErrorSet, op_ty: Type) !v
 fn isPointerToStackAllocation(sema: *Sema, ptr: Air.Inst.Ref) CompileError!bool {
     const inst = ptr.toIndex() orelse return false;
     const tag = sema.air_instructions.items(.tag)[@intFromEnum(inst)];
-
-    // Simple: Any .alloc instruction that isn't ret_ptr is a stack allocation
-    if (tag == .alloc) {
-        // This should catch local variable allocations
-        return true;
-    }
-
-    // These are safe - not stack allocations
-    if (tag == .ret_ptr or tag == .arg) {
-        return false;
-    }
-
-    // For derived pointers, recursively check the source
     const data = sema.air_instructions.items(.data)[@intFromEnum(inst)];
 
     return switch (tag) {
+        .alloc => true,
+        .ret_ptr, .arg => false,
+
         // Simple ty_op instructions - check the operand
         .bitcast,
         .optional_payload_ptr,
@@ -18970,7 +18960,7 @@ fn isPointerToStackAllocation(sema: *Sema, ptr: Air.Inst.Ref) CompileError!bool 
             break :blk try sema.isPointerToStackAllocation(bin.lhs);
         },
 
-        // Struct field pointer needs special handling
+        // Struct field pointer
         .struct_field_ptr => blk: {
             const tmp_air = sema.getTmpAir();
             const extra = tmp_air.extraData(Air.StructField, data.ty_pl.payload).data;
@@ -18987,45 +18977,24 @@ fn isSliceToStackAllocation(sema: *Sema, slice_ref: Air.Inst.Ref) CompileError!b
     const data = sema.air_instructions.items(.data)[@intFromEnum(inst)];
 
     return switch (tag) {
+        .arg => false,
+
         // Slice creation from pointer + length
         .slice => blk: {
             const tmp_air = sema.getTmpAir();
             const bin = tmp_air.extraData(Air.Bin, data.ty_pl.payload).data;
-            // Check if the pointer part points to stack
-            const ptr = bin.lhs;
-            // Always check the pointer, not just when it's a load
-            break :blk try sema.isPointerToStackAllocation(ptr);
+            break :blk try sema.isPointerToStackAllocation(bin.lhs);
         },
 
-        // Array to slice conversion - check the array pointer
+        // Array to slice conversion
         .array_to_slice => try sema.isPointerToStackAllocation(data.ty_op.operand),
 
-        // Getting pointer from a slice - recursively check the slice
+        // Recursive slice operations
         .slice_ptr => try sema.isSliceToStackAllocation(data.ty_op.operand),
+        .slice_elem_ptr, .slice_elem_val => try sema.isSliceToStackAllocation(data.bin_op.lhs),
 
-        // Getting pointer to slice element - check if source slice is stack-allocated
-        .slice_elem_ptr => blk: {
-            const bin_op = data.bin_op;
-            // The slice is in lhs, index is in rhs
-            break :blk try sema.isSliceToStackAllocation(bin_op.lhs);
-        },
-
-        // Getting value from slice element - check source slice
-        .slice_elem_val => blk: {
-            const bin_op = data.bin_op;
-            // The slice is in lhs, index is in rhs
-            break :blk try sema.isSliceToStackAllocation(bin_op.lhs);
-        },
-
-        // Getting internal slice pointers - check the source
-        .ptr_slice_ptr_ptr, .ptr_slice_len_ptr => blk: {
-            // These get internal fields of a slice
-            // The operand is a pointer to a slice, so we need to check if that points to stack
-            break :blk try sema.isPointerToStackAllocation(data.ty_op.operand);
-        },
-
-        // Safe cases
-        .arg => false,
+        // Internal slice field pointers
+        .ptr_slice_ptr_ptr, .ptr_slice_len_ptr => try sema.isPointerToStackAllocation(data.ty_op.operand),
 
         else => false,
     };
@@ -30342,7 +30311,6 @@ fn storePtr2(
         return sema.fail(block, ptr_src, "cannot assign to constant", .{});
 
     const elem_ty = ptr_ty.childType(zcu);
-
 
     // To generate better code for tuples, we detect a tuple operand here, and
     // analyze field loads and stores directly. This avoids an extra allocation + memcpy
