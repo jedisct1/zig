@@ -5314,7 +5314,7 @@ fn airAggregateInit(cg: *CodeGen, inst: Air.Inst.Index) InnerError!void {
     };
 
     if (elements.len <= Air.Liveness.bpi - 1) {
-        var buf = [1]Air.Inst.Ref{.none} ** (Air.Liveness.bpi - 1);
+        var buf = @as([(Air.Liveness.bpi - 1)]Air.Inst.Ref, @splat(.none));
         @memcpy(buf[0..elements.len], elements);
         return cg.finishAir(inst, result, &buf);
     }

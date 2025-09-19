@@ -498,11 +498,29 @@ fn renderExpression(r: *Render, node: Ast.Node.Index, space: Space) Error!void {
             ais.popIndent();
         },
 
+        .array_mult => {
+            const lhs, const rhs = tree.nodeData(node).node_and_node;
+
+            if (try canTransformArrayRepetition(r, lhs)) {
+                try renderArrayRepetitionAsSplat(r, lhs, rhs, space);
+            } else {
+                try renderExpression(r, lhs, .space);
+                const op_token = tree.nodeMainToken(node);
+                try ais.pushIndent(.binop);
+                if (tree.tokensOnSameLine(op_token, op_token + 1)) {
+                    try renderToken(r, op_token, .space);
+                } else {
+                    try renderToken(r, op_token, .newline);
+                }
+                try renderExpression(r, rhs, space);
+                ais.popIndent();
+            }
+        },
+
         .add,
         .add_wrap,
         .add_sat,
         .array_cat,
-        .array_mult,
         .bang_equal,
         .bit_and,
         .bit_or,
@@ -2290,6 +2308,60 @@ fn renderArrayInit(
 
     ais.popIndent();
     return renderToken(r, rbrace, space); // rbrace
+}
+
+fn canTransformArrayRepetition(r: *Render, lhs_node: Ast.Node.Index) Error!bool {
+    const tree = r.tree;
+
+    var elements: [2]Ast.Node.Index = undefined;
+    const array_init = tree.fullArrayInit(&elements, lhs_node) orelse return false;
+
+    if (array_init.ast.elements.len != 1) return false;
+
+    const type_expr = array_init.ast.type_expr.unwrap() orelse return false;
+    const type_tag = tree.nodeTag(type_expr);
+
+    return type_tag == .array_type or type_tag == .array_type_sentinel;
+}
+
+fn renderArrayRepetitionAsSplat(
+    r: *Render,
+    lhs_node: Ast.Node.Index,
+    rhs_node: Ast.Node.Index,
+    space: Space,
+) Error!void {
+    const tree = r.tree;
+    const ais = r.ais;
+
+    var elements: [2]Ast.Node.Index = undefined;
+    const array_init = tree.fullArrayInit(&elements, lhs_node).?;
+    const value_node = array_init.ast.elements[0];
+
+    const type_expr = array_init.ast.type_expr.unwrap().?;
+    const array_type = tree.fullArrayType(type_expr).?;
+
+    try ais.writeAll("@as([");
+    try renderExpression(r, rhs_node, .none);
+    try ais.writeAll("]");
+    try renderExpression(r, array_type.ast.elem_type, .none);
+    try ais.writeAll(", @splat(");
+    try renderExpression(r, value_node, .none);
+    try ais.writeAll("))");
+
+    switch (space) {
+        .none, .skip => {},
+        .space => try ais.writeAll(" "),
+        .newline => try ais.insertNewline(),
+        .comma => {
+            try ais.writeAll(",");
+            try ais.insertNewline();
+        },
+        .comma_space => try ais.writeAll(", "),
+        .semicolon => {
+            try ais.writeAll(";");
+            try ais.insertNewline();
+        },
+    }
 }
 
 fn renderContainerDecl(

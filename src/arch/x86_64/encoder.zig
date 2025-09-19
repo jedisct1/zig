@@ -347,7 +347,7 @@ pub const Instruction = struct {
         var inst: Instruction = .{
             .prefix = prefix,
             .encoding = encoding,
-            .ops = [1]Operand{.none} ** 4,
+            .ops = @as([4]Operand, @splat(.none)),
         };
         @memcpy(inst.ops[0..ops.len], ops);
         return inst;

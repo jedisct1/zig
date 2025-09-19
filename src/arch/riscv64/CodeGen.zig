@@ -6507,7 +6507,7 @@ fn airAsm(func: *Func, inst: Air.Inst.Index) !void {
     }
 
     simple: {
-        var buf = [1]Air.Inst.Ref{.none} ** (Air.Liveness.bpi - 1);
+        var buf = @as([(Air.Liveness.bpi - 1)]Air.Inst.Ref, @splat(.none));
         var buf_index: usize = 0;
         for (outputs) |output| {
             if (output == .none) continue;
@@ -8117,7 +8117,7 @@ fn airAggregateInit(func: *Func, inst: Air.Inst.Index) !void {
     };
 
     if (elements.len <= Air.Liveness.bpi - 1) {
-        var buf = [1]Air.Inst.Ref{.none} ** (Air.Liveness.bpi - 1);
+        var buf = @as([(Air.Liveness.bpi - 1)]Air.Inst.Ref, @splat(.none));
         @memcpy(buf[0..elements.len], elements);
         return func.finishAir(inst, result, buf);
     }

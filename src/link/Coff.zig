@@ -278,10 +278,10 @@ pub fn createEmpty(
         .ptr_width = ptr_width,
         .page_size = page_size,
 
-        .data_directories = [1]coff_util.ImageDataDirectory{.{
+        .data_directories = @as([coff_util.IMAGE_NUMBEROF_DIRECTORY_ENTRIES]coff_util.ImageDataDirectory, @splat(.{
             .virtual_address = 0,
             .size = 0,
-        }} ** coff_util.IMAGE_NUMBEROF_DIRECTORY_ENTRIES,
+        })),
 
         .image_base = options.image_base orelse switch (output_mode) {
             .Exe => switch (target.cpu.arch) {
@@ -323,7 +323,7 @@ pub fn createEmpty(
 
     // Index 0 is always a null symbol.
     try coff.locals.append(gpa, .{
-        .name = [_]u8{0} ** 8,
+        .name = @as([8]u8, @splat(0)),
         .value = 0,
         .section_number = .UNDEFINED,
         .type = .{ .base_type = .NULL, .complex_type = .NULL },
@@ -708,7 +708,7 @@ pub fn allocateSymbol(coff: *Coff) !u32 {
     };
 
     coff.locals.items[index] = .{
-        .name = [_]u8{0} ** 8,
+        .name = @as([8]u8, @splat(0)),
         .value = 0,
         .section_number = .UNDEFINED,
         .type = .{ .base_type = .NULL, .complex_type = .NULL },
@@ -1571,7 +1571,7 @@ pub fn deleteExport(
     log.debug("deleting export '{f}'", .{name.fmt(&zcu.intern_pool)});
     assert(sym.storage_class == .EXTERNAL and sym.section_number != .UNDEFINED);
     sym.* = .{
-        .name = [_]u8{0} ** 8,
+        .name = @as([8]u8, @splat(0)),
         .value = 0,
         .section_number = .UNDEFINED,
         .type = .{ .base_type = .NULL, .complex_type = .NULL },
