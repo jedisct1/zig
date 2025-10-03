@@ -105,15 +105,22 @@ fn State128X(comptime degree: u7) type {
         }
 
         fn update(state: *State, d1: AesBlockVec, d2: AesBlockVec) void {
-            const blocks = &state.blocks;
+            comptime assert(state.blocks.len == 8);
+
+            // Hoist lanes; this keeps the blocks in registers
+            var blocks: [8]AesBlockVec = state.blocks;
             const tmp = blocks[7];
-            comptime var i: usize = 7;
-            inline while (i > 0) : (i -= 1) {
+
+            inline for ([_]usize{ 7, 6, 5, 4, 3, 2, 1 }) |i| {
                 blocks[i] = blocks[i - 1].encrypt(blocks[i]);
             }
+
             blocks[0] = tmp.encrypt(blocks[0]);
             blocks[0] = blocks[0].xorBlocks(d1);
             blocks[4] = blocks[4].xorBlocks(d2);
+
+            // Single spill at the end.
+            state.blocks = blocks;
         }
 
         fn absorb(state: *State, src: *const [rate]u8) void {
@@ -414,13 +421,20 @@ fn State256X(comptime degree: u7) type {
         }
 
         fn update(state: *State, d: AesBlockVec) void {
-            const blocks = &state.blocks;
+            comptime assert(state.blocks.len == 6);
+
+            // Hoist lanes; this keeps the blocks in registers
+            var blocks: [6]AesBlockVec = state.blocks;
             const tmp = blocks[5].encrypt(blocks[0]);
-            comptime var i: usize = 5;
-            inline while (i > 0) : (i -= 1) {
+
+            inline for ([_]usize{ 5, 4, 3, 2, 1 }) |i| {
                 blocks[i] = blocks[i - 1].encrypt(blocks[i]);
             }
+
             blocks[0] = tmp.xorBlocks(d);
+
+            // Single spill at the end.
+            state.blocks = blocks;
         }
 
         fn absorb(state: *State, src: *const [rate]u8) void {
