@@ -831,6 +831,18 @@ const Poly = struct {
     const bytes_length = N / 2 * 3;
     const zero: Poly = .{ .cs = .{0} ** N };
 
+    // Constant-time select for u16: returns true_val if condition is true, otherwise false_val
+    inline fn ctSelect_u16(condition: bool, true_val: u16, false_val: u16) u16 {
+        const mask = @as(u16, 0) -% @intFromBool(condition);
+        return false_val ^ (mask & (false_val ^ true_val));
+    }
+
+    // Constant-time less-than comparison for u16
+    inline fn ctLessThan_u16(a: u16, b: u16) bool {
+        const diff = @subWithOverflow(a, b);
+        return diff[1] != 0;
+    }
+
     fn add(a: Poly, b: Poly) Poly {
         var ret: Poly = undefined;
         for (0..N) |i| {
@@ -1276,7 +1288,76 @@ const Poly = struct {
     }
 
     // Sample p uniformly from the given seed and x and y coordinates.
+    // Uses constant-time rejection sampling when side_channels_mitigations == .full,
+    // otherwise uses faster variable-time rejection sampling.
     fn uniform(seed: [32]u8, x: u8, y: u8) Poly {
+        if (std.options.side_channels_mitigations == .full) {
+            return uniformConstantTime(seed, x, y);
+        } else {
+            return uniformFast(seed, x, y);
+        }
+    }
+
+    // Constant-time uniform sampling that processes a fixed amount of data.
+    fn uniformConstantTime(seed: [32]u8, x: u8, y: u8) Poly {
+        var h = sha3.Shake128.init(.{});
+        const suffix: [2]u8 = .{ x, y };
+        h.update(&seed);
+        h.update(&suffix);
+
+        // Pre-compute enough bytes to guarantee N valid samples with high probability.
+        // We need 256 samples. Acceptance rate is Q/4096 ≈ 81.3%.
+        // 672 bytes = 448 candidates, which gives us >99.9% probability of success.
+        const buf_len = 672;
+        var buf: [buf_len]u8 = undefined;
+        h.squeeze(&buf);
+
+        // Initialize to zeros to avoid undefined behavior when reading for constant-time select
+        var ret: Poly = .{ .cs = [_]i16{0} ** N };
+        var valid_count: usize = 0;
+
+        // Process all candidates in constant time
+        var j: usize = 0;
+        while (j + 2 < buf_len) : (j += 3) {
+            const b0 = @as(u16, buf[j]);
+            const b1 = @as(u16, buf[j + 1]);
+            const b2 = @as(u16, buf[j + 2]);
+
+            const candidates: [2]u16 = .{
+                b0 | ((b1 & 0xf) << 8),
+                (b1 >> 4) | (b2 << 4),
+            };
+
+            inline for (candidates) |candidate| {
+                // Check if candidate is valid (< Q) in constant time
+                const is_valid = ctLessThan_u16(candidate, @as(u16, @intCast(Q)));
+
+                // Check if we still need more samples in constant time
+                const is_needed = ctLessThan_u16(@as(u16, @intCast(valid_count)), N);
+
+                // Combine both conditions
+                const should_accept = is_valid and is_needed;
+
+                // Clamp write index to prevent out-of-bounds access
+                const write_idx = ctSelect_u16(ctLessThan_u16(@as(u16, @intCast(valid_count)), N), @as(u16, @intCast(valid_count)), N - 1);
+
+                // Conditionally write the candidate
+                const candidate_i16 = @as(i16, @intCast(candidate));
+                const old_value = ret.cs[write_idx];
+                const new_value = @as(i16, @bitCast(ctSelect_u16(should_accept, @as(u16, @bitCast(candidate_i16)), @as(u16, @bitCast(old_value)))));
+                ret.cs[write_idx] = new_value;
+
+                // Conditionally increment the counter (constant time)
+                valid_count +%= @intFromBool(should_accept);
+            }
+        }
+
+        return ret;
+    }
+
+    // Fast variable-time uniform sampling using rejection sampling.
+    // This version exits early and processes only as much data as needed.
+    fn uniformFast(seed: [32]u8, x: u8, y: u8) Poly {
         var h = sha3.Shake128.init(.{});
         const suffix: [2]u8 = .{ x, y };
         h.update(&seed);
