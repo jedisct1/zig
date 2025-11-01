@@ -4,6 +4,10 @@ const math = std.math;
 const debug = std.debug;
 const htest = @import("test.zig");
 
+const simd_degree = std.simd.suggestVectorLength(u32) orelse 1;
+const Vec4u32 = @Vector(4, u32);
+const Vec4u64 = @Vector(4, u64);
+
 const RoundParam = struct {
     a: usize,
     b: usize,
@@ -114,14 +118,14 @@ pub fn Blake2s(comptime out_bits: usize) type {
                 off += 64 - d.buf_len;
                 @memcpy(d.buf[d.buf_len..][0..off], b[0..off]);
                 d.t += 64;
-                d.round(d.buf[0..], false);
+                d.roundSimd(d.buf[0..], false);
                 d.buf_len = 0;
             }
 
             // Full middle blocks.
             while (off + 64 < b.len) : (off += 64) {
                 d.t += 64;
-                d.round(b[off..][0..64], false);
+                d.roundSimd(b[off..][0..64], false);
             }
 
             // Copy any remainder for next pass.
@@ -133,9 +137,88 @@ pub fn Blake2s(comptime out_bits: usize) type {
         pub fn final(d: *Self, out: *[digest_length]u8) void {
             @memset(d.buf[d.buf_len..], 0);
             d.t += d.buf_len;
-            d.round(d.buf[0..], true);
+            d.roundSimd(d.buf[0..], true);
             for (&d.h) |*x| x.* = mem.nativeToLittle(u32, x.*);
             out.* = @as(*[digest_length]u8, @ptrCast(&d.h)).*;
+        }
+
+        inline fn gSimd(comptime VecT: type, va: VecT, vb: VecT, vc: VecT, vd: VecT, mx: VecT, my: VecT, comptime r1: u32, comptime r2: u32, comptime r3: u32, comptime r4: u32) struct { a: VecT, b: VecT, c: VecT, d: VecT } {
+            const a1 = va +% vb +% mx;
+            const d1 = math.rotr(VecT, vd ^ a1, r1);
+            const c1 = vc +% d1;
+            const b1 = math.rotr(VecT, vb ^ c1, r2);
+            const a2 = a1 +% b1 +% my;
+            const d2 = math.rotr(VecT, d1 ^ a2, r3);
+            const c2 = c1 +% d2;
+            const b2 = math.rotr(VecT, b1 ^ c2, r4);
+            return .{ .a = a2, .b = b2, .c = c2, .d = d2 };
+        }
+
+        fn roundSimd(d: *Self, b: *const [64]u8, last: bool) void {
+            if (simd_degree >= 4) {
+                var m: [16]u32 = undefined;
+                for (&m, 0..) |*r, i| {
+                    r.* = mem.readInt(u32, b[4 * i ..][0..4], .little);
+                }
+
+                var v: [16]u32 = undefined;
+                for (0..8) |k| {
+                    v[k] = d.h[k];
+                    v[k + 8] = iv[k];
+                }
+
+                v[12] ^= @as(u32, @truncate(d.t));
+                v[13] ^= @as(u32, @intCast(d.t >> 32));
+                if (last) v[14] = ~v[14];
+
+                inline for (0..10) |round_idx| {
+                    const s = &sigma[round_idx];
+
+                    // Column round
+                    const col = gSimd(Vec4u32, Vec4u32{ v[0], v[1], v[2], v[3] }, Vec4u32{ v[4], v[5], v[6], v[7] }, Vec4u32{ v[8], v[9], v[10], v[11] }, Vec4u32{ v[12], v[13], v[14], v[15] }, Vec4u32{ m[s[0]], m[s[2]], m[s[4]], m[s[6]] }, Vec4u32{ m[s[1]], m[s[3]], m[s[5]], m[s[7]] }, 16, 12, 8, 7);
+                    v[0] = col.a[0];
+                    v[1] = col.a[1];
+                    v[2] = col.a[2];
+                    v[3] = col.a[3];
+                    v[4] = col.b[0];
+                    v[5] = col.b[1];
+                    v[6] = col.b[2];
+                    v[7] = col.b[3];
+                    v[8] = col.c[0];
+                    v[9] = col.c[1];
+                    v[10] = col.c[2];
+                    v[11] = col.c[3];
+                    v[12] = col.d[0];
+                    v[13] = col.d[1];
+                    v[14] = col.d[2];
+                    v[15] = col.d[3];
+
+                    // Diagonal round
+                    const diag = gSimd(Vec4u32, Vec4u32{ v[0], v[1], v[2], v[3] }, Vec4u32{ v[5], v[6], v[7], v[4] }, Vec4u32{ v[10], v[11], v[8], v[9] }, Vec4u32{ v[15], v[12], v[13], v[14] }, Vec4u32{ m[s[8]], m[s[10]], m[s[12]], m[s[14]] }, Vec4u32{ m[s[9]], m[s[11]], m[s[13]], m[s[15]] }, 16, 12, 8, 7);
+                    v[0] = diag.a[0];
+                    v[1] = diag.a[1];
+                    v[2] = diag.a[2];
+                    v[3] = diag.a[3];
+                    v[5] = diag.b[0];
+                    v[6] = diag.b[1];
+                    v[7] = diag.b[2];
+                    v[4] = diag.b[3];
+                    v[10] = diag.c[0];
+                    v[11] = diag.c[1];
+                    v[8] = diag.c[2];
+                    v[9] = diag.c[3];
+                    v[15] = diag.d[0];
+                    v[12] = diag.d[1];
+                    v[13] = diag.d[2];
+                    v[14] = diag.d[3];
+                }
+
+                for (&d.h, 0..) |*r, i| {
+                    r.* ^= v[i] ^ v[i + 8];
+                }
+            } else {
+                d.round(b, last);
+            }
         }
 
         fn round(d: *Self, b: *const [64]u8, last: bool) void {
@@ -538,14 +621,14 @@ pub fn Blake2b(comptime out_bits: usize) type {
                 off += 128 - d.buf_len;
                 @memcpy(d.buf[d.buf_len..][0..off], b[0..off]);
                 d.t += 128;
-                d.round(d.buf[0..], false);
+                d.roundSimd(d.buf[0..], false);
                 d.buf_len = 0;
             }
 
             // Full middle blocks.
             while (off + 128 < b.len) : (off += 128) {
                 d.t += 128;
-                d.round(b[off..][0..128], false);
+                d.roundSimd(b[off..][0..128], false);
             }
 
             // Copy any remainder for next pass.
@@ -557,9 +640,88 @@ pub fn Blake2b(comptime out_bits: usize) type {
         pub fn final(d: *Self, out: *[digest_length]u8) void {
             @memset(d.buf[d.buf_len..], 0);
             d.t += d.buf_len;
-            d.round(d.buf[0..], true);
+            d.roundSimd(d.buf[0..], true);
             for (&d.h) |*x| x.* = mem.nativeToLittle(u64, x.*);
             out.* = @as(*[digest_length]u8, @ptrCast(&d.h)).*;
+        }
+
+        inline fn gSimd(comptime VecT: type, va: VecT, vb: VecT, vc: VecT, vd: VecT, mx: VecT, my: VecT, comptime r1: u32, comptime r2: u32, comptime r3: u32, comptime r4: u32) struct { a: VecT, b: VecT, c: VecT, d: VecT } {
+            const a1 = va +% vb +% mx;
+            const d1 = math.rotr(VecT, vd ^ a1, r1);
+            const c1 = vc +% d1;
+            const b1 = math.rotr(VecT, vb ^ c1, r2);
+            const a2 = a1 +% b1 +% my;
+            const d2 = math.rotr(VecT, d1 ^ a2, r3);
+            const c2 = c1 +% d2;
+            const b2 = math.rotr(VecT, b1 ^ c2, r4);
+            return .{ .a = a2, .b = b2, .c = c2, .d = d2 };
+        }
+
+        fn roundSimd(d: *Self, b: *const [128]u8, last: bool) void {
+            if (simd_degree >= 4) {
+                var m: [16]u64 = undefined;
+                for (&m, 0..) |*r, i| {
+                    r.* = mem.readInt(u64, b[8 * i ..][0..8], .little);
+                }
+
+                var v: [16]u64 = undefined;
+                for (0..8) |k| {
+                    v[k] = d.h[k];
+                    v[k + 8] = iv[k];
+                }
+
+                v[12] ^= @as(u64, @truncate(d.t));
+                v[13] ^= @as(u64, @intCast(d.t >> 64));
+                if (last) v[14] = ~v[14];
+
+                inline for (0..12) |round_idx| {
+                    const s = &sigma[round_idx];
+
+                    // Column round
+                    const col = gSimd(Vec4u64, Vec4u64{ v[0], v[1], v[2], v[3] }, Vec4u64{ v[4], v[5], v[6], v[7] }, Vec4u64{ v[8], v[9], v[10], v[11] }, Vec4u64{ v[12], v[13], v[14], v[15] }, Vec4u64{ m[s[0]], m[s[2]], m[s[4]], m[s[6]] }, Vec4u64{ m[s[1]], m[s[3]], m[s[5]], m[s[7]] }, 32, 24, 16, 63);
+                    v[0] = col.a[0];
+                    v[1] = col.a[1];
+                    v[2] = col.a[2];
+                    v[3] = col.a[3];
+                    v[4] = col.b[0];
+                    v[5] = col.b[1];
+                    v[6] = col.b[2];
+                    v[7] = col.b[3];
+                    v[8] = col.c[0];
+                    v[9] = col.c[1];
+                    v[10] = col.c[2];
+                    v[11] = col.c[3];
+                    v[12] = col.d[0];
+                    v[13] = col.d[1];
+                    v[14] = col.d[2];
+                    v[15] = col.d[3];
+
+                    // Diagonal round
+                    const diag = gSimd(Vec4u64, Vec4u64{ v[0], v[1], v[2], v[3] }, Vec4u64{ v[5], v[6], v[7], v[4] }, Vec4u64{ v[10], v[11], v[8], v[9] }, Vec4u64{ v[15], v[12], v[13], v[14] }, Vec4u64{ m[s[8]], m[s[10]], m[s[12]], m[s[14]] }, Vec4u64{ m[s[9]], m[s[11]], m[s[13]], m[s[15]] }, 32, 24, 16, 63);
+                    v[0] = diag.a[0];
+                    v[1] = diag.a[1];
+                    v[2] = diag.a[2];
+                    v[3] = diag.a[3];
+                    v[5] = diag.b[0];
+                    v[6] = diag.b[1];
+                    v[7] = diag.b[2];
+                    v[4] = diag.b[3];
+                    v[10] = diag.c[0];
+                    v[11] = diag.c[1];
+                    v[8] = diag.c[2];
+                    v[9] = diag.c[3];
+                    v[15] = diag.d[0];
+                    v[12] = diag.d[1];
+                    v[13] = diag.d[2];
+                    v[14] = diag.d[3];
+                }
+
+                for (&d.h, 0..) |*r, i| {
+                    r.* ^= v[i] ^ v[i + 8];
+                }
+            } else {
+                d.round(b, last);
+            }
         }
 
         fn round(d: *Self, b: *const [128]u8, last: bool) void {
