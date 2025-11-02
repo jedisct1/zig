@@ -3,8 +3,10 @@ const mem = std.mem;
 const math = std.math;
 const debug = std.debug;
 const htest = @import("test.zig");
+const builtin = @import("builtin");
 
-const simd_degree = std.simd.suggestVectorLength(u32) orelse 1;
+const simd_degree_u32 = if (builtin.cpu.arch == .x86_64) std.simd.suggestVectorLength(u32) orelse 1 else 1;
+const simd_degree_u64 = if (builtin.cpu.arch == .x86_64) std.simd.suggestVectorLength(u64) orelse 1 else 1;
 const Vec4u32 = @Vector(4, u32);
 const Vec4u64 = @Vector(4, u64);
 
@@ -155,7 +157,7 @@ pub fn Blake2s(comptime out_bits: usize) type {
         }
 
         fn roundSimd(d: *Self, b: *const [64]u8, last: bool) void {
-            if (simd_degree >= 4) {
+            if (simd_degree_u32 >= 4) {
                 var m: [16]u32 = undefined;
                 for (&m, 0..) |*r, i| {
                     r.* = mem.readInt(u32, b[4 * i ..][0..4], .little);
@@ -658,7 +660,7 @@ pub fn Blake2b(comptime out_bits: usize) type {
         }
 
         fn roundSimd(d: *Self, b: *const [128]u8, last: bool) void {
-            if (simd_degree >= 4) {
+            if (simd_degree_u64 >= 4) {
                 var m: [16]u64 = undefined;
                 for (&m, 0..) |*r, i| {
                     r.* = mem.readInt(u64, b[8 * i ..][0..8], .little);
