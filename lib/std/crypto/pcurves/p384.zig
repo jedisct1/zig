@@ -47,7 +47,13 @@ pub const P384 = struct {
     pub fn fromAffineCoordinates(p: AffineCoordinates) EncodingError!P384 {
         const x = p.x;
         const y = p.y;
-        const x3AxB = x.sq().mul(x).sub(x).sub(x).sub(x).add(B);
+        // Workaround for issue #25840: compute (x^3 - 3x) + B with no method chaining
+        const x_squared = x.sq();
+        const x_cubed = x_squared.mul(x);
+        const x_plus_x = x.add(x);
+        const three_x = x_plus_x.add(x); // dbl() would trigger issue #25840
+        const x3_minus_3x = x_cubed.sub(three_x);
+        const x3AxB = x3_minus_3x.add(B);
         const yy = y.sq();
         const on_curve = @intFromBool(x3AxB.equivalent(yy));
         const is_identity = @intFromBool(x.equivalent(AffineCoordinates.identityElement.x)) & @intFromBool(y.equivalent(AffineCoordinates.identityElement.y));
@@ -68,7 +74,13 @@ pub const P384 = struct {
 
     /// Recover the Y coordinate from the X coordinate.
     pub fn recoverY(x: Fe, is_odd: bool) NotSquareError!Fe {
-        const x3AxB = x.sq().mul(x).sub(x).sub(x).sub(x).add(B);
+        // Workaround for issue #25840: compute (x^3 - 3x) + B with no method chaining
+        const x_squared = x.sq();
+        const x_cubed = x_squared.mul(x);
+        const x_plus_x = x.add(x);
+        const three_x = x_plus_x.add(x); // dbl() would trigger issue #25840
+        const x3_minus_3x = x_cubed.sub(three_x);
+        const x3AxB = x3_minus_3x.add(B);
         var y = try x3AxB.sqrt();
         const yn = y.neg();
         y.cMov(yn, @intFromBool(is_odd) ^ @intFromBool(y.isOdd()));
