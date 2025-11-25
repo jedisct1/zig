@@ -5672,6 +5672,10 @@ fn airAsm(f: *Function, inst: Air.Inst.Index) !CValue {
                             c_name_buf[0] = '$';
                             @memcpy((&c_name_buf)[1..][0..field_name.len], field_name);
                             break :name (&c_name_buf)[0 .. 1 + field_name.len];
+                        } else if (target.cpu.arch.isSPARC() and
+                        (mem.eql(u8, field_name, "ccr") or mem.eql(u8, field_name, "icc") or mem.eql(u8, field_name, "xcc"))) name: {
+                            // C compilers just use `icc` to encompass all of these.
+                            break :name "icc";
                         } else field_name;
 
                     try w.print(" {f}", .{fmtStringLiteral(name, null)});
