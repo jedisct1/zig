@@ -1326,9 +1326,12 @@ test "KT128 sequential and parallel produce same output for large inputs" {
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const random = prng.random();
 
-    // Test with large input sizes that trigger parallel processing
-    // The threshold is 3-10MB depending on CPU count, so we test above that
-    const test_sizes = [_]usize{ 11 * 1024 * 1024, 20 * 1024 * 1024 }; // 11MB, 20MB
+    // Test with input sizes above the 2MB threshold to trigger parallel processing.
+    // Include a size with partial final leaf to stress boundary handling.
+    const test_sizes = [_]usize{
+        5 * 512 * 1024, // 2.5 MB
+        5 * 512 * 1024 + 8191, // 2.5 MB + 8191B (partial leaf)
+    };
 
     for (test_sizes) |size| {
         const input = try allocator.alloc(u8, size);
@@ -1445,13 +1448,11 @@ test "KT256 sequential and parallel produce same output for large inputs" {
     var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const random = prng.random();
 
-    // Test with large input sizes that trigger parallel processing, including
-    // a size that is just shy of a multiple of the 8KiB chunk to stress the
-    // final partial leaf.
+    // Test with input sizes above the 2MB threshold to trigger parallel processing.
+    // Include a size with partial final leaf to stress boundary handling.
     const test_sizes = [_]usize{
-        11 * 1024 * 1024, // 11MB
-        20 * 1024 * 1024, // 20MB
-        11 * 1024 * 1024 + 8191, // 11MB + 8191B
+        5 * 512 * 1024, // 2.5 MB
+        5 * 512 * 1024 + 8191, // 2.5 MB + 8191B (partial leaf)
     };
 
     for (test_sizes) |size| {
