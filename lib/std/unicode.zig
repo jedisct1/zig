@@ -752,7 +752,7 @@ test "misc invalid utf8" {
 fn testMiscInvalidUtf8() !void {
     // codepoint out of bounds
     try testError("\xf4\x90\x80\x80", error.Utf8CodepointTooLarge);
-    try testError("\xf7\xbf\xbf\xbf", error.Utf8CodepointTooLarge);
+    try testError("\xf7\xbf\xbf\xbf", error.Utf8InvalidStartByte);
     // surrogate halves
     try testValid("\xed\x9f\xbf", 0xd7ff);
     try testError("\xed\xa0\x80", error.Utf8EncodesSurrogateHalf);
