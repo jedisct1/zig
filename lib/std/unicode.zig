@@ -31,7 +31,7 @@ pub fn utf8ByteSequenceLength(first_byte: u8) !u3 {
         0b0000_0000...0b0111_1111 => 1,
         0b1100_0000...0b1101_1111 => 2,
         0b1110_0000...0b1110_1111 => 3,
-        0b1111_0000...0b1111_0111 => 4,
+        0b1111_0000...0b1111_0100 => 4,
         else => error.Utf8InvalidStartByte,
     };
 }
