@@ -359,6 +359,9 @@ pub const SpawnError = error{
     /// children of the calling process and the child had already performed an
     /// image replacement.
     ProcessAlreadyExec,
+    /// On Windows, the volume does not contain a recognized file system. File
+    /// system drivers might not be loaded, or the volume may be corrupt.
+    UnrecognizedVolume,
 } || Io.Dir.PathNameError || Io.Cancelable || Io.UnexpectedError;
 
 pub const SpawnOptions = struct {
