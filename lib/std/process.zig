@@ -368,11 +368,7 @@ pub const SpawnOptions = struct {
     argv: []const []const u8,
 
     /// Set to change the current working directory when spawning the child process.
-    cwd: ?[]const u8 = null,
-    /// Set to change the current working directory when spawning the child process.
-    /// This is not yet implemented for Windows. See https://github.com/ziglang/zig/issues/5190
-    /// Once that is done, `cwd` will be deprecated in favor of this field.
-    cwd_dir: ?Io.Dir = null,
+    cwd: Child.Cwd = .inherit,
     /// Replaces the child environment when provided. The PATH value from here
     /// is not used to resolve `argv[0]`; that resolution always uses parent
     /// environment.
@@ -468,11 +464,7 @@ pub const RunOptions = struct {
     reserve_amount: usize = 64,
 
     /// Set to change the current working directory when spawning the child process.
-    cwd: ?[]const u8 = null,
-    /// Set to change the current working directory when spawning the child process.
-    /// This is not yet implemented for Windows. See https://github.com/ziglang/zig/issues/5190
-    /// Once that is done, `cwd` will be deprecated in favor of this field.
-    cwd_dir: ?Io.Dir = null,
+    cwd: Child.Cwd = .inherit,
     /// Replaces the child environment when provided. The PATH value from here
     /// is not used to resolve `argv[0]`; that resolution always uses parent
     /// environment.
@@ -506,7 +498,6 @@ pub fn run(gpa: Allocator, io: Io, options: RunOptions) RunError!RunResult {
     var child = try spawn(io, .{
         .argv = options.argv,
         .cwd = options.cwd,
-        .cwd_dir = options.cwd_dir,
         .environ_map = options.environ_map,
         .expand_arg0 = options.expand_arg0,
         .progress_node = options.progress_node,

@@ -14606,10 +14606,14 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
         setUpChildIo(options.stdout, stdout_pipe[1], posix.STDOUT_FILENO, dev_null_fd) catch |err| forkBail(ep1, err);
         setUpChildIo(options.stderr, stderr_pipe[1], posix.STDERR_FILENO, dev_null_fd) catch |err| forkBail(ep1, err);
 
-        if (options.cwd_dir) |cwd| {
-            fchdir(cwd.handle) catch |err| forkBail(ep1, err);
-        } else if (options.cwd) |cwd| {
-            chdir(cwd) catch |err| forkBail(ep1, err);
+        switch (options.cwd) {
+            .inherit => {},
+            .dir => |cwd| {
+                fchdir(cwd.handle) catch |err| forkBail(ep1, err);
+            },
+            .path => |cwd| {
+                chdir(cwd) catch |err| forkBail(ep1, err);
+            },
         }
 
         // Must happen after fchdir above, the cwd file descriptor might be
@@ -15194,23 +15198,25 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
     const arena = arena_allocator.allocator();
 
     const cwd_w = cwd_w: {
-        if (options.cwd_dir) |cwd_dir| {
-            var dir_path_buffer = try arena.alloc(u16, windows.PATH_MAX_WIDE + 1);
-            // TODO move GetFinalPathNameByHandle logic into std.Io.Threaded and add cancel checks
-            try Thread.checkCancel();
-            const dir_path = try windows.GetFinalPathNameByHandle(
-                cwd_dir.handle,
-                .{},
-                dir_path_buffer[0..windows.PATH_MAX_WIDE],
-            );
-            dir_path_buffer[dir_path.len] = 0;
-            // Shrink the allocation down to just the path buffer + sentinel
-            dir_path_buffer = try arena.realloc(dir_path_buffer, dir_path.len + 1);
-            break :cwd_w dir_path_buffer[0..dir_path.len :0];
-        } else if (options.cwd) |cwd| {
-            break :cwd_w try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd);
-        } else {
-            break :cwd_w null;
+        switch (options.cwd) {
+            .inherit => break :cwd_w null,
+            .dir => |cwd_dir| {
+                var dir_path_buffer = try arena.alloc(u16, windows.PATH_MAX_WIDE + 1);
+                // TODO move GetFinalPathNameByHandle logic into std.Io.Threaded and add cancel checks
+                try Thread.checkCancel();
+                const dir_path = try windows.GetFinalPathNameByHandle(
+                    cwd_dir.handle,
+                    .{},
+                    dir_path_buffer[0..windows.PATH_MAX_WIDE],
+                );
+                dir_path_buffer[dir_path.len] = 0;
+                // Shrink the allocation down to just the path buffer + sentinel
+                dir_path_buffer = try arena.realloc(dir_path_buffer, dir_path.len + 1);
+                break :cwd_w dir_path_buffer[0..dir_path.len :0];
+            },
+            .path => |cwd| {
+                break :cwd_w try std.unicode.wtf8ToWtf16LeAllocZ(arena, cwd);
+            },
         }
     };
     const cwd_w_ptr = if (cwd_w) |cwd| cwd.ptr else null;
