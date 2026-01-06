@@ -4891,11 +4891,7 @@ fn performAllTheWork(
 
     work: while (true) {
         for (&comp.work_queues) |*work_queue| if (work_queue.popFront()) |job| {
-            try processOneJob(
-                @intFromEnum(Zcu.PerThread.Id.main),
-                comp,
-                job,
-            );
+            try processOneJob(.main, comp, job);
             continue :work;
         };
         if (comp.zcu) |zcu| {
@@ -5160,11 +5156,7 @@ pub fn queueJobs(comp: *Compilation, jobs: []const Job) !void {
     for (jobs) |job| try comp.queueJob(job);
 }
 
-fn processOneJob(
-    tid: usize,
-    comp: *Compilation,
-    job: Job,
-) JobError!void {
+fn processOneJob(tid: Zcu.PerThread.Id, comp: *Compilation, job: Job) JobError!void {
     switch (job) {
         .codegen_func => |func| {
             const zcu = comp.zcu.?;
@@ -5232,7 +5224,7 @@ fn processOneJob(
             const named_frame = tracy.namedFrame("analyze_func");
             defer named_frame.end();
 
-            const pt: Zcu.PerThread = .activate(comp.zcu.?, @enumFromInt(tid));
+            const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
 
             pt.ensureFuncBodyUpToDate(func) catch |err| switch (err) {
@@ -5245,7 +5237,7 @@ fn processOneJob(
             const named_frame = tracy.namedFrame("analyze_comptime_unit");
             defer named_frame.end();
 
-            const pt: Zcu.PerThread = .activate(comp.zcu.?, @enumFromInt(tid));
+            const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
 
             const maybe_err: Zcu.SemaError!void = switch (unit.unwrap()) {
@@ -5285,7 +5277,7 @@ fn processOneJob(
             const named_frame = tracy.namedFrame("resolve_type_fully");
             defer named_frame.end();
 
-            const pt: Zcu.PerThread = .activate(comp.zcu.?, @enumFromInt(tid));
+            const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
             Type.fromInterned(ty).resolveFully(pt) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
@@ -5296,7 +5288,7 @@ fn processOneJob(
             const named_frame = tracy.namedFrame("analyze_mod");
             defer named_frame.end();
 
-            const pt: Zcu.PerThread = .activate(comp.zcu.?, @enumFromInt(tid));
+            const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
             pt.semaMod(mod) catch |err| switch (err) {
                 error.OutOfMemory, error.Canceled => |e| return e,
@@ -5642,13 +5634,14 @@ fn workerUpdateFile(
     prog_node: std.Progress.Node,
     group: *Io.Group,
 ) void {
-    const tid = Compilation.getTid();
     const io = comp.io;
+    const tid: Zcu.PerThread.Id = .acquire(io);
+    defer tid.release(io);
 
     const child_prog_node = prog_node.start(fs.path.basename(file.path.sub_path), 0);
     defer child_prog_node.end();
 
-    const pt: Zcu.PerThread = .activate(comp.zcu.?, @enumFromInt(tid));
+    const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
     defer pt.deactivate();
     pt.updateFile(file_index, file) catch |err| {
         pt.reportRetryableFileError(file_index, "unable to load '{s}': {s}", .{ fs.path.basename(file.path.sub_path), @errorName(err) }) catch |oom| switch (oom) {
@@ -5708,9 +5701,10 @@ fn workerUpdateBuiltinFile(comp: *Compilation, file: *Zcu.File) void {
 }
 
 fn workerUpdateEmbedFile(comp: *Compilation, ef_index: Zcu.EmbedFile.Index, ef: *Zcu.EmbedFile) void {
-    const tid = Compilation.getTid();
     const io = comp.io;
-    comp.detectEmbedFileUpdate(@enumFromInt(tid), ef_index, ef) catch |err| switch (err) {
+    const tid: Zcu.PerThread.Id = .acquire(io);
+    defer tid.release(io);
+    comp.detectEmbedFileUpdate(tid, ef_index, ef) catch |err| switch (err) {
         error.OutOfMemory => {
             comp.mutex.lockUncancelable(io);
             defer comp.mutex.unlock(io);
@@ -5868,7 +5862,7 @@ pub fn translateC(
     }
 
     var stdout: []u8 = undefined;
-    try @import("main.zig").translateC(gpa, arena, io, argv.items, environ_map, prog_node, &stdout);
+    try @import("main.zig").translateC(gpa, arena, io, argv.items, environ_map, prog_node, comp.thread_limit, &stdout);
 
     if (out_dep_path) |dep_file_path| add_deps: {
         if (comp.verbose_cimport) log.info("processing dep file at {s}", .{dep_file_path});
@@ -8394,17 +8388,3 @@ pub fn compilerRtOptMode(comp: Compilation) std.builtin.OptimizeMode {
 pub fn compilerRtStrip(comp: Compilation) bool {
     return comp.root_mod.strip;
 }
-
-/// This is a temporary workaround put in place to migrate from `std.Thread.Pool`
-/// to `std.Io.Threaded` for asynchronous/concurrent work. The eventual solution
-/// will likely involve significant changes to the `InternPool` implementation.
-pub fn getTid() usize {
-    if (my_tid == null) my_tid = next_tid.fetchAdd(1, .monotonic);
-    return my_tid.?;
-}
-pub fn setMainThread() void {
-    my_tid = 0;
-}
-/// TID 0 is reserved for the main thread.
-var next_tid: std.atomic.Value(usize) = .init(1);
-threadlocal var my_tid: ?usize = null;
