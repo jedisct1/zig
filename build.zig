@@ -371,10 +371,8 @@ pub fn build(b: *std.Build) !void {
 
         exe.root_module.addIncludePath(.{ .cwd_relative = tracy_path });
         exe.root_module.addCSourceFile(.{ .file = .{ .cwd_relative = client_cpp }, .flags = tracy_c_flags });
-        if (!enable_llvm) {
-            exe.root_module.linkSystemLibrary("c++", .{ .use_pkg_config = .no });
-        }
         exe.root_module.link_libc = true;
+        exe.root_module.link_libcpp = true;
 
         if (target.result.os.tag == .windows) {
             exe.root_module.linkSystemLibrary("dbghelp", .{});
