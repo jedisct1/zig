@@ -559,7 +559,7 @@ pub fn readStreaming(file: File, io: Io, buffer: []const []u8) Reader.Error!usiz
         .data = buffer,
         .result = undefined,
     } };
-    io.vtable.operate(io.userdata, (&operation)[0..1], 1, .none) catch unreachable;
+    io.vtable.operate(io.userdata, (&operation)[0..1]);
     return operation.file_read_streaming.result;
 }
 

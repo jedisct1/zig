@@ -2449,20 +2449,15 @@ fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
     Thread.futexWake(ptr, max_waiters);
 }
 
-fn operate(userdata: ?*anyopaque, operations: []Io.Operation, n_wait: usize, timeout: Io.Timeout) Io.OperateError!void {
+fn operate(userdata: ?*anyopaque, operations: []Io.Operation) void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    const t_io = ioBasic(t);
+    _ = t;
 
     if (is_windows) @panic("TODO");
-
-    const deadline = timeout.toDeadline(t_io) catch |err| switch (err) {
-        error.UnsupportedClock, error.Unexpected => null,
-    };
 
     var poll_buffer: [100]posix.pollfd = undefined;
     var map_buffer: [poll_buffer.len]u8 = undefined; // poll_buffer index to operations index
     var poll_i: usize = 0;
-    var completed: usize = 0;
 
     // Put all the file reads with nonblocking enabled into the poll set.
     if (operations.len > poll_buffer.len) @panic("TODO");
@@ -2483,7 +2478,6 @@ fn operate(userdata: ?*anyopaque, operations: []Io.Operation, n_wait: usize, tim
                 poll_i += 1;
             } else {
                 o.result = fileReadStreaming(o.file, o.data);
-                completed += 1;
             }
         },
     };
@@ -2493,39 +2487,40 @@ fn operate(userdata: ?*anyopaque, operations: []Io.Operation, n_wait: usize, tim
         return;
     }
 
-    const max_poll_ms = std.math.maxInt(i32);
-
-    while (completed < n_wait) {
-        const timeout_ms: i32 = if (deadline) |d| t: {
-            const duration = d.durationFromNow(t_io) catch @panic("TODO make this unreachable");
-            if (duration.raw.nanoseconds <= 0) return error.Timeout;
-            break :t @intCast(@min(max_poll_ms, duration.raw.toMilliseconds()));
-        } else -1;
-        const syscall = try Syscall.start();
-        const poll_rc = posix.system.poll(&poll_buffer, poll_i, timeout_ms);
+    while (true) {
+        const syscall = Syscall.start() catch |err| switch (err) {
+            error.Canceled => {
+                for (map_buffer[0..poll_i]) |operation_index| {
+                    switch (operations[operation_index]) {
+                        .noop => unreachable,
+                        inline else => |*o| o.result = error.Canceled,
+                    }
+                }
+                return;
+            },
+        };
+        const poll_rc = posix.system.poll(&poll_buffer, poll_i, -1);
         syscall.finish();
         switch (posix.errno(poll_rc)) {
             .SUCCESS => {
                 if (poll_rc == 0) {
-                    // Although spurious timeouts are OK, when no deadline
-                    // is passed we must not return `error.Timeout`.
-                    if (deadline == null) continue;
-                    return error.Timeout;
+                    // Spurious timeout; handle same as INTR.
+                    continue;
                 }
-                for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, operation_index| {
-                    if (poll_fd.revents == 0) continue;
-                    poll_fd.fd = -1; // Disarm this operation.
-                    switch (operations[operation_index]) {
-                        .noop => unreachable,
-                        .file_read_streaming => |*o| {
-                            o.result = fileReadStreaming(o.file, o.data);
-                            completed += 1;
-                        },
-                    }
-                }
+                break;
             },
             .INTR => continue,
             else => @panic("TODO handle unexpected error from poll()"),
+        }
+    }
+
+    for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, operation_index| {
+        if (poll_fd.revents == 0) continue;
+        switch (operations[operation_index]) {
+            .noop => unreachable,
+            .file_read_streaming => |*o| {
+                o.result = fileReadStreaming(o.file, o.data);
+            },
         }
     }
 }

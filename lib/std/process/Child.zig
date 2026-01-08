@@ -138,7 +138,6 @@ pub const CollectOutputOptions = struct {
     allocator: ?Allocator = null,
     stdout_limit: Io.Limit = .unlimited,
     stderr_limit: Io.Limit = .unlimited,
-    timeout: Io.Timeout = .none,
 };
 
 /// Collect the output from the process's stdout and stderr. Will return once
@@ -174,7 +173,7 @@ pub fn collectOutput(child: *const Child, io: Io, options: CollectOutputOptions)
         var all_done = true;
         var any_canceled = false;
         var other_err: (error{StreamTooLong} || Io.File.Reader.Error)!void = {};
-        const op_result = io.vtable.operate(io.userdata, &reads, 1, options.timeout);
+        io.vtable.operate(io.userdata, &reads);
         for (&reads, &lists, &limits, &dones) |*read, list, limit, *done| {
             if (done.*) continue;
             const n = read.file_read_streaming.result catch |err| switch (err) {
@@ -197,7 +196,6 @@ pub fn collectOutput(child: *const Child, io: Io, options: CollectOutputOptions)
             if (list.items.len > @intFromEnum(limit)) other_err = error.StreamTooLong;
         }
         if (any_canceled) return error.Canceled;
-        try op_result; // could be error.Canceled
         try other_err;
         if (all_done) return;
     }
