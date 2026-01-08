@@ -1323,6 +1323,7 @@ fn waitForApcOrAlert() void {
 
 const max_iovecs_len = 8;
 const splat_buffer_size = 64;
+const poll_buffer_len = 100;
 const default_PATH = "/usr/local/bin:/bin/:/usr/bin";
 
 comptime {
@@ -2455,14 +2456,12 @@ fn operate(userdata: ?*anyopaque, operations: []Io.Operation) void {
 
     if (is_windows) @panic("TODO");
 
-    var poll_buffer: [100]posix.pollfd = undefined;
-    var map_buffer: [poll_buffer.len]u8 = undefined; // poll_buffer index to operations index
+    var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
+    var map_buffer: [poll_buffer_len]u8 = undefined; // poll_buffer index to operations index
     var poll_i: usize = 0;
 
     // Put all the file reads with nonblocking enabled into the poll set.
     if (operations.len > poll_buffer.len) @panic("TODO");
-
-    // TODO if any operation is canceled, cancel the rest
 
     for (operations, 0..) |*operation, operation_index| switch (operation.*) {
         .noop => continue,
@@ -2477,7 +2476,13 @@ fn operate(userdata: ?*anyopaque, operations: []Io.Operation) void {
                 map_buffer[poll_i] = @intCast(operation_index);
                 poll_i += 1;
             } else {
-                o.result = fileReadStreaming(o.file, o.data);
+                o.result = fileReadStreaming(o.file, o.data) catch |err| switch (err) {
+                    error.Canceled => {
+                        setOperationsCanceled(operations[operation_index..]);
+                        return;
+                    },
+                    else => err,
+                };
             }
         },
     };
@@ -2490,12 +2495,7 @@ fn operate(userdata: ?*anyopaque, operations: []Io.Operation) void {
     while (true) {
         const syscall = Syscall.start() catch |err| switch (err) {
             error.Canceled => {
-                for (map_buffer[0..poll_i]) |operation_index| {
-                    switch (operations[operation_index]) {
-                        .noop => unreachable,
-                        inline else => |*o| o.result = error.Canceled,
-                    }
-                }
+                setAllOperationsError(operations, map_buffer[0..poll_i], error.Canceled);
                 return;
             },
         };
@@ -2510,7 +2510,14 @@ fn operate(userdata: ?*anyopaque, operations: []Io.Operation) void {
                 break;
             },
             .INTR => continue,
-            else => @panic("TODO handle unexpected error from poll()"),
+            .NOMEM => {
+                setAllOperationsError(operations, map_buffer[0..poll_i], error.SystemResources);
+                return;
+            },
+            else => {
+                setAllOperationsError(operations, map_buffer[0..poll_i], error.Unexpected);
+                return;
+            },
         }
     }
 
@@ -2523,6 +2530,24 @@ fn operate(userdata: ?*anyopaque, operations: []Io.Operation) void {
             },
         }
     }
+}
+
+fn setAllOperationsError(
+    operations: []Io.Operation,
+    map: []const u8,
+    err: error{ Canceled, SystemResources, Unexpected },
+) void {
+    for (map) |operation_index| switch (operations[operation_index]) {
+        .noop => unreachable,
+        inline else => |*o| o.result = err,
+    };
+}
+
+fn setOperationsCanceled(operations: []Io.Operation) void {
+    for (operations) |*op| switch (op.*) {
+        .noop => unreachable,
+        inline else => |*o| o.result = error.Canceled,
+    };
 }
 
 const dirCreateDir = switch (native_os) {
