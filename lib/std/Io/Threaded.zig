@@ -1586,6 +1586,8 @@ pub fn io(t: *Threaded) Io {
             .futexWaitUncancelable = futexWaitUncancelable,
             .futexWake = futexWake,
 
+            .operate = operate,
+
             .dirCreateDir = dirCreateDir,
             .dirCreateDirPath = dirCreateDirPath,
             .dirCreateDirPathOpen = dirCreateDirPathOpen,
@@ -1620,7 +1622,6 @@ pub fn io(t: *Threaded) Io {
             .fileWritePositional = fileWritePositional,
             .fileWriteFileStreaming = fileWriteFileStreaming,
             .fileWriteFilePositional = fileWriteFilePositional,
-            .fileReadStreaming = fileReadStreaming,
             .fileReadPositional = fileReadPositional,
             .fileSeekBy = fileSeekBy,
             .fileSeekTo = fileSeekTo,
@@ -1746,6 +1747,8 @@ pub fn ioBasic(t: *Threaded) Io {
             .futexWaitUncancelable = futexWaitUncancelable,
             .futexWake = futexWake,
 
+            .operate = operate,
+
             .dirCreateDir = dirCreateDir,
             .dirCreateDirPath = dirCreateDirPath,
             .dirCreateDirPathOpen = dirCreateDirPathOpen,
@@ -1780,7 +1783,6 @@ pub fn ioBasic(t: *Threaded) Io {
             .fileWritePositional = fileWritePositional,
             .fileWriteFileStreaming = fileWriteFileStreaming,
             .fileWriteFilePositional = fileWriteFilePositional,
-            .fileReadStreaming = fileReadStreaming,
             .fileReadPositional = fileReadPositional,
             .fileSeekBy = fileSeekBy,
             .fileSeekTo = fileSeekTo,
@@ -2445,6 +2447,87 @@ fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
     Thread.futexWake(ptr, max_waiters);
+}
+
+fn operate(userdata: ?*anyopaque, operations: []Io.Operation, n_wait: usize, timeout: Io.Timeout) Io.OperateError!void {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    const t_io = ioBasic(t);
+
+    if (is_windows) @panic("TODO");
+
+    const deadline = timeout.toDeadline(t_io) catch |err| switch (err) {
+        error.UnsupportedClock, error.Unexpected => null,
+    };
+
+    var poll_buffer: [100]posix.pollfd = undefined;
+    var map_buffer: [poll_buffer.len]u8 = undefined; // poll_buffer index to operations index
+    var poll_i: usize = 0;
+    var completed: usize = 0;
+
+    // Put all the file reads with nonblocking enabled into the poll set.
+    if (operations.len > poll_buffer.len) @panic("TODO");
+
+    // TODO if any operation is canceled, cancel the rest
+
+    for (operations, 0..) |*operation, operation_index| switch (operation.*) {
+        .noop => continue,
+        .file_read_streaming => |*o| {
+            if (o.nonblocking) {
+                o.result = error.WouldBlock;
+                poll_buffer[poll_i] = .{
+                    .fd = o.file.handle,
+                    .events = posix.POLL.IN,
+                    .revents = undefined,
+                };
+                map_buffer[poll_i] = @intCast(operation_index);
+                poll_i += 1;
+            } else {
+                o.result = fileReadStreaming(o.file, o.data);
+                completed += 1;
+            }
+        },
+    };
+
+    if (poll_i == 0) {
+        @branchHint(.likely);
+        return;
+    }
+
+    const max_poll_ms = std.math.maxInt(i32);
+
+    while (completed < n_wait) {
+        const timeout_ms: i32 = if (deadline) |d| t: {
+            const duration = d.durationFromNow(t_io) catch @panic("TODO make this unreachable");
+            if (duration.raw.nanoseconds <= 0) return error.Timeout;
+            break :t @intCast(@min(max_poll_ms, duration.raw.toMilliseconds()));
+        } else -1;
+        const syscall = try Syscall.start();
+        const poll_rc = posix.system.poll(&poll_buffer, poll_i, timeout_ms);
+        syscall.finish();
+        switch (posix.errno(poll_rc)) {
+            .SUCCESS => {
+                if (poll_rc == 0) {
+                    // Although spurious timeouts are OK, when no deadline
+                    // is passed we must not return `error.Timeout`.
+                    if (deadline == null) continue;
+                    return error.Timeout;
+                }
+                for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, operation_index| {
+                    if (poll_fd.revents == 0) continue;
+                    poll_fd.fd = -1; // Disarm this operation.
+                    switch (operations[operation_index]) {
+                        .noop => unreachable,
+                        .file_read_streaming => |*o| {
+                            o.result = fileReadStreaming(o.file, o.data);
+                            completed += 1;
+                        },
+                    }
+                }
+            },
+            .INTR => continue,
+            else => @panic("TODO handle unexpected error from poll()"),
+        }
+    }
 }
 
 const dirCreateDir = switch (native_os) {

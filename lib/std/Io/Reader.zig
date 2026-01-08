@@ -315,6 +315,27 @@ pub fn allocRemainingAlignedSentinel(
     }
 }
 
+pub const AppendExactError = Allocator.Error || Error;
+
+/// Transfers exactly `n` bytes from the reader to the `ArrayList`.
+///
+/// See also:
+/// * `appendRemaining`
+pub fn appendExact(
+    r: *Reader,
+    gpa: Allocator,
+    list: *ArrayList(u8),
+    n: usize,
+) AppendExactError!void {
+    try list.ensureUnusedCapacity(gpa, n);
+    var a = std.Io.Writer.Allocating.fromArrayList(gpa, list);
+    defer list.* = a.toArrayList();
+    streamExact(r, &a.writer, n) catch |err| switch (err) {
+        error.ReadFailed, error.EndOfStream => |e| return e,
+        error.WriteFailed => unreachable,
+    };
+}
+
 /// Transfers all bytes from the current position to the end of the stream, up
 /// to `limit`, appending them to `list`.
 ///

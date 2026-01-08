@@ -300,7 +300,7 @@ fn readVecStreaming(r: *Reader, data: [][]u8) Io.Reader.Error!usize {
     const dest_n, const data_size = try r.interface.writableVector(&iovecs_buffer, data);
     const dest = iovecs_buffer[0..dest_n];
     assert(dest[0].len > 0);
-    const n = io.vtable.fileReadStreaming(io.userdata, r.file, dest) catch |err| {
+    const n = r.file.readStreaming(io, dest) catch |err| {
         r.err = err;
         return error.ReadFailed;
     };
@@ -355,7 +355,7 @@ fn discard(io_reader: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
                 const dest_n, const data_size = try r.interface.writableVector(&iovecs_buffer, &data);
                 const dest = iovecs_buffer[0..dest_n];
                 assert(dest[0].len > 0);
-                const n = io.vtable.fileReadStreaming(io.userdata, file, dest) catch |err| {
+                const n = file.readStreaming(io, dest) catch |err| {
                     r.err = err;
                     return error.ReadFailed;
                 };

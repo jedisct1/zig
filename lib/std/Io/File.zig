@@ -554,7 +554,13 @@ pub fn setTimestampsNow(file: File, io: Io) SetTimestampsError!void {
 /// See also:
 /// * `reader`
 pub fn readStreaming(file: File, io: Io, buffer: []const []u8) Reader.Error!usize {
-    return io.vtable.fileReadStreaming(io.userdata, file, buffer);
+    var operation: Io.Operation = .{ .file_read_streaming = .{
+        .file = file,
+        .data = buffer,
+        .result = undefined,
+    } };
+    io.vtable.operate(io.userdata, (&operation)[0..1], 1, .none) catch unreachable;
+    return operation.file_read_streaming.result;
 }
 
 pub const ReadPositionalError = error{

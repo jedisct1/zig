@@ -149,6 +149,8 @@ pub const VTable = struct {
     futexWaitUncancelable: *const fn (?*anyopaque, ptr: *const u32, expected: u32) void,
     futexWake: *const fn (?*anyopaque, ptr: *const u32, max_waiters: u32) void,
 
+    operate: *const fn (?*anyopaque, []Operation, n_wait: usize, Timeout) OperateError!void,
+
     dirCreateDir: *const fn (?*anyopaque, Dir, []const u8, Dir.Permissions) Dir.CreateDirError!void,
     dirCreateDirPath: *const fn (?*anyopaque, Dir, []const u8, Dir.Permissions) Dir.CreateDirPathError!Dir.CreatePathStatus,
     dirCreateDirPathOpen: *const fn (?*anyopaque, Dir, []const u8, Dir.Permissions, Dir.OpenOptions) Dir.CreateDirPathOpenError!Dir,
@@ -183,8 +185,6 @@ pub const VTable = struct {
     fileWritePositional: *const fn (?*anyopaque, File, header: []const u8, data: []const []const u8, splat: usize, offset: u64) File.WritePositionalError!usize,
     fileWriteFileStreaming: *const fn (?*anyopaque, File, header: []const u8, *Io.File.Reader, Io.Limit) File.Writer.WriteFileError!usize,
     fileWriteFilePositional: *const fn (?*anyopaque, File, header: []const u8, *Io.File.Reader, Io.Limit, offset: u64) File.WriteFilePositionalError!usize,
-    /// Returns 0 on end of stream.
-    fileReadStreaming: *const fn (?*anyopaque, File, data: []const []u8) File.Reader.Error!usize,
     /// Returns 0 on end of stream.
     fileReadPositional: *const fn (?*anyopaque, File, data: []const []u8, offset: u64) File.ReadPositionalError!usize,
     fileSeekBy: *const fn (?*anyopaque, File, relative_offset: i64) File.SeekError!void,
@@ -251,6 +251,38 @@ pub const VTable = struct {
     netInterfaceName: *const fn (?*anyopaque, net.Interface) net.Interface.NameError!net.Interface.Name,
     netLookup: *const fn (?*anyopaque, net.HostName, *Queue(net.HostName.LookupResult), net.HostName.LookupOptions) net.HostName.LookupError!void,
 };
+
+pub const Operation = union(enum) {
+    noop,
+    file_read_streaming: FileReadStreaming,
+
+    pub const FileReadStreaming = struct {
+        file: File,
+        data: []const []u8,
+        /// Causes `result` to return `error.WouldBlock` instead of blocking.
+        nonblocking: bool = false,
+        /// Returns 0 on end of stream.
+        result: File.Reader.Error!usize,
+    };
+};
+
+pub const OperateError = error{ Canceled, Timeout };
+
+/// Performs all `operations` in a non-deterministic order. Returns after all
+/// `operations` have been attempted. The degree to which the operations are
+/// performed concurrently is determined by the `Io` implementation.
+///
+/// `n_wait` is an amount of operations between `0` and `operations.len` that
+/// determines how many attempted operations must complete before `operate`
+/// returns. Operation completion is defined by returning a value other than
+/// `error.WouldBlock`. If the operation cannot return `error.WouldBlock`, it
+/// always counts as completing.
+///
+/// In the event `error.Canceled` is returned, any number of `operations` may
+/// still have been completed successfully.
+pub fn operate(io: Io, operations: []Operation, n_wait: usize, timeout: Timeout) OperateError!void {
+    return io.vtable.operate(io.userdata, operations, n_wait, timeout);
+}
 
 pub const Limit = enum(usize) {
     nothing = 0,

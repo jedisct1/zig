@@ -9,7 +9,6 @@ const process = std.process;
 const File = std.Io.File;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
-const ArrayList = std.ArrayList;
 
 pub const Id = switch (native_os) {
     .windows => std.os.windows.HANDLE,
@@ -126,53 +125,80 @@ pub fn wait(child: *Child, io: Io) WaitError!Term {
     return io.vtable.childWait(io.userdata, child);
 }
 
-/// Collect the output from the process's stdout and stderr. Will return once all output
-/// has been collected. This does not mean that the process has ended. `wait` should still
-/// be called to wait for and clean up the process.
+pub const CollectOutputError = error{
+    Timeout,
+    StreamTooLong,
+} || Allocator.Error || Io.File.Reader.Error;
+
+pub const CollectOutputOptions = struct {
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    /// Used for `stdout` and `stderr`. If not provided, only the existing
+    /// capacity will be used.
+    allocator: ?Allocator = null,
+    stdout_limit: Io.Limit = .unlimited,
+    stderr_limit: Io.Limit = .unlimited,
+    timeout: Io.Timeout = .none,
+};
+
+/// Collect the output from the process's stdout and stderr. Will return once
+/// all output has been collected. This does not mean that the process has
+/// ended. `wait` should still be called to wait for and clean up the process.
 ///
 /// The process must have been started with stdout and stderr set to
 /// `process.SpawnOptions.StdIo.pipe`.
-pub fn collectOutput(
-    child: *const Child,
-    /// Used for `stdout` and `stderr`.
-    allocator: Allocator,
-    stdout: *ArrayList(u8),
-    stderr: *ArrayList(u8),
-    max_output_bytes: usize,
-) !void {
-    var poller = std.Io.poll(allocator, enum { stdout, stderr }, .{
-        .stdout = child.stdout.?,
-        .stderr = child.stderr.?,
-    });
-    defer poller.deinit();
-
-    const stdout_r = poller.reader(.stdout);
-    stdout_r.buffer = stdout.allocatedSlice();
-    stdout_r.seek = 0;
-    stdout_r.end = stdout.items.len;
-
-    const stderr_r = poller.reader(.stderr);
-    stderr_r.buffer = stderr.allocatedSlice();
-    stderr_r.seek = 0;
-    stderr_r.end = stderr.items.len;
-
-    defer {
-        stdout.* = .{
-            .items = stdout_r.buffer[0..stdout_r.end],
-            .capacity = stdout_r.buffer.len,
-        };
-        stderr.* = .{
-            .items = stderr_r.buffer[0..stderr_r.end],
-            .capacity = stderr_r.buffer.len,
-        };
-        stdout_r.buffer = &.{};
-        stderr_r.buffer = &.{};
-    }
-
-    while (try poller.poll()) {
-        if (stdout_r.bufferedLen() > max_output_bytes)
-            return error.StdoutStreamTooLong;
-        if (stderr_r.bufferedLen() > max_output_bytes)
-            return error.StderrStreamTooLong;
+pub fn collectOutput(child: *const Child, io: Io, options: CollectOutputOptions) CollectOutputError!void {
+    const files: [2]Io.File = .{ child.stdout.?, child.stderr.? };
+    const lists: [2]*std.ArrayList(u8) = .{ options.stdout, options.stderr };
+    const limits: [2]Io.Limit = .{ options.stdout_limit, options.stderr_limit };
+    var dones: [2]bool = .{ false, false };
+    var reads: [2]Io.Operation = undefined;
+    var vecs: [2][1][]u8 = undefined;
+    while (true) {
+        for (&reads, &lists, &files, dones, &vecs) |*read, list, file, done, *vec| {
+            if (done) {
+                read.* = .noop;
+                continue;
+            }
+            if (options.allocator) |gpa| try list.ensureUnusedCapacity(gpa, 1);
+            const cap = list.unusedCapacitySlice();
+            if (cap.len == 0) return error.StreamTooLong;
+            vec[0] = cap;
+            read.* = .{ .file_read_streaming = .{
+                .file = file,
+                .data = vec,
+                .nonblocking = true,
+                .result = undefined,
+            } };
+        }
+        var all_done = true;
+        var any_canceled = false;
+        var other_err: (error{StreamTooLong} || Io.File.Reader.Error)!void = {};
+        const op_result = io.vtable.operate(io.userdata, &reads, 1, options.timeout);
+        for (&reads, &lists, &limits, &dones) |*read, list, limit, *done| {
+            if (done.*) continue;
+            const n = read.file_read_streaming.result catch |err| switch (err) {
+                error.Canceled => {
+                    any_canceled = true;
+                    continue;
+                },
+                error.WouldBlock => continue,
+                else => |e| {
+                    other_err = e;
+                    continue;
+                },
+            };
+            if (n == 0) {
+                done.* = true;
+            } else {
+                all_done = false;
+            }
+            list.items.len += n;
+            if (list.items.len > @intFromEnum(limit)) other_err = error.StreamTooLong;
+        }
+        if (any_canceled) return error.Canceled;
+        try op_result; // could be error.Canceled
+        try other_err;
+        if (all_done) return;
     }
 }

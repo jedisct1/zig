@@ -454,13 +454,17 @@ pub fn spawnPath(io: Io, dir: Io.Dir, options: SpawnOptions) SpawnError!Child {
 }
 
 pub const RunError = CurrentPathError || posix.ReadError || SpawnError || posix.PollError || error{
-    StdoutStreamTooLong,
-    StderrStreamTooLong,
+    StreamTooLong,
 };
 
 pub const RunOptions = struct {
     argv: []const []const u8,
-    max_output_bytes: usize = 50 * 1024,
+    stderr_limit: Io.Limit = .unlimited,
+    stdout_limit: Io.Limit = .unlimited,
+    /// How many bytes to initially allocate for stderr.
+    stderr_reserve_amount: usize = 1,
+    /// How many bytes to initially allocate for stdout.
+    stdout_reserve_amount: usize = 1,
 
     /// Set to change the current working directory when spawning the child process.
     cwd: ?[]const u8 = null,
@@ -486,6 +490,7 @@ pub const RunOptions = struct {
     create_no_window: bool = true,
     /// Darwin-only. Disable ASLR for the child process.
     disable_aslr: bool = false,
+    timeout: Io.Timeout = .none,
 };
 
 pub const RunResult = struct {
@@ -518,7 +523,17 @@ pub fn run(gpa: Allocator, io: Io, options: RunOptions) RunError!RunResult {
     var stderr: std.ArrayList(u8) = .empty;
     defer stderr.deinit(gpa);
 
-    try child.collectOutput(gpa, &stdout, &stderr, options.max_output_bytes);
+    try stdout.ensureUnusedCapacity(gpa, options.stdout_reserve_amount);
+    try stderr.ensureUnusedCapacity(gpa, options.stderr_reserve_amount);
+
+    try child.collectOutput(io, .{
+        .allocator = gpa,
+        .stdout = &stdout,
+        .stderr = &stderr,
+        .stdout_limit = options.stdout_limit,
+        .stderr_limit = options.stderr_limit,
+        .timeout = options.timeout,
+    });
 
     const term = try child.wait(io);
 
