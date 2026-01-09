@@ -149,7 +149,10 @@ pub const VTable = struct {
     futexWaitUncancelable: *const fn (?*anyopaque, ptr: *const u32, expected: u32) void,
     futexWake: *const fn (?*anyopaque, ptr: *const u32, max_waiters: u32) void,
 
-    operate: *const fn (?*anyopaque, []Operation) void,
+    batch: *const fn (?*anyopaque, []Operation) ConcurrentError!void,
+    batchSubmit: *const fn (?*anyopaque, *Batch) void,
+    batchWait: *const fn (?*anyopaque, *Batch, resubmissions: []const usize, Timeout) Batch.WaitError!usize,
+    batchCancel: *const fn (?*anyopaque, *Batch) void,
 
     dirCreateDir: *const fn (?*anyopaque, Dir, []const u8, Dir.Permissions) Dir.CreateDirError!void,
     dirCreateDirPath: *const fn (?*anyopaque, Dir, []const u8, Dir.Permissions) Dir.CreateDirPathError!Dir.CreatePathStatus,
@@ -253,25 +256,95 @@ pub const VTable = struct {
 };
 
 pub const Operation = union(enum) {
-    noop,
+    noop: Noop,
     file_read_streaming: FileReadStreaming,
 
+    pub const Noop = struct {
+        reserved: [2]usize,
+        status: Status(void) = .{ .result = {} },
+    };
+
+    /// Returns 0 on end of stream.
     pub const FileReadStreaming = struct {
         file: File,
         data: []const []u8,
-        /// Causes `result` to return `error.WouldBlock` instead of blocking.
-        nonblocking: bool = false,
-        /// Returns 0 on end of stream.
-        result: File.Reader.Error!usize,
+        status: Status(File.Reader.Error!usize) = .{ .unstarted = {} },
     };
+
+    pub fn Status(Result: type) type {
+        return union {
+            unstarted: void,
+            pending: usize,
+            result: Result,
+        };
+    }
 };
 
-/// Performs all `operations` in a non-deterministic order. Returns after all
-/// `operations` have been completed. The degree to which the operations are
-/// performed concurrently is determined by the `Io` implementation.
-pub fn operate(io: Io, operations: []Operation) void {
-    return io.vtable.operate(io.userdata, operations);
+/// Performs all `operations` in an unspecified order, concurrently.
+///
+/// Returns after all `operations` have been completed. If the operations could
+/// not be completed concurrently, returns `error.ConcurrencyUnavailable`.
+///
+/// With this API, it is rare for concurrency to not be available. Even a
+/// single-threaded `Io` implementation can, for example, take advantage of
+/// poll() to implement this. Note that poll() is fallible however.
+///
+/// If `operations.len` is one, `error.ConcurrencyUnavailable` is unreachable.
+///
+/// On entry, all operations must already have `.status = .unstarted` except
+/// noops must have `.status = .{ .result = {} }`, to safety check the state
+/// transitions.
+///
+/// On return, all operations have `.status = .{ .result = ... }`.
+pub fn batch(io: Io, operations: []Operation) ConcurrentError!void {
+    return io.vtable.batch(io.userdata, operations);
 }
+
+/// Performs one `Operation`.
+pub fn operate(io: Io, operation: *Operation) void {
+    return io.vtable.batch(io.userdata, (operation)[0..1]) catch unreachable;
+}
+
+/// Submits many operations together without waiting for all of them to
+/// complete.
+///
+/// This is a low-level abstraction based on `Operation`. For a higher
+/// level API that operates on `Future`, see `Select`.
+pub const Batch = struct {
+    operations: []Operation,
+    index: usize,
+    reserved: ?*anyopaque,
+
+    pub fn init(operations: []Operation) Batch {
+        return .{ .operations = operations, .index = 0, .reserved = null };
+    }
+
+    /// Submits all non-noop `operations`.
+    pub fn submit(b: *Batch, io: Io) void {
+        return io.vtable.batchSubmit(io.userdata, b);
+    }
+
+    pub const WaitError = ConcurrentError || Cancelable || Timeout.Error;
+
+    /// Resubmits the previously completed or noop-initialized `operations` at
+    /// indexes given by `resubmissions`. This set of indexes typically will be empty
+    /// on the first call to `await` since all operations have already been
+    /// submitted via `async`.
+    ///
+    /// Returns the index of a completed `Operation`, or `operations.len` if
+    /// all operations are completed.
+    ///
+    /// When `error.Canceled` is returned, all operations have already completed.
+    pub fn wait(b: *Batch, io: Io, resubmissions: []const usize, timeout: Timeout) WaitError!usize {
+        return io.vtable.batchWait(io.userdata, b, resubmissions, timeout);
+    }
+
+    /// Returns after all `operations` have completed. Each operation
+    /// independently may or may not have been canceled.
+    pub fn cancel(b: *Batch, io: Io) void {
+        return io.vtable.batchCancel(io.userdata, b);
+    }
+};
 
 pub const Limit = enum(usize) {
     nothing = 0,

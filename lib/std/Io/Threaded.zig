@@ -1587,7 +1587,10 @@ pub fn io(t: *Threaded) Io {
             .futexWaitUncancelable = futexWaitUncancelable,
             .futexWake = futexWake,
 
-            .operate = operate,
+            .batch = batch,
+            .batchSubmit = batchSubmit,
+            .batchWait = batchWait,
+            .batchCancel = batchCancel,
 
             .dirCreateDir = dirCreateDir,
             .dirCreateDirPath = dirCreateDirPath,
@@ -1748,7 +1751,10 @@ pub fn ioBasic(t: *Threaded) Io {
             .futexWaitUncancelable = futexWaitUncancelable,
             .futexWake = futexWake,
 
-            .operate = operate,
+            .batch = batch,
+            .batchSubmit = batchSubmit,
+            .batchWait = batchWait,
+            .batchCancel = batchCancel,
 
             .dirCreateDir = dirCreateDir,
             .dirCreateDirPath = dirCreateDirPath,
@@ -2450,107 +2456,187 @@ fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
     Thread.futexWake(ptr, max_waiters);
 }
 
-fn operate(userdata: ?*anyopaque, operations: []Io.Operation) void {
+fn batchSubmit(userdata: ?*anyopaque, b: *Io.Batch) void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
+    _ = b;
+    return;
+}
+
+fn operate(op: *Io.Operation) void {
+    switch (op.*) {
+        .noop => {},
+        .file_read_streaming => |*o| o.status = .{ .result = fileReadStreaming(o.file, o.data) },
+    }
+}
+
+fn batchWait(
+    userdata: ?*anyopaque,
+    b: *Io.Batch,
+    resubmissions: []const usize,
+    timeout: Io.Timeout,
+) Io.Batch.WaitError!usize {
+    _ = resubmissions;
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    const operations = b.operations;
+    if (operations.len == 1) {
+        operate(&operations[0]);
+        return b.operations.len;
+    }
+    if (is_windows) @panic("TODO");
+
+    var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
+    var map_buffer: [poll_buffer_len]u8 = undefined; // poll_buffer index to operations index
+    var poll_i: usize = 0;
+
+    for (operations, 0..) |*op, operation_index| switch (op.*) {
+        .noop => continue,
+        .file_read_streaming => |*o| {
+            if (poll_buffer.len - poll_i == 0) return error.ConcurrencyUnavailable;
+            poll_buffer[poll_i] = .{
+                .fd = o.file.handle,
+                .events = posix.POLL.IN,
+                .revents = 0,
+            };
+            map_buffer[poll_i] = @intCast(operation_index);
+            poll_i += 1;
+        },
+    };
+
+    if (poll_i == 0) return operations.len;
+
+    const t_io = ioBasic(t);
+    const deadline = timeout.toDeadline(t_io) catch return error.UnsupportedClock;
+    const max_poll_ms = std.math.maxInt(i32);
+
+    while (true) {
+        const timeout_ms: i32 = if (deadline) |d| t: {
+            const duration = d.durationFromNow(t_io) catch return error.UnsupportedClock;
+            if (duration.raw.nanoseconds <= 0) return error.Timeout;
+            break :t @intCast(@min(max_poll_ms, duration.raw.toMilliseconds()));
+        } else -1;
+        const syscall = try Syscall.start();
+        const rc = posix.system.poll(&poll_buffer, poll_i, timeout_ms);
+        syscall.finish();
+        switch (posix.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) {
+                    // Although spurious timeouts are OK, when no deadline is
+                    // passed we must not return `error.Timeout`.
+                    if (deadline == null) continue;
+                    return error.Timeout;
+                }
+                for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, i| {
+                    if (poll_fd.revents == 0) continue;
+                    operate(&operations[i]);
+                    return i;
+                }
+            },
+            .INTR => continue,
+            else => return error.ConcurrencyUnavailable,
+        }
+    }
+}
+
+fn batchCancel(userdata: ?*anyopaque, b: *Io.Batch) void {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    _ = t;
+    _ = b;
+    return;
+}
+
+fn batch(userdata: ?*anyopaque, operations: []Io.Operation) Io.ConcurrentError!void {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    _ = t;
+
+    if (operations.len == 1) {
+        @branchHint(.likely);
+        return operate(&operations[0]);
+    }
 
     if (is_windows) @panic("TODO");
 
     var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
     var map_buffer: [poll_buffer_len]u8 = undefined; // poll_buffer index to operations index
-    var operation_index: usize = 0;
+    var poll_i: usize = 0;
 
-    while (operation_index < operations.len) {
-        var poll_i: usize = 0;
-        while (operation_index < operations.len) : (operation_index += 1) {
-            switch (operations[operation_index]) {
-                .noop => continue,
-                .file_read_streaming => |*o| {
-                    if (o.nonblocking) {
-                        o.result = error.WouldBlock;
-                        poll_buffer[poll_i] = .{
-                            .fd = o.file.handle,
-                            .events = posix.POLL.IN,
-                            .revents = 0,
-                        };
-                        if (map_buffer.len - poll_i == 0) break;
-                        map_buffer[poll_i] = @intCast(operation_index);
-                        poll_i += 1;
-                    } else {
-                        o.result = fileReadStreaming(o.file, o.data) catch |err| switch (err) {
-                            error.Canceled => {
-                                setOperationsError(operations[operation_index..], error.Canceled);
-                                return;
-                            },
-                            else => err,
-                        };
-                    }
-                },
-            }
-        }
-
-        if (poll_i == 0) {
-            @branchHint(.likely);
-            return;
-        }
-
-        while (true) {
-            const syscall = Syscall.start() catch |err| switch (err) {
-                error.Canceled => {
-                    setPollOperationsError(operations, map_buffer[0..poll_i], error.Canceled);
-                    setOperationsError(operations[operation_index..], error.Canceled);
-                    return;
-                },
+    for (operations, 0..) |*op, operation_index| switch (op.*) {
+        .noop => continue,
+        .file_read_streaming => |*o| {
+            if (poll_buffer.len - poll_i == 0) return error.ConcurrencyUnavailable;
+            poll_buffer[poll_i] = .{
+                .fd = o.file.handle,
+                .events = posix.POLL.IN,
+                .revents = 0,
             };
-            const poll_rc = posix.system.poll(&poll_buffer, poll_i, -1);
-            syscall.finish();
-            switch (posix.errno(poll_rc)) {
-                .SUCCESS => {
-                    if (poll_rc == 0) {
-                        // Spurious timeout; handle same as INTR.
-                        continue;
-                    }
-                    for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, i| {
-                        if (poll_fd.revents == 0) continue;
-                        switch (operations[i]) {
-                            .noop => unreachable,
-                            .file_read_streaming => |*o| {
-                                o.result = fileReadStreaming(o.file, o.data);
-                            },
-                        }
-                    }
-                    break;
-                },
-                .INTR => continue,
-                .NOMEM => {
-                    setPollOperationsError(operations, map_buffer[0..poll_i], error.SystemResources);
-                    break;
-                },
-                else => {
-                    setPollOperationsError(operations, map_buffer[0..poll_i], error.Unexpected);
-                    break;
-                },
-            }
+            map_buffer[poll_i] = @intCast(operation_index);
+            poll_i += 1;
+        },
+    };
+
+    const polls = poll_buffer[0..poll_i];
+    const map = map_buffer[0..poll_i];
+
+    var pending = poll_i;
+    while (pending > 1) {
+        const syscall = Syscall.start() catch |err| switch (err) {
+            error.Canceled => {
+                if (!setOperationsError(operations, polls, map, error.Canceled))
+                    recancelInner();
+                return;
+            },
+        };
+        const rc = posix.system.poll(polls.ptr, polls.len, -1);
+        syscall.finish();
+        switch (posix.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) {
+                    // Spurious timeout; handle the same as INTR.
+                    continue;
+                }
+                for (polls, map) |*poll_fd, i| {
+                    if (poll_fd.revents == 0) continue;
+                    poll_fd.fd = -1;
+                    pending -= 1;
+                    operate(&operations[i]);
+                }
+            },
+            .INTR => continue,
+            .NOMEM => {
+                assert(setOperationsError(operations, polls, map, error.SystemResources));
+                return;
+            },
+            else => {
+                assert(setOperationsError(operations, polls, map, error.Unexpected));
+                return;
+            },
         }
     }
+
+    if (pending == 1) for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, i| {
+        if (poll_fd.fd == -1) continue;
+        operate(&operations[i]);
+    };
 }
 
-fn setPollOperationsError(
+fn setOperationsError(
     operations: []Io.Operation,
+    polls: []const posix.pollfd,
     map: []const u8,
     err: error{ Canceled, SystemResources, Unexpected },
-) void {
-    for (map) |operation_index| switch (operations[operation_index]) {
-        .noop => unreachable,
-        inline else => |*o| o.result = err,
-    };
-}
-
-fn setOperationsError(operations: []Io.Operation, err: error{ Canceled, SystemResources, Unexpected }) void {
-    for (operations) |*op| switch (op.*) {
-        .noop => unreachable,
-        inline else => |*o| o.result = err,
-    };
+) bool {
+    var marked = false;
+    for (polls, map) |*poll_fd, i| {
+        if (poll_fd.fd == -1) continue;
+        switch (operations[i]) {
+            .noop => unreachable,
+            inline else => |*o| {
+                o.status = .{ .result = err };
+                marked = true;
+            },
+        }
+    }
+    return marked;
 }
 
 const dirCreateDir = switch (native_os) {

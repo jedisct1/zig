@@ -557,10 +557,9 @@ pub fn readStreaming(file: File, io: Io, buffer: []const []u8) Reader.Error!usiz
     var operation: Io.Operation = .{ .file_read_streaming = .{
         .file = file,
         .data = buffer,
-        .result = undefined,
     } };
-    io.vtable.operate(io.userdata, (&operation)[0..1]);
-    return operation.file_read_streaming.result;
+    io.operate(&operation);
+    return operation.file_read_streaming.status.result;
 }
 
 pub const ReadPositionalError = error{
