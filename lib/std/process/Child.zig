@@ -125,10 +125,7 @@ pub fn wait(child: *Child, io: Io) WaitError!Term {
     return io.vtable.childWait(io.userdata, child);
 }
 
-pub const CollectOutputError = error{
-    Timeout,
-    StreamTooLong,
-} || Allocator.Error || Io.File.Reader.Error;
+pub const CollectOutputError = error{StreamTooLong} || Allocator.Error || Io.File.Reader.Error;
 
 pub const CollectOutputOptions = struct {
     stdout: *std.ArrayList(u8),
