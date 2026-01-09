@@ -455,7 +455,6 @@ pub fn spawnPath(io: Io, dir: Io.Dir, options: SpawnOptions) SpawnError!Child {
 
 pub const RunError = CurrentPathError || posix.ReadError || SpawnError || posix.PollError || error{
     StreamTooLong,
-    ConcurrencyUnavailable,
 };
 
 pub const RunOptions = struct {
