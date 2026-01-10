@@ -149,9 +149,8 @@ pub const VTable = struct {
     futexWaitUncancelable: *const fn (?*anyopaque, ptr: *const u32, expected: u32) void,
     futexWake: *const fn (?*anyopaque, ptr: *const u32, max_waiters: u32) void,
 
-    batch: *const fn (?*anyopaque, []Operation) ConcurrentError!void,
-    batchSubmit: *const fn (?*anyopaque, *Batch) void,
-    batchWait: *const fn (?*anyopaque, *Batch, resubmissions: []const usize, Timeout) Batch.WaitError!usize,
+    operate: *const fn (?*anyopaque, *Operation) Cancelable!void,
+    batchWait: *const fn (?*anyopaque, *Batch, Timeout) Batch.WaitError!void,
     batchCancel: *const fn (?*anyopaque, *Batch) void,
 
     dirCreateDir: *const fn (?*anyopaque, Dir, []const u8, Dir.Permissions) Dir.CreateDirError!void,
@@ -261,48 +260,50 @@ pub const Operation = union(enum) {
 
     pub const Noop = struct {
         reserved: [2]usize = .{ 0, 0 },
-        status: Status(void) = .{ .result = {} },
+        status: Status(void) = .{ .unstarted = {} },
     };
 
     /// Returns 0 on end of stream.
     pub const FileReadStreaming = struct {
         file: File,
         data: []const []u8,
-        status: Status(File.Reader.Error!usize) = .{ .unstarted = {} },
+        status: Status(Error!usize) = .{ .unstarted = {} },
+
+        pub const Error = error{
+            InputOutput,
+            SystemResources,
+            /// Trying to read a directory file descriptor as if it were a file.
+            IsDir,
+            BrokenPipe,
+            ConnectionResetByPeer,
+            /// File was not opened with read capability.
+            NotOpenForReading,
+            SocketUnconnected,
+            /// Non-blocking has been enabled, and reading from the file descriptor
+            /// would block.
+            WouldBlock,
+            /// In WASI, this error occurs when the file descriptor does
+            /// not hold the required rights to read from it.
+            AccessDenied,
+            /// Unable to read file due to lock. Depending on the `Io` implementation,
+            /// reading from a locked file may return this error, or may ignore the
+            /// lock.
+            LockViolation,
+        } || Io.UnexpectedError;
     };
 
     pub fn Status(Result: type) type {
         return union {
             unstarted: void,
-            pending: usize,
+            pending: *Batch,
             result: Result,
         };
     }
 };
 
-/// Performs all `operations` in an unspecified order, concurrently.
-///
-/// Returns after all `operations` have been completed. If the operations could
-/// not be completed concurrently, returns `error.ConcurrencyUnavailable`.
-///
-/// With this API, it is rare for concurrency to not be available. Even a
-/// single-threaded `Io` implementation can, for example, take advantage of
-/// poll() to implement this. Note that poll() is fallible however.
-///
-/// If `operations.len` is one, `error.ConcurrencyUnavailable` is unreachable.
-///
-/// On entry, all operations must already have `.status = .unstarted` except
-/// noops must have `.status = .{ .result = {} }`, to safety check the state
-/// transitions.
-///
-/// On return, all operations have `.status = .{ .result = ... }`.
-pub fn batch(io: Io, operations: []Operation) ConcurrentError!void {
-    return io.vtable.batch(io.userdata, operations);
-}
-
 /// Performs one `Operation`.
-pub fn operate(io: Io, operation: *Operation) void {
-    return io.vtable.batch(io.userdata, (operation)[0..1]) catch unreachable;
+pub fn operate(io: Io, operation: *Operation) Cancelable!void {
+    return io.vtable.operate(io.userdata, operation) catch unreachable;
 }
 
 /// Submits many operations together without waiting for all of them to
@@ -312,35 +313,107 @@ pub fn operate(io: Io, operation: *Operation) void {
 /// level API that operates on `Future`, see `Select`.
 pub const Batch = struct {
     operations: []Operation,
-    index: usize,
-    reserved: ?*anyopaque,
+    ring: [*]u32,
+    user: struct {
+        submit_tail: RingIndex,
+        complete_head: RingIndex,
+        complete_tail: RingIndex,
+    },
+    impl: struct {
+        submit_head: RingIndex,
+        submit_tail: RingIndex,
+        complete_tail: RingIndex,
+        reserved: ?*anyopaque,
+    },
 
-    pub fn init(operations: []Operation) Batch {
-        return .{ .operations = operations, .index = 0, .reserved = null };
-    }
+    pub const RingIndex = enum(u32) {
+        _,
 
-    /// Submits all non-noop `operations`.
-    pub fn submit(b: *Batch, io: Io) void {
-        return io.vtable.batchSubmit(io.userdata, b);
-    }
+        pub fn index(ri: RingIndex, len: u31) u31 {
+            const i = @intFromEnum(ri);
+            assert(i < @as(u32, len) * 2);
+            return @intCast(if (i < len) i else i - len);
+        }
+
+        pub fn prev(ri: RingIndex, len: u31) RingIndex {
+            const i = @intFromEnum(ri);
+            const double_len = @as(u32, len) * 2;
+            assert(i <= double_len);
+            return @enumFromInt((if (i > 0) i else double_len) - 1);
+        }
+
+        pub fn next(ri: RingIndex, len: u31) RingIndex {
+            const i = @intFromEnum(ri) + 1;
+            const double_len = @as(u32, len) * 2;
+            assert(i <= double_len);
+            return @enumFromInt(if (i < double_len) i else 0);
+        }
+    };
 
     pub const WaitError = ConcurrentError || Cancelable || Timeout.Error;
 
-    /// Resubmits the previously completed or noop-initialized `operations` at
-    /// indexes given by `resubmissions`. This set of indexes typically will be empty
-    /// on the first call to `await` since all operations have already been
-    /// submitted via `async`.
-    ///
-    /// Returns the index of a completed `Operation`, or `operations.len` if
-    /// all operations are completed.
-    ///
-    /// When `error.Canceled` is returned, all operations have already completed.
-    pub fn wait(b: *Batch, io: Io, resubmissions: []const usize, timeout: Timeout) WaitError!usize {
-        return io.vtable.batchWait(io.userdata, b, resubmissions, timeout);
+    pub fn init(operations: []Operation, ring: []u32) Batch {
+        const len: u31 = @intCast(operations.len);
+        assert(ring.len == len);
+        return .{
+            .operations = operations,
+            .ring = ring.ptr,
+            .user = .{
+                .submit_tail = @enumFromInt(0),
+                .complete_head = @enumFromInt(0),
+                .complete_tail = @enumFromInt(0),
+            },
+            .impl = .{
+                .submit_head = @enumFromInt(0),
+                .submit_tail = @enumFromInt(0),
+                .complete_tail = @enumFromInt(0),
+                .reserved = null,
+            },
+        };
     }
 
-    /// Returns after all `operations` have completed. Each operation
-    /// independently may or may not have been canceled.
+    /// Adds `b.operations[operation]` to the list of submitted operations
+    /// that will be performed when `wait` is called.
+    pub fn add(b: *Batch, operation: usize) void {
+        const tail = b.user.submit_tail;
+        const len: u31 = @intCast(b.operations.len);
+        b.user.submit_tail = tail.next(len);
+        b.ring[0..len][tail.index(len)] = @intCast(operation);
+    }
+
+    fn flush(b: *Batch) void {
+        @atomicStore(RingIndex, &b.impl.submit_tail, b.user.submit_tail, .release);
+    }
+
+    /// Returns `operation` such that `b.operations[operation]` has completed.
+    /// Returns `null` when `wait` should be called.
+    pub fn next(b: *Batch) ?u32 {
+        const head = b.user.complete_head;
+        if (head == b.user.complete_tail) {
+            @branchHint(.unlikely);
+            b.flush();
+            const tail = @atomicLoad(RingIndex, &b.impl.complete_tail, .acquire);
+            if (head == tail) {
+                @branchHint(.unlikely);
+                return null;
+            }
+            assert(head != tail);
+            b.user.complete_tail = tail;
+        }
+        const len: u31 = @intCast(b.operations.len);
+        b.user.complete_head = head.next(len);
+        return b.ring[0..len][head.index(len)];
+    }
+
+    /// Starts work on any submitted operations and returns when at least one has completeed.
+    ///
+    /// Returns `error.Timeout` if `timeout` expires first.
+    pub fn wait(b: *Batch, io: Io, timeout: Timeout) WaitError!void {
+        return io.vtable.batchWait(io.userdata, b, timeout);
+    }
+
+    /// Returns after all `operations` have completed. Operations which have not completed
+    /// after this function returns were successfully dropped and had no side effects.
     pub fn cancel(b: *Batch, io: Io) void {
         return io.vtable.batchCancel(io.userdata, b);
     }

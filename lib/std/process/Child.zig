@@ -149,51 +149,45 @@ pub fn collectOutput(child: *const Child, io: Io, options: CollectOutputOptions)
     const files: [2]Io.File = .{ child.stdout.?, child.stderr.? };
     const lists: [2]*std.ArrayList(u8) = .{ options.stdout, options.stderr };
     const limits: [2]Io.Limit = .{ options.stdout_limit, options.stderr_limit };
-    var dones: [2]bool = .{ false, false };
     var reads: [2]Io.Operation = undefined;
     var vecs: [2][1][]u8 = undefined;
-    while (true) {
-        for (&reads, &lists, &files, dones, &vecs) |*read, list, file, done, *vec| {
-            if (done) {
-                read.* = .{ .noop = .{} };
-                continue;
-            }
-            if (options.allocator) |gpa| try list.ensureUnusedCapacity(gpa, 1);
-            const cap = list.unusedCapacitySlice();
-            if (cap.len == 0) return error.StreamTooLong;
-            vec[0] = cap;
-            read.* = .{ .file_read_streaming = .{
-                .file = file,
-                .data = vec,
-            } };
+    var ring: [2]u32 = undefined;
+    var batch: Io.Batch = .init(&reads, &ring);
+    defer {
+        batch.cancel(io);
+        while (batch.next()) |op| {
+            lists[op].items.len += reads[op].file_read_streaming.status.result catch continue;
         }
-        var all_done = true;
-        var any_canceled = false;
-        var other_err: (error{StreamTooLong} || Io.File.Reader.Error)!void = {};
-        try io.vtable.batch(io.userdata, &reads);
-        for (&reads, &lists, &limits, &dones) |*read, list, limit, *done| {
-            if (done.*) continue;
-            const n = read.file_read_streaming.status.result catch |err| switch (err) {
-                error.Canceled => {
-                    any_canceled = true;
-                    continue;
-                },
-                error.WouldBlock => continue,
-                else => |e| {
-                    other_err = e;
-                    continue;
-                },
-            };
+    }
+    var remaining: usize = 0;
+    for (0.., &reads, &lists, &files, &vecs) |op, *read, list, file, *vec| {
+        if (options.allocator) |gpa| try list.ensureUnusedCapacity(gpa, 1);
+        const cap = list.unusedCapacitySlice();
+        if (cap.len == 0) return error.StreamTooLong;
+        vec[0] = cap;
+        read.* = .{ .file_read_streaming = .{
+            .file = file,
+            .data = vec,
+        } };
+        batch.add(op);
+        remaining += 1;
+    }
+    while (remaining > 0) {
+        try batch.wait(io, .none);
+        while (batch.next()) |op| {
+            const n = try reads[op].file_read_streaming.status.result;
             if (n == 0) {
-                done.* = true;
+                remaining -= 1;
             } else {
-                all_done = false;
+                lists[op].items.len += n;
+                if (lists[op].items.len > @intFromEnum(limits[op])) return error.StreamTooLong;
+                if (options.allocator) |gpa| try lists[op].ensureUnusedCapacity(gpa, 1);
+                const cap = lists[op].unusedCapacitySlice();
+                if (cap.len == 0) return error.StreamTooLong;
+                vecs[op][0] = cap;
+                reads[op].file_read_streaming.status = .{ .unstarted = {} };
+                batch.add(op);
             }
-            list.items.len += n;
-            if (list.items.len > @intFromEnum(limit)) other_err = error.StreamTooLong;
         }
-        if (any_canceled) return error.Canceled;
-        try other_err;
-        if (all_done) return;
     }
 }

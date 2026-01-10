@@ -558,7 +558,7 @@ pub fn readStreaming(file: File, io: Io, buffer: []const []u8) Reader.Error!usiz
         .file = file,
         .data = buffer,
     } };
-    io.operate(&operation);
+    try io.operate(&operation);
     return operation.file_read_streaming.status.result;
 }
 

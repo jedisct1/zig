@@ -26,27 +26,7 @@ size_err: ?SizeError = null,
 seek_err: ?SeekError = null,
 interface: Io.Reader,
 
-pub const Error = error{
-    InputOutput,
-    SystemResources,
-    /// Trying to read a directory file descriptor as if it were a file.
-    IsDir,
-    BrokenPipe,
-    ConnectionResetByPeer,
-    /// File was not opened with read capability.
-    NotOpenForReading,
-    SocketUnconnected,
-    /// Non-blocking has been enabled, and reading from the file descriptor
-    /// would block.
-    WouldBlock,
-    /// In WASI, this error occurs when the file descriptor does
-    /// not hold the required rights to read from it.
-    AccessDenied,
-    /// Unable to read file due to lock. Depending on the `Io` implementation,
-    /// reading from a locked file may return this error, or may ignore the
-    /// lock.
-    LockViolation,
-} || Io.Cancelable || Io.UnexpectedError;
+pub const Error = Io.Operation.FileReadStreaming.Error || Io.Cancelable;
 
 pub const SizeError = File.StatError || error{
     /// Occurs if, for example, the file handle is a network socket and therefore does not have a size.

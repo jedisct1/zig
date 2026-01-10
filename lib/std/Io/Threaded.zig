@@ -1587,8 +1587,7 @@ pub fn io(t: *Threaded) Io {
             .futexWaitUncancelable = futexWaitUncancelable,
             .futexWake = futexWake,
 
-            .batch = batch,
-            .batchSubmit = batchSubmit,
+            .operate = operate,
             .batchWait = batchWait,
             .batchCancel = batchCancel,
 
@@ -1751,8 +1750,7 @@ pub fn ioBasic(t: *Threaded) Io {
             .futexWaitUncancelable = futexWaitUncancelable,
             .futexWake = futexWake,
 
-            .batch = batch,
-            .batchSubmit = batchSubmit,
+            .operate = operate,
             .batchWait = batchWait,
             .batchCancel = batchCancel,
 
@@ -2456,59 +2454,82 @@ fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
     Thread.futexWake(ptr, max_waiters);
 }
 
-fn batchSubmit(userdata: ?*anyopaque, b: *Io.Batch) void {
+fn operate(userdata: ?*anyopaque, op: *Io.Operation) Io.Cancelable!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
-    _ = b;
-    return;
-}
-
-fn operate(op: *Io.Operation) void {
     switch (op.*) {
-        .noop => {},
-        .file_read_streaming => |*o| o.status = .{ .result = fileReadStreaming(o.file, o.data) },
+        .noop => |*o| {
+            _ = o.status.unstarted;
+            o.status = .{ .result = {} };
+        },
+        .file_read_streaming => |*o| {
+            _ = o.status.unstarted;
+            o.status = .{ .result = fileReadStreaming(o.file, o.data) catch |err| switch (err) {
+                error.Canceled => return error.Canceled,
+                else => |e| e,
+            } };
+        },
     }
 }
 
-fn batchWait(
-    userdata: ?*anyopaque,
-    b: *Io.Batch,
-    resubmissions: []const usize,
-    timeout: Io.Timeout,
-) Io.Batch.WaitError!usize {
-    _ = resubmissions;
+fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.WaitError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     const operations = b.operations;
-    if (operations.len == 1) {
-        operate(&operations[0]);
-        return b.operations.len;
+    const len: u31 = @intCast(operations.len);
+    const ring = b.ring[0..len];
+    var submit_head = b.impl.submit_head;
+    const submit_tail = b.user.submit_tail;
+    b.impl.submit_tail = submit_tail;
+    var complete_tail = b.impl.complete_tail;
+    var map_buffer: [poll_buffer_len]u32 = undefined; // poll_buffer index to operations index
+    var poll_i: usize = 0;
+    defer {
+        for (map_buffer[0..poll_i]) |op| {
+            submit_head = submit_head.prev(len);
+            ring[submit_head.index(len)] = op;
+        }
+        b.impl.submit_head = submit_head;
+        b.impl.complete_tail = complete_tail;
+        b.user.complete_tail = complete_tail;
     }
     if (is_windows) @panic("TODO");
-
     var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
-    var map_buffer: [poll_buffer_len]u8 = undefined; // poll_buffer index to operations index
-    var poll_i: usize = 0;
-
-    for (operations, 0..) |*op, operation_index| switch (op.*) {
-        .noop => continue,
-        .file_read_streaming => |*o| {
-            if (poll_buffer.len - poll_i == 0) return error.ConcurrencyUnavailable;
-            poll_buffer[poll_i] = .{
-                .fd = o.file.handle,
-                .events = posix.POLL.IN,
-                .revents = 0,
-            };
-            map_buffer[poll_i] = @intCast(operation_index);
-            poll_i += 1;
+    while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
+        const op = ring[submit_head.index(len)];
+        const operation = &operations[op];
+        switch (operation.*) {
+            else => {
+                try operate(t, operation);
+                ring[complete_tail.index(len)] = op;
+                complete_tail = complete_tail.next(len);
+            },
+            .file_read_streaming => |*o| {
+                _ = o.status.unstarted;
+                if (poll_buffer.len - poll_i == 0) return error.ConcurrencyUnavailable;
+                poll_buffer[poll_i] = .{
+                    .fd = o.file.handle,
+                    .events = posix.POLL.IN,
+                    .revents = 0,
+                };
+                map_buffer[poll_i] = op;
+                poll_i += 1;
+            },
+        }
+    }
+    switch (poll_i) {
+        0 => return,
+        1 => if (timeout == .none) {
+            const op = map_buffer[0];
+            try operate(t, &operations[op]);
+            ring[complete_tail.index(len)] = op;
+            complete_tail = complete_tail.next(len);
+            return;
         },
-    };
-
-    if (poll_i == 0) return operations.len;
-
+        else => {},
+    }
     const t_io = ioBasic(t);
     const deadline = timeout.toDeadline(t_io) catch return error.UnsupportedClock;
     const max_poll_ms = std.math.maxInt(i32);
-
     while (true) {
         const timeout_ms: i32 = if (deadline) |d| t: {
             const duration = d.durationFromNow(t_io) catch return error.UnsupportedClock;
@@ -2526,11 +2547,24 @@ fn batchWait(
                     if (deadline == null) continue;
                     return error.Timeout;
                 }
-                for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, i| {
-                    if (poll_fd.revents == 0) continue;
-                    operate(&operations[i]);
-                    return i;
+                var canceled = false;
+                for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, op| {
+                    if (poll_fd.revents == 0) {
+                        submit_head = submit_head.prev(len);
+                        ring[submit_head.index(len)] = op;
+                    } else {
+                        operate(t, &operations[op]) catch |err| switch (err) {
+                            error.Canceled => {
+                                canceled = true;
+                                continue;
+                            },
+                        };
+                        ring[complete_tail.index(len)] = op;
+                        complete_tail = complete_tail.next(len);
+                    }
                 }
+                poll_i = 0;
+                return if (canceled) error.Canceled;
             },
             .INTR => continue,
             else => return error.ConcurrencyUnavailable,
@@ -2540,9 +2574,27 @@ fn batchWait(
 
 fn batchCancel(userdata: ?*anyopaque, b: *Io.Batch) void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    _ = t;
-    _ = b;
-    return;
+    const operations = b.operations;
+    const len: u31 = @intCast(operations.len);
+    const ring = b.ring[0..len];
+    var submit_head = b.impl.submit_head;
+    const submit_tail = b.user.submit_tail;
+    b.impl.submit_tail = submit_tail;
+    var complete_tail = b.impl.complete_tail;
+    while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
+        const op = ring[submit_head.index(len)];
+        switch (operations[op]) {
+            .noop => {
+                operate(t, &operations[op]) catch unreachable;
+                ring[complete_tail.index(len)] = op;
+                complete_tail = complete_tail.next(len);
+            },
+            .file_read_streaming => |*o| _ = o.status.unstarted,
+        }
+    }
+    b.impl.submit_head = submit_tail;
+    b.impl.complete_tail = complete_tail;
+    b.user.complete_tail = complete_tail;
 }
 
 fn batch(userdata: ?*anyopaque, operations: []Io.Operation) Io.ConcurrentError!void {
@@ -10352,6 +10404,7 @@ fn nowWasi(clock: Io.Clock) Io.Clock.Error!Io.Timestamp {
 
 fn sleep(userdata: ?*anyopaque, timeout: Io.Timeout) Io.SleepError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
+    if (timeout == .none) return;
     if (use_parking_sleep) return parking_sleep.sleep(try timeout.toDeadline(ioBasic(t)));
     if (native_os == .wasi) return sleepWasi(t, timeout);
     if (@TypeOf(posix.system.clock_nanosleep) != void) return sleepPosix(timeout);
