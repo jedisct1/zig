@@ -260,7 +260,7 @@ pub const Operation = union(enum) {
     file_read_streaming: FileReadStreaming,
 
     pub const Noop = struct {
-        reserved: [2]usize,
+        reserved: [2]usize = .{ 0, 0 },
         status: Status(void) = .{ .result = {} },
     };
 
