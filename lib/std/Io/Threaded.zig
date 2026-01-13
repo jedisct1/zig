@@ -2474,6 +2474,7 @@ fn operate(userdata: ?*anyopaque, op: *Io.Operation) Io.Cancelable!void {
 
 fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.WaitError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
+    if (is_windows) return batchWaitWindows(t, b, timeout);
     const operations = b.operations;
     const len: u31 = @intCast(operations.len);
     const ring = b.ring[0..len];
@@ -2492,13 +2493,12 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
         b.impl.complete_tail = complete_tail;
         b.user.complete_tail = complete_tail;
     }
-    if (is_windows) @panic("TODO");
     var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
     while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
         const op = ring[submit_head.index(len)];
         const operation = &operations[op];
         switch (operation.*) {
-            else => {
+            .noop => {
                 try operate(t, operation);
                 ring[complete_tail.index(len)] = op;
                 complete_tail = complete_tail.next(len);
@@ -2597,147 +2597,98 @@ fn batchCancel(userdata: ?*anyopaque, b: *Io.Batch) void {
     b.user.complete_tail = complete_tail;
 }
 
-fn batch(userdata: ?*anyopaque, operations: []Io.Operation) Io.ConcurrentError!void {
-    const t: *Threaded = @ptrCast(@alignCast(userdata));
+fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.ConcurrentError!void {
+    const operations = b.operations;
+    const len: u31 = @intCast(operations.len);
+    const ring = b.ring[0..len];
+    var submit_head = b.impl.submit_head;
+    const submit_tail = b.user.submit_tail;
+    b.impl.submit_tail = submit_tail;
+    var complete_tail = b.impl.complete_tail;
 
-    if (operations.len == 1) {
-        @branchHint(.likely);
-        return operate(&operations[0]);
+    var overlapped_buffer: [poll_buffer_len]windows.OVERLAPPED = undefined;
+    var handles_buffer: [poll_buffer_len]windows.HANDLE = undefined;
+    var map_buffer: [poll_buffer_len]u32 = undefined; // handles_buffer index to operations index
+    var buffer_i: usize = 0;
+
+    defer {
+        for (map_buffer[0..buffer_i]) |op| {
+            submit_head = submit_head.prev(len);
+            ring[submit_head.index(len)] = op;
+        }
+        b.impl.submit_head = submit_head;
+        b.impl.complete_tail = complete_tail;
+        b.user.complete_tail = complete_tail;
     }
 
-    if (is_windows) return batchWindows(t, operations);
-
-    var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
-    var map_buffer: [poll_buffer_len]u8 = undefined; // poll_buffer index to operations index
-    var poll_i: usize = 0;
-
-    for (operations, 0..) |*op, operation_index| switch (op.*) {
-        .noop => continue,
-        .file_read_streaming => |*o| {
-            if (poll_buffer.len - poll_i == 0) return error.ConcurrencyUnavailable;
-            poll_buffer[poll_i] = .{
-                .fd = o.file.handle,
-                .events = posix.POLL.IN,
-                .revents = 0,
-            };
-            map_buffer[poll_i] = @intCast(operation_index);
-            poll_i += 1;
-        },
-    };
-
-    const polls = poll_buffer[0..poll_i];
-    const map = map_buffer[0..poll_i];
-
-    var pending = poll_i;
-    while (pending > 0) {
-        const syscall = Syscall.start() catch |err| switch (err) {
-            error.Canceled => {
-                if (!setOperationsError(operations, polls, map, error.Canceled))
-                    recancelInner();
-                return;
+    while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
+        const op = ring[submit_head.index(len)];
+        const operation = &operations[op];
+        switch (operation.*) {
+            .noop => {
+                try operate(t, operation);
+                ring[complete_tail.index(len)] = op;
+                complete_tail = complete_tail.next(len);
             },
-        };
-        const rc = posix.system.poll(polls.ptr, polls.len, -1);
-        syscall.finish();
-        switch (posix.errno(rc)) {
-            .SUCCESS => for (polls, map) |*poll_fd, i| {
-                if (poll_fd.revents == 0) continue;
-                poll_fd.fd = -1;
-                pending -= 1;
-                operate(&operations[i]);
-            },
-            .INTR => continue,
-            .NOMEM => {
-                assert(setOperationsError(operations, polls, map, error.SystemResources));
-                return;
-            },
-            else => {
-                assert(setOperationsError(operations, polls, map, error.Unexpected));
-                return;
+            .file_read_streaming => |*o| {
+                _ = o.status.unstarted;
+                if (handles_buffer.len - buffer_i == 0) return error.ConcurrencyUnavailable;
+                const overlapped = &overlapped_buffer[buffer_i];
+                overlapped.* = .{
+                    .Internal = 0,
+                    .InternalHigh = 0,
+                    .DUMMYUNIONNAME = .{
+                        .DUMMYSTRUCTNAME = .{
+                            .Offset = 0,
+                            .OffsetHigh = 0,
+                        },
+                        .Pointer = null,
+                    },
+                    .hEvent = null,
+                };
+                var n: windows.DWORD = undefined;
+                const buf = o.data[0];
+                if (windows.kernel32.ReadFile(o.file.handle, buf.ptr, buf.len, &n, overlapped) == 0) {
+                    @panic("TODO");
+                }
+                handles_buffer[buffer_i] = o.file.handle;
+                map_buffer[buffer_i] = op;
+                buffer_i += 1;
             },
         }
     }
-}
 
-fn batchWindows(t: *Threaded, operations: []Io.Operation) Io.ConcurrentError!void {
-    _ = t;
-    var overlapped_buffer: [poll_buffer_len]windows.OVERLAPPED = undefined;
-    var handles_buffer: [poll_buffer_len]windows.HANDLE = undefined;
-    var map_buffer: [poll_buffer_len]u8 = undefined; // handles_buffer index to operations index
-    var buffer_i: usize = 0;
-
-    for (operations, 0..) |*op, operation_index| switch (op.*) {
-        .noop => continue,
-        .file_read_streaming => |*o| {
-            if (handles_buffer.len - buffer_i == 0) return error.ConcurrencyUnavailable;
-
-            const overlapped = &overlapped_buffer[buffer_i];
-            overlapped.* = .{
-                .Internal = 0,
-                .InternalHigh = 0,
-                .DUMMYUNIONNAME = .{
-                    .DUMMYSTRUCTNAME = .{
-                        .Offset = 0,
-                        .OffsetHigh = 0,
-                    },
-                    .Pointer = null,
-                },
-                .hEvent = null,
-            };
-            var n: windows.DWORD = undefined;
-            const buf = o.data[0];
-            if (windows.kernel32.ReadFile(o.file.handle, buf.ptr, buf.len, &n, overlapped) == 0) {
-                @panic("TODO");
-            }
-            handles_buffer[buffer_i] = o.file.handle;
-            map_buffer[buffer_i] = @intCast(operation_index);
-            buffer_i += 1;
+    switch (buffer_i) {
+        0 => return,
+        1 => if (timeout == .none) {
+            const op = map_buffer[0];
+            try operate(t, &operations[op]);
+            ring[complete_tail.index(len)] = op;
+            complete_tail = complete_tail.next(len);
+            return;
         },
-    };
+        else => {},
+    }
 
     const handles = handles_buffer[0..buffer_i];
     const map = map_buffer[0..buffer_i];
-    var pending = buffer_i;
 
-    while (pending > 0) {
-        const syscall: Syscall = try .start();
-        const index = windows.WaitForMultipleObjectsEx(handles, false, windows.INFINITE, true);
-        syscall.finish();
-        var n: windows.DWORD = undefined;
-        if (0 == windows.kernel32.GetOverlappedResult(handles[index], overlapped_buffer[index], &n, 0)) {
-            switch (windows.GetLastError()) {
-                .BROKEN_PIPE => @panic("TODO"),
-                .OPERATION_ABORTED => @panic("TODO"),
-                else => @panic("TODO"),
-            }
-        } else switch (operations[map[index]]) {
-            .noop => unreachable,
-            .file_read_streaming => |*o| {
-                o.status = .{ .result = n };
-                pending -= 1;
-            },
+    const syscall: Syscall = try .start();
+    const index = windows.WaitForMultipleObjectsEx(handles, false, windows.INFINITE, true);
+    syscall.finish();
+    var n: windows.DWORD = undefined;
+    if (0 == windows.kernel32.GetOverlappedResult(handles[index], overlapped_buffer[index], &n, 0)) {
+        switch (windows.GetLastError()) {
+            .BROKEN_PIPE => @panic("TODO"),
+            .OPERATION_ABORTED => @panic("TODO"),
+            else => @panic("TODO"),
         }
+    } else switch (operations[map[index]]) {
+        .noop => unreachable,
+        .file_read_streaming => |*o| {
+            o.status = .{ .result = n };
+        },
     }
-}
-
-fn setOperationsError(
-    operations: []Io.Operation,
-    polls: []const posix.pollfd,
-    map: []const u8,
-    err: error{ Canceled, SystemResources, Unexpected },
-) bool {
-    var marked = false;
-    for (polls, map) |*poll_fd, i| {
-        if (poll_fd.fd == -1) continue;
-        switch (operations[i]) {
-            .noop => unreachable,
-            inline else => |*o| {
-                o.status = .{ .result = err };
-                marked = true;
-            },
-        }
-    }
-    return marked;
 }
 
 const dirCreateDir = switch (native_os) {
