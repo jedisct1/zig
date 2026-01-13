@@ -350,8 +350,6 @@ pub const Batch = struct {
         }
     };
 
-    pub const WaitError = ConcurrentError || Cancelable || Timeout.Error;
-
     pub fn init(operations: []Operation, ring: []u32) Batch {
         const len: u31 = @intCast(operations.len);
         assert(ring.len == len);
@@ -404,6 +402,8 @@ pub const Batch = struct {
         b.user.complete_head = head.next(len);
         return b.ring[0..len][head.index(len)];
     }
+
+    pub const WaitError = ConcurrentError || Cancelable || Timeout.Error;
 
     /// Starts work on any submitted operations and returns when at least one has completeed.
     ///

@@ -127,9 +127,7 @@ pub const ShortError = error{
     ReadFailed,
 };
 
-pub const RebaseError = error{
-    EndOfStream,
-};
+pub const RebaseError = Error;
 
 pub const failing: Reader = .{
     .vtable = &.{
@@ -1402,7 +1400,7 @@ pub fn takeLeb128(r: *Reader, comptime T: type) TakeLeb128Error!T {
 }
 
 /// Ensures `capacity` data can be buffered without rebasing.
-pub fn rebase(r: *Reader, capacity: usize) RebaseError!void {
+pub fn rebase(r: *Reader, capacity: usize) Error!void {
     if (r.buffer.len - r.seek >= capacity) {
         @branchHint(.likely);
         return;
@@ -1410,7 +1408,7 @@ pub fn rebase(r: *Reader, capacity: usize) RebaseError!void {
     return r.vtable.rebase(r, capacity);
 }
 
-pub fn defaultRebase(r: *Reader, capacity: usize) RebaseError!void {
+pub fn defaultRebase(r: *Reader, capacity: usize) Error!void {
     assert(r.buffer.len - r.seek < capacity);
     const data = r.buffer[r.seek..r.end];
     @memmove(r.buffer[0..data.len], data);

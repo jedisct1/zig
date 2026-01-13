@@ -527,9 +527,6 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
     const arena = b.allocator;
     const io = b.graph.io;
 
-    var stderr_task = try io.concurrent(readStreamAlloc, .{ gpa, io, zp.child.stderr.?, .unlimited });
-    defer if (stderr_task.cancel(io)) |slice| gpa.free(slice) else |_| {};
-
     var timer = try std.time.Timer.start();
 
     try sendMessage(io, zp.child.stdin.?, .update);
@@ -537,19 +534,18 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
 
     var result: ?Path = null;
 
-    var stdout_buffer: [512]u8 = undefined;
-    var stdout_reader: Io.File.Reader = .initStreaming(zp.child.stdout.?, io, &stdout_buffer);
-    const stdout = &stdout_reader.interface;
+    var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: Io.File.MultiReader = undefined;
+    multi_reader.init(gpa, io, multi_reader_buffer.toStreams(), &.{ zp.child.stdout.?, zp.child.stderr.? });
+    defer multi_reader.deinit();
 
-    var body_buffer: std.ArrayList(u8) = .empty;
-    defer body_buffer.deinit(gpa);
+    const stdout = multi_reader.reader(0);
+    const stderr = multi_reader.reader(1);
 
     while (true) {
         const Header = std.zig.Server.Message.Header;
         const header = try stdout.takeStruct(Header, .little);
-        body_buffer.clearRetainingCapacity();
-        try stdout.appendExact(gpa, &body_buffer, header.bytes_len);
-        const body = body_buffer.items;
+        const body = try stdout.take(header.bytes_len);
         switch (header.tag) {
             .zig_version => {
                 if (!std.mem.eql(u8, builtin.zig_version_string, body)) {
@@ -640,21 +636,12 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
 
     s.result_duration_ns = timer.read();
 
-    const stderr_contents = try stderr_task.await(io);
-    defer gpa.free(stderr_contents);
+    const stderr_contents = stderr.buffered();
     if (stderr_contents.len > 0) {
         try s.result_error_msgs.append(arena, try arena.dupe(u8, stderr_contents));
     }
 
     return result;
-}
-
-fn readStreamAlloc(gpa: Allocator, io: Io, file: Io.File, limit: Io.Limit) ![]u8 {
-    var file_reader: Io.File.Reader = .initStreaming(file, io, &.{});
-    return file_reader.interface.allocRemaining(gpa, limit) catch |err| switch (err) {
-        error.ReadFailed => return file_reader.err.?,
-        else => |e| return e,
-    };
 }
 
 pub fn getZigProcess(s: *Step) ?*ZigProcess {

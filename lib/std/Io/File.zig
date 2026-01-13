@@ -18,6 +18,9 @@ pub const Writer = @import("File/Writer.zig");
 pub const Atomic = @import("File/Atomic.zig");
 /// Memory intended to remain consistent with file contents.
 pub const MemoryMap = @import("File/MemoryMap.zig");
+/// Concurrently read from multiple file streams, eliminating risk of
+/// deadlocking.
+pub const MultiReader = @import("File/MultiReader.zig");
 
 pub const INode = std.posix.ino_t;
 pub const NLink = std.posix.nlink_t;
