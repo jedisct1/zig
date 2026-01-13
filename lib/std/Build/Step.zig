@@ -542,6 +542,7 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
     const stdout = &stdout_reader.interface;
 
     var body_buffer: std.ArrayList(u8) = .empty;
+    defer body_buffer.deinit(gpa);
 
     while (true) {
         const Header = std.zig.Server.Message.Header;
