@@ -303,7 +303,7 @@ pub const Operation = union(enum) {
 
 /// Performs one `Operation`.
 pub fn operate(io: Io, operation: *Operation) Cancelable!void {
-    return io.vtable.operate(io.userdata, operation) catch unreachable;
+    return io.vtable.operate(io.userdata, operation);
 }
 
 /// Submits many operations together without waiting for all of them to

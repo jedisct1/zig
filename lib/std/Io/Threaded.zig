@@ -2465,7 +2465,7 @@ fn operate(userdata: ?*anyopaque, op: *Io.Operation) Io.Cancelable!void {
         .file_read_streaming => |*o| {
             _ = o.status.unstarted;
             o.status = .{ .result = fileReadStreaming(o.file, o.data) catch |err| switch (err) {
-                error.Canceled => return error.Canceled,
+                error.Canceled => |e| return e,
                 else => |e| e,
             } };
         },
