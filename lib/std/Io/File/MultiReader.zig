@@ -28,18 +28,23 @@ pub const Streams = extern struct {
     len: u32,
 
     pub fn contexts(s: *Streams) []Context {
-        _ = s;
-        @panic("TODO");
+        const base: usize = @intFromPtr(s);
+        const ptr: [*]Context = @ptrFromInt(std.mem.alignForward(usize, base + @sizeOf(Streams), @alignOf(Context)));
+        return ptr[0..s.len];
     }
 
     pub fn ring(s: *Streams) []u32 {
-        _ = s;
-        @panic("TODO");
+        const prev = contexts(s);
+        const end = prev.ptr + prev.len;
+        const ptr: [*]u32 = @ptrFromInt(std.mem.alignForward(usize, @intFromPtr(end), @alignOf(u32)));
+        return ptr[0..s.len];
     }
 
     pub fn operations(s: *Streams) []Io.Operation {
-        _ = s;
-        @panic("TODO");
+        const prev = ring(s);
+        const end = prev.ptr + prev.len;
+        const ptr: [*]Io.Operation = @ptrFromInt(std.mem.alignForward(usize, @intFromPtr(end), @alignOf(Io.Operation)));
+        return ptr[0..s.len];
     }
 };
 
@@ -51,6 +56,7 @@ pub fn Buffer(comptime n: usize) type {
         operations: [n][@sizeOf(Io.Operation)]u8 align(@alignOf(Io.Operation)),
 
         pub fn toStreams(b: *@This()) *Streams {
+            b.len = n;
             return @ptrCast(b);
         }
     };
@@ -157,35 +163,87 @@ fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!u
     _ = w;
     const fr: *File.Reader = @alignCast(@fieldParentPtr("interface", r));
     const context: *Context = @fieldParentPtr("fr", fr);
-    const mr = context.mr;
-    return fillUntimed(mr, context);
+    try fillUntimed(context, 1);
+    return 0;
 }
 
 fn discard(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
     _ = limit;
     const fr: *File.Reader = @alignCast(@fieldParentPtr("interface", r));
     const context: *Context = @fieldParentPtr("fr", fr);
-    const mr = context.mr;
-    return fillUntimed(mr, context);
+    try fillUntimed(context, 1);
+    return 0;
 }
 
 fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
     _ = data;
     const fr: *File.Reader = @alignCast(@fieldParentPtr("interface", r));
     const context: *Context = @fieldParentPtr("fr", fr);
-    const mr = context.mr;
-    return fillUntimed(mr, context);
+    try fillUntimed(context, 1);
+    return 0;
 }
 
 fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
     const fr: *File.Reader = @alignCast(@fieldParentPtr("interface", r));
     const context: *Context = @fieldParentPtr("fr", fr);
-    const mr = context.mr;
+    try fillUntimed(context, capacity);
+}
 
-    return rebaseGrowing(mr, context, capacity) catch |err| {
-        context.err = err;
-        return error.ReadFailed;
+fn fillUntimed(context: *Context, capacity: usize) Io.Reader.Error!void {
+    fill(context.mr, capacity, .none) catch |err| switch (err) {
+        error.Timeout, error.UnsupportedClock => unreachable,
+        error.Canceled, error.ConcurrencyUnavailable => |e| {
+            context.err = e;
+            return error.ReadFailed;
+        },
+        error.EndOfStream => |e| return e,
     };
+    if (context.err != null) return error.ReadFailed;
+    if (context.eos) return error.EndOfStream;
+}
+
+pub const FillError = Io.Batch.WaitError || error{
+    /// `fill` was called when all streams already have failed or reached the
+    /// end.
+    EndOfStream,
+};
+
+/// Wait until at least one stream receives more data.
+pub fn fill(mr: *MultiReader, unused_capacity: usize, timeout: Io.Timeout) FillError!void {
+    const contexts = mr.streams.contexts();
+    const operations = mr.streams.operations();
+    const io = contexts[0].fr.io;
+    var any_completed = false;
+
+    try mr.batch.wait(io, timeout);
+
+    while (mr.batch.next()) |i| {
+        any_completed = true;
+        const context = &contexts[i];
+        const operation = &operations[i];
+        const n = operation.file_read_streaming.status.result catch |err| {
+            context.err = err;
+            continue;
+        };
+        if (n == 0) {
+            context.eos = true;
+            continue;
+        }
+        const r = &context.fr.interface;
+        r.end += n;
+        if (r.buffer.len - r.end < unused_capacity) {
+            rebaseGrowing(mr, context, r.bufferedLen() + unused_capacity) catch |err| {
+                context.err = err;
+                continue;
+            };
+            assert(r.seek == 0);
+        }
+        context.vec[0] = r.buffer[r.end..];
+        operation.file_read_streaming.status = .{ .unstarted = {} };
+        mr.batch.add(i);
+    }
+
+    if (!any_completed) return error.EndOfStream;
 }
 
 fn rebaseGrowing(mr: *MultiReader, context: *Context, capacity: usize) Allocator.Error!void {
@@ -209,65 +267,9 @@ fn rebaseGrowing(mr: *MultiReader, context: *Context, capacity: usize) Allocator
         const data = r.buffer[r.seek..r.end];
         const new = try gpa.alloc(u8, adjusted_capacity);
         @memcpy(new[0..data.len], data);
+        gpa.free(r.buffer);
+        r.buffer = new;
         r.seek = 0;
         r.end = data.len;
     }
-}
-
-pub const FillError = Io.Batch.WaitError || error{
-    /// `fill` was called when all streams already have failed or reached the
-    /// end.
-    EndOfStream,
-};
-
-/// Wait until at least one stream receives more data.
-pub fn fill(mr: *MultiReader, timeout: Io.Timeout) FillError!void {
-    const contexts = mr.streams.contexts();
-    const operations = mr.streams.operations();
-    const io = contexts[0].fr.io;
-    var any_completed = false;
-
-    try mr.batch.wait(io, timeout);
-
-    while (mr.batch.next()) |i| {
-        any_completed = true;
-        const context = &contexts[i];
-        const operation = &operations[i];
-        const n = operation.file_read_streaming.status.result catch |err| {
-            context.err = err;
-            continue;
-        };
-        if (n == 0) {
-            context.eos = true;
-            continue;
-        }
-        const r = &context.fr.interface;
-        r.end += n;
-        if (r.buffer.len - r.end == 0) {
-            rebaseGrowing(mr, context, r.bufferedLen() + 1) catch |err| {
-                context.err = err;
-                continue;
-            };
-            assert(r.seek == 0);
-            context.vec[0] = r.buffer;
-        }
-        operation.file_read_streaming.status = .{ .unstarted = {} };
-        mr.batch.add(i);
-    }
-
-    if (!any_completed) return error.EndOfStream;
-}
-
-fn fillUntimed(mr: *MultiReader, context: *Context) Io.Reader.Error!usize {
-    fill(mr, .none) catch |err| switch (err) {
-        error.Timeout, error.UnsupportedClock => unreachable,
-        error.Canceled, error.ConcurrencyUnavailable => |e| {
-            context.err = e;
-            return error.ReadFailed;
-        },
-        error.EndOfStream => |e| return e,
-    };
-    if (context.err != null) return error.ReadFailed;
-    if (context.eos) return error.EndOfStream;
-    return 0;
 }

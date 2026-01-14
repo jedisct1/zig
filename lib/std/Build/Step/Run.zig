@@ -1695,11 +1695,9 @@ fn evalZigTest(
                 // The runner unexpectedly closed a stdio pipe, which means a crash. Make sure we've captured
                 // all available stderr to make our error output as useful as possible.
                 const stderr_fr = multi_reader.fileReader(1);
-                while (true) {
-                    stderr_fr.interface.fillMore() catch |e| switch (e) {
-                        error.ReadFailed => return stderr_fr.err.?,
-                        error.EndOfStream => break,
-                    };
+                while (stderr_fr.interface.fillMore()) |_| {} else |e| switch (e) {
+                    error.ReadFailed => return stderr_fr.err.?,
+                    error.EndOfStream => {},
                 }
                 run.step.result_stderr = try arena.dupe(u8, stderr_fr.interface.buffered());
 
@@ -1905,7 +1903,7 @@ fn waitZigTest(
                 .clock = .awake,
             } } else .none;
 
-            multi_reader.fill(timeout) catch |err| switch (err) {
+            multi_reader.fill(64, timeout) catch |err| switch (err) {
                 error.Timeout, error.EndOfStream => return .{ .no_poll = .{
                     .active_test_index = active_test_index,
                     .ns_elapsed = if (timer) |*t| t.read() else 0,
@@ -2227,7 +2225,7 @@ fn evalGeneric(run: *Run, spawn_options: process.SpawnOptions) !EvalGenericResul
             const stdout_reader = multi_reader.reader(0);
             const stderr_reader = multi_reader.reader(1);
 
-            while (multi_reader.fill(.none)) |_| {
+            while (multi_reader.fill(64, .none)) |_| {
                 if (run.stdio_limit.toInt()) |limit| {
                     if (stdout_reader.buffered().len > limit)
                         return error.StdoutStreamTooLong;

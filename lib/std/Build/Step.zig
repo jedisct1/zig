@@ -381,13 +381,15 @@ pub fn addError(step: *Step, comptime fmt: []const u8, args: anytype) error{OutO
 
 pub const ZigProcess = struct {
     child: std.process.Child,
+    multi_reader_buffer: Io.File.MultiReader.Buffer(2),
+    multi_reader: Io.File.MultiReader,
     progress_ipc_fd: if (std.Progress.have_ipc) ?std.posix.fd_t else void,
 
     pub const StreamEnum = enum { stdout, stderr };
 
-    pub fn deinit(zp: *ZigProcess, gpa: Allocator, io: Io) void {
-        _ = gpa;
+    pub fn deinit(zp: *ZigProcess, io: Io) void {
         zp.child.kill(io);
+        zp.multi_reader.deinit();
         zp.* = undefined;
     }
 };
@@ -460,14 +462,18 @@ pub fn evalZigProcess(
         .request_resource_usage_statistics = true,
         .progress_node = prog_node,
     }) catch |err| return s.fail("failed to spawn zig compiler {s}: {t}", .{ argv[0], err });
-    defer if (!watch) zp.child.kill(io);
 
     zp.* = .{
         .child = zp.child,
+        .multi_reader_buffer = undefined,
+        .multi_reader = undefined,
         .progress_ipc_fd = if (std.Progress.have_ipc) prog_node.getIpcFd() else {},
     };
+    zp.multi_reader.init(gpa, io, zp.multi_reader_buffer.toStreams(), &.{
+        zp.child.stdout.?, zp.child.stderr.?,
+    });
     if (watch) s.setZigProcess(zp);
-    defer if (!watch) zp.deinit(gpa, io);
+    defer if (!watch) zp.deinit(io);
 
     const result = try zigProcessUpdate(s, zp, watch, web_server, gpa);
 
@@ -534,18 +540,18 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
 
     var result: ?Path = null;
 
-    var multi_reader_buffer: Io.File.MultiReader.Buffer(2) = undefined;
-    var multi_reader: Io.File.MultiReader = undefined;
-    multi_reader.init(gpa, io, multi_reader_buffer.toStreams(), &.{ zp.child.stdout.?, zp.child.stderr.? });
-    defer multi_reader.deinit();
-
-    const stdout = multi_reader.reader(0);
-    const stderr = multi_reader.reader(1);
+    const stdout = zp.multi_reader.fileReader(0);
 
     while (true) {
         const Header = std.zig.Server.Message.Header;
-        const header = try stdout.takeStruct(Header, .little);
-        const body = try stdout.take(header.bytes_len);
+        const header = stdout.interface.takeStruct(Header, .little) catch |err| switch (err) {
+            error.EndOfStream => break,
+            error.ReadFailed => return stdout.err.?,
+        };
+        const body = stdout.interface.take(header.bytes_len) catch |err| switch (err) {
+            error.EndOfStream => |e| return e,
+            error.ReadFailed => return stdout.err.?,
+        };
         switch (header.tag) {
             .zig_version => {
                 if (!std.mem.eql(u8, builtin.zig_version_string, body)) {
@@ -636,7 +642,7 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
 
     s.result_duration_ns = timer.read();
 
-    const stderr_contents = stderr.buffered();
+    const stderr_contents = zp.multi_reader.reader(1).buffered();
     if (stderr_contents.len > 0) {
         try s.result_error_msgs.append(arena, try arena.dupe(u8, stderr_contents));
     }
