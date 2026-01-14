@@ -113,8 +113,26 @@ pub fn deinit(mr: *MultiReader) void {
     }
 }
 
+pub fn fileReader(mr: *MultiReader, index: usize) *File.Reader {
+    return &mr.streams.contexts()[index].fr;
+}
+
 pub fn reader(mr: *MultiReader, index: usize) *Io.Reader {
     return &mr.streams.contexts()[index].fr.interface;
+}
+
+/// Checks for errors in all streams, prioritizing `error.Canceled` if it
+/// occurred anywhere.
+pub fn checkAnyError(mr: *const MultiReader) Error!void {
+    const contexts = mr.streams.contexts();
+    var other: Error!void = {};
+    for (contexts) |*context| {
+        if (context.err) |err| switch (err) {
+            error.Canceled => |e| return e,
+            else => |e| other = e,
+        };
+    }
+    return other;
 }
 
 pub fn toOwnedSlice(mr: *MultiReader, index: usize) Allocator.Error![]u8 {
@@ -140,7 +158,7 @@ fn stream(r: *Io.Reader, w: *Io.Writer, limit: Io.Limit) Io.Reader.StreamError!u
     const fr: *File.Reader = @alignCast(@fieldParentPtr("interface", r));
     const context: *Context = @fieldParentPtr("fr", fr);
     const mr = context.mr;
-    return fill(mr, context);
+    return fillUntimed(mr, context);
 }
 
 fn discard(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
@@ -148,7 +166,7 @@ fn discard(r: *Io.Reader, limit: Io.Limit) Io.Reader.Error!usize {
     const fr: *File.Reader = @alignCast(@fieldParentPtr("interface", r));
     const context: *Context = @fieldParentPtr("fr", fr);
     const mr = context.mr;
-    return fill(mr, context);
+    return fillUntimed(mr, context);
 }
 
 fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
@@ -156,7 +174,7 @@ fn readVec(r: *Io.Reader, data: [][]u8) Io.Reader.Error!usize {
     const fr: *File.Reader = @alignCast(@fieldParentPtr("interface", r));
     const context: *Context = @fieldParentPtr("fr", fr);
     const mr = context.mr;
-    return fill(mr, context);
+    return fillUntimed(mr, context);
 }
 
 fn rebase(r: *Io.Reader, capacity: usize) Io.Reader.RebaseError!void {
@@ -196,20 +214,23 @@ fn rebaseGrowing(mr: *MultiReader, context: *Context, capacity: usize) Allocator
     }
 }
 
-fn fill(mr: *MultiReader, original_context: *Context) Io.Reader.Error!usize {
+pub const FillError = Io.Batch.WaitError || error{
+    /// `fill` was called when all streams already have failed or reached the
+    /// end.
+    EndOfStream,
+};
+
+/// Wait until at least one stream receives more data.
+pub fn fill(mr: *MultiReader, timeout: Io.Timeout) FillError!void {
     const contexts = mr.streams.contexts();
     const operations = mr.streams.operations();
     const io = contexts[0].fr.io;
+    var any_completed = false;
 
-    mr.batch.wait(io, .none) catch |err| switch (err) {
-        error.Timeout, error.UnsupportedClock => unreachable,
-        else => |e| {
-            original_context.err = e;
-            return error.ReadFailed;
-        },
-    };
+    try mr.batch.wait(io, timeout);
 
     while (mr.batch.next()) |i| {
+        any_completed = true;
         const context = &contexts[i];
         const operation = &operations[i];
         const n = operation.file_read_streaming.status.result catch |err| {
@@ -234,7 +255,19 @@ fn fill(mr: *MultiReader, original_context: *Context) Io.Reader.Error!usize {
         mr.batch.add(i);
     }
 
-    if (original_context.err != null) return error.ReadFailed;
-    if (original_context.eos) return error.EndOfStream;
+    if (!any_completed) return error.EndOfStream;
+}
+
+fn fillUntimed(mr: *MultiReader, context: *Context) Io.Reader.Error!usize {
+    fill(mr, .none) catch |err| switch (err) {
+        error.Timeout, error.UnsupportedClock => unreachable,
+        error.Canceled, error.ConcurrencyUnavailable => |e| {
+            context.err = e;
+            return error.ReadFailed;
+        },
+        error.EndOfStream => |e| return e,
+    };
+    if (context.err != null) return error.ReadFailed;
+    if (context.eos) return error.EndOfStream;
     return 0;
 }
