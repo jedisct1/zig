@@ -21,7 +21,7 @@ const AstGen = std.zig.AstGen;
 const ZonGen = std.zig.ZonGen;
 const Server = std.zig.Server;
 
-const tracy = @import("tracy.zig");
+pub const tracy = @import("tracy.zig");
 const Compilation = @import("Compilation.zig");
 const link = @import("link.zig");
 const Package = @import("Package.zig");

@@ -44,6 +44,14 @@ const timestampFromPosix = Io.Threaded.timestampFromPosix;
 const unexpectedErrno = std.posix.unexpectedErrno;
 const winsize = std.posix.winsize;
 
+const tracy = if (@hasDecl(@import("root"), "tracy")) @import("root").tracy else struct {
+    const enable = false;
+    inline fn fiberEnter(fiber: [*:0]const u8) void {
+        _ = fiber;
+    }
+    inline fn fiberLeave() void {}
+};
+
 backing_allocator_needs_mutex: bool,
 backing_allocator_mutex: Io.Mutex,
 /// Does not need to be thread-safe if not used elsewhere.
@@ -90,6 +98,7 @@ const Thread = struct {
     io_uring: IoUring,
     idle_search_index: u32,
     steal_ready_search_index: u32,
+    name_arena: if (tracy.enable) std.heap.ArenaAllocator.State else struct {},
     csprng: Csprng,
 
     threadlocal var self: ?*Thread = null;
@@ -138,6 +147,9 @@ const Fiber = struct {
     },
     cancel_status: CancelStatus,
     cancel_protection: CancelProtection,
+    name: if (tracy.enable) [*:0]const u8 else void,
+
+    var next_name: u64 = 0;
 
     const CancelStatus = packed struct(u32) {
         requested: bool,
@@ -772,6 +784,7 @@ pub fn init(ev: *Evented, backing_allocator: Allocator, options: InitOptions) !v
         .status = .{ .queue_next = null },
         .cancel_status = .unrequested,
         .cancel_protection = .unblocked,
+        .name = if (tracy.enable) "main task",
     };
     const main_thread = &ev.threads.allocated[0];
     Thread.self = main_thread;
@@ -802,11 +815,13 @@ pub fn init(ev: *Evented, backing_allocator: Allocator, options: InitOptions) !v
         ),
         .idle_search_index = 1,
         .steal_ready_search_index = 1,
+        .name_arena = .{},
         .csprng = .uninitialized,
     };
     errdefer main_thread.io_uring.deinit();
     log.debug("created main idle {*}", .{&main_thread.idle_context});
     log.debug("created main {*}", .{main_fiber});
+    if (tracy.enable) tracy.fiberEnter(main_fiber.name);
 }
 
 pub fn deinit(ev: *Evented) void {
@@ -958,6 +973,7 @@ fn schedule(ev: *Evented, thread: *Thread, ready_queue: Fiber.Queue) bool {
             },
             .idle_search_index = 0,
             .steal_ready_search_index = 0,
+            .name_arena = .{},
             .csprng = .uninitialized,
         };
         new_thread.thread = std.Thread.spawn(.{
@@ -1160,6 +1176,12 @@ const SwitchMessage = struct {
     fn handle(message: *const SwitchMessage, ev: *Evented) void {
         const thread: *Thread = .current();
         thread.current_context = message.contexts.ready;
+        if (tracy.enable) {
+            if (message.contexts.ready != &thread.idle_context) {
+                const fiber: *Fiber = @alignCast(@fieldParentPtr("context", message.contexts.ready));
+                tracy.fiberEnter(fiber.name);
+            } else tracy.fiberLeave();
+        }
         switch (message.pending_task) {
             .nothing => {},
             .reschedule => if (message.contexts.prev != &thread.idle_context) {
@@ -1543,6 +1565,17 @@ fn concurrent(
         .status = .{ .queue_next = null },
         .cancel_status = .unrequested,
         .cancel_protection = .unblocked,
+        .name = if (tracy.enable) name: {
+            const thread: *Thread = .current();
+            var name_arena = thread.name_arena.promote(std.heap.page_allocator);
+            defer thread.name_arena = name_arena.state;
+            break :name std.fmt.allocPrintSentinel(
+                name_arena.allocator(),
+                "task {d}",
+                .{@atomicRmw(u64, &Fiber.next_name, .Add, 1, .monotonic)},
+                0,
+            ) catch return error.ConcurrencyUnavailable;
+        },
     };
     closure.* = .{
         .ev = ev,
@@ -1920,6 +1953,17 @@ fn groupConcurrent(
         .status = .{ .queue_next = null },
         .cancel_status = .unrequested,
         .cancel_protection = .unblocked,
+        .name = if (tracy.enable) name: {
+            const thread: *Thread = .current();
+            var name_arena = thread.name_arena.promote(std.heap.page_allocator);
+            defer thread.name_arena = name_arena.state;
+            break :name std.fmt.allocPrintSentinel(
+                name_arena.allocator(),
+                "group task {d}",
+                .{@atomicRmw(u64, &Fiber.next_name, .Add, 1, .monotonic)},
+                0,
+            ) catch return error.ConcurrencyUnavailable;
+        },
     };
     closure.* = .{
         .ev = ev,

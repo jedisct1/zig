@@ -370,10 +370,20 @@ pub fn build(b: *std.Build) !void {
             &[_][]const u8{ tracy_path, "public", "TracyClient.cpp" },
         );
 
-        const tracy_c_flags: []const []const u8 = &.{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" };
+        const tracy_c_flags: []const []const u8 = &.{
+            "-DTRACY_ENABLE=1",
+            "-fno-sanitize=undefined",
+            "-DTRACY_FIBERS",
+        };
 
         exe.root_module.addIncludePath(.{ .cwd_relative = tracy_path });
-        exe.root_module.addCSourceFile(.{ .file = .{ .cwd_relative = client_cpp }, .flags = tracy_c_flags });
+        exe.root_module.addCSourceFile(.{
+            .file = .{ .cwd_relative = client_cpp },
+            .flags = tracy_c_flags[0..switch (io_mode) {
+                .threaded => 2,
+                .evented => 3,
+            }],
+        });
         exe.root_module.link_libc = true;
         exe.root_module.link_libcpp = true;
 

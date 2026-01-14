@@ -98,6 +98,16 @@ pub inline fn traceNamed(comptime src: std.builtin.SourceLocation, comptime name
     }
 }
 
+pub inline fn fiberEnter(fiber: [*:0]const u8) void {
+    if (!enable) return;
+    ___tracy_fiber_enter(fiber);
+}
+
+pub inline fn fiberLeave() void {
+    if (!enable) return;
+    ___tracy_fiber_leave();
+}
+
 pub fn tracyAllocator(allocator: std.mem.Allocator) TracyAllocator(null) {
     return TracyAllocator(null).init(allocator);
 }
@@ -318,6 +328,8 @@ extern fn ___tracy_emit_memory_free_callstack_named(ptr: *const anyopaque, depth
 extern fn ___tracy_emit_logString(severity: MessageSeverity, color: i32, callstack_depth: i32, size: usize, txt: [*]const u8) void;
 extern fn ___tracy_emit_logStringL(severity: MessageSeverity, color: i32, callstack_depth: i32, txt: [*:0]const u8) void;
 extern fn ___tracy_emit_frame_mark(name: ?[*:0]const u8) void;
+extern fn ___tracy_fiber_enter(fiber: [*:0]const u8) void;
+extern fn ___tracy_fiber_leave() void;
 
 const ___tracy_source_location_data = extern struct {
     name: ?[*:0]const u8,
