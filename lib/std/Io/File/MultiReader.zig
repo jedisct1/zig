@@ -246,6 +246,14 @@ pub fn fill(mr: *MultiReader, unused_capacity: usize, timeout: Io.Timeout) FillE
     if (!any_completed) return error.EndOfStream;
 }
 
+/// Wait until all streams fail or reach the end.
+pub fn fillRemaining(mr: *MultiReader, timeout: Io.Timeout) Io.Batch.WaitError!void {
+    while (fill(mr, 1, timeout)) |_| {} else |err| switch (err) {
+        error.EndOfStream => return,
+        else => |e| return e,
+    }
+}
+
 fn rebaseGrowing(mr: *MultiReader, context: *Context, capacity: usize) Allocator.Error!void {
     const gpa = mr.gpa;
     const r = &context.fr.interface;

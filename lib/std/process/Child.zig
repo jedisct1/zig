@@ -137,6 +137,7 @@ pub const CollectOutputOptions = struct {
     allocator: ?Allocator = null,
     stdout_limit: Io.Limit = .unlimited,
     stderr_limit: Io.Limit = .unlimited,
+    timeout: Io.Timeout = .none,
 };
 
 /// Collect the output from the process's stdout and stderr. Will return once
@@ -173,7 +174,7 @@ pub fn collectOutput(child: *const Child, io: Io, options: CollectOutputOptions)
         remaining += 1;
     }
     while (remaining > 0) {
-        try batch.wait(io, .none);
+        try batch.wait(io, options.timeout);
         while (batch.next()) |op| {
             const n = try reads[op].file_read_streaming.status.result;
             if (n == 0) {

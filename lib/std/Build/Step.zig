@@ -539,6 +539,7 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
     if (!watch) try sendMessage(io, zp.child.stdin.?, .exit);
 
     var result: ?Path = null;
+    var eos_err: error{EndOfStream}!void = {};
 
     const stdout = zp.multi_reader.fileReader(0);
 
@@ -549,7 +550,13 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
             error.ReadFailed => return stdout.err.?,
         };
         const body = stdout.interface.take(header.bytes_len) catch |err| switch (err) {
-            error.EndOfStream => |e| return e,
+            error.EndOfStream => |e| {
+                // Better to report the crash with stderr below, but we set
+                // this in case the child exits successfully while violating
+                // this protocol.
+                eos_err = e;
+                break;
+            },
             error.ReadFailed => return stdout.err.?,
         };
         switch (header.tag) {
@@ -646,6 +653,8 @@ fn zigProcessUpdate(s: *Step, zp: *ZigProcess, watch: bool, web_server: ?*Build.
     if (stderr_contents.len > 0) {
         try s.result_error_msgs.append(arena, try arena.dupe(u8, stderr_contents));
     }
+
+    try eos_err;
 
     return result;
 }
