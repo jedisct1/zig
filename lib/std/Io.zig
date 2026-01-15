@@ -1269,10 +1269,13 @@ pub fn Select(comptime U: type) type {
                 args: @TypeOf(args),
                 fn start(type_erased_context: *const anyopaque) Cancelable!void {
                     const context: *const @This() = @ptrCast(@alignCast(type_erased_context));
-                    const elem = @unionInit(U, @tagName(field), @call(.auto, function, context.args));
+                    const raw_result = @call(.auto, function, context.args);
+                    const elem = @unionInit(U, @tagName(field), raw_result);
                     context.select.queue.putOneUncancelable(context.select.io, elem) catch |err| switch (err) {
                         error.Closed => unreachable,
                     };
+                    if (@typeInfo(@TypeOf(raw_result)) == .error_union)
+                        raw_result catch |err| if (err == error.Canceled) return error.Canceled;
                 }
             };
             const context: Context = .{ .select = s, .args = args };
