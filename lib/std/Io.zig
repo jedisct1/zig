@@ -1250,7 +1250,7 @@ pub fn Select(comptime U: type) type {
         /// already been called and completed, or it has successfully been
         /// assigned a unit of concurrency.
         ///
-        /// After this is called, `wait` or `cancel` must be called before the
+        /// After this is called, `await` or `cancel` must be called before the
         /// select is deinitialized.
         ///
         /// Threadsafe.
@@ -1293,12 +1293,12 @@ pub fn Select(comptime U: type) type {
             };
         }
 
-        /// Equivalent to `wait` but requests cancelation on all remaining
+        /// Equivalent to `await` but requests cancelation on all remaining
         /// tasks owned by the select.
         ///
         /// For a description of cancelation and cancelation points, see `Future.cancel`.
         ///
-        /// It is illegal to call `wait` after this.
+        /// It is illegal to call `await` after this.
         ///
         /// Idempotent. Not threadsafe.
         pub fn cancel(s: *S) void {
