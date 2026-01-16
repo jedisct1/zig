@@ -21,6 +21,7 @@ const introspect = @import("introspect.zig");
 const link = @import("link.zig");
 const tracy = @import("tracy.zig");
 const trace = tracy.trace;
+const traceNamed = tracy.traceNamed;
 const build_options = @import("build_options");
 const LibCInstallation = std.zig.LibCInstallation;
 const glibc = @import("libs/glibc.zig");
@@ -4707,8 +4708,8 @@ fn performAllTheWork(
     }
 
     if (comp.zcu) |zcu| {
-        const astgen_frame = tracy.namedFrame("astgen");
-        defer astgen_frame.end();
+        const tracy_trace = traceNamed(@src(), "astgen");
+        defer tracy_trace.end();
 
         const zir_prog_node = main_progress_node.start("AST Lowering", 0);
         defer zir_prog_node.end();
@@ -5221,8 +5222,8 @@ fn processOneJob(tid: Zcu.PerThread.Id, comp: *Compilation, job: Job) JobError!v
             try comp.link_queue.enqueueZcu(comp, tid, .{ .update_line_number = tracked_inst });
         },
         .analyze_func => |func| {
-            const named_frame = tracy.namedFrame("analyze_func");
-            defer named_frame.end();
+            const tracy_trace = traceNamed(@src(), "analyze_func");
+            defer tracy_trace.end();
 
             const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
@@ -5234,8 +5235,8 @@ fn processOneJob(tid: Zcu.PerThread.Id, comp: *Compilation, job: Job) JobError!v
             };
         },
         .analyze_comptime_unit => |unit| {
-            const named_frame = tracy.namedFrame("analyze_comptime_unit");
-            defer named_frame.end();
+            const tracy_trace = traceNamed(@src(), "analyze_comptime_unit");
+            defer tracy_trace.end();
 
             const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
@@ -5274,8 +5275,8 @@ fn processOneJob(tid: Zcu.PerThread.Id, comp: *Compilation, job: Job) JobError!v
             }
         },
         .resolve_type_fully => |ty| {
-            const named_frame = tracy.namedFrame("resolve_type_fully");
-            defer named_frame.end();
+            const tracy_trace = traceNamed(@src(), "resolve_type_fully");
+            defer tracy_trace.end();
 
             const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
@@ -5285,8 +5286,8 @@ fn processOneJob(tid: Zcu.PerThread.Id, comp: *Compilation, job: Job) JobError!v
             };
         },
         .analyze_mod => |mod| {
-            const named_frame = tracy.namedFrame("analyze_mod");
-            defer named_frame.end();
+            const tracy_trace = traceNamed(@src(), "analyze_mod");
+            defer tracy_trace.end();
 
             const pt: Zcu.PerThread = .activate(comp.zcu.?, tid);
             defer pt.deactivate();
@@ -5296,8 +5297,8 @@ fn processOneJob(tid: Zcu.PerThread.Id, comp: *Compilation, job: Job) JobError!v
             };
         },
         .windows_import_lib => |index| {
-            const named_frame = tracy.namedFrame("windows_import_lib");
-            defer named_frame.end();
+            const tracy_trace = traceNamed(@src(), "windows_import_lib");
+            defer tracy_trace.end();
 
             const link_lib = comp.windows_libs.keys()[index];
             mingw.buildImportLib(comp, link_lib) catch |err| {
