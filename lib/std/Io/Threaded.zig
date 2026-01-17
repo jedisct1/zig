@@ -1323,7 +1323,10 @@ fn waitForApcOrAlert() void {
 
 const max_iovecs_len = 8;
 const splat_buffer_size = 64;
-const poll_buffer_len = 32;
+/// Happens to be the same number that matches maximum number of handles that
+/// NtWaitForMultipleObjects accepts. We use this value also for poll() on
+/// posix systems.
+const poll_buffer_len = 64;
 const default_PATH = "/usr/local/bin:/bin/:/usr/bin";
 
 comptime {
@@ -2635,18 +2638,13 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
                 overlapped.* = .{
                     .Internal = 0,
                     .InternalHigh = 0,
-                    .DUMMYUNIONNAME = .{
-                        .DUMMYSTRUCTNAME = .{
-                            .Offset = 0,
-                            .OffsetHigh = 0,
-                        },
-                        .Pointer = null,
-                    },
+                    .DUMMYUNIONNAME = .{ .Pointer = null },
                     .hEvent = null,
                 };
                 var n: windows.DWORD = undefined;
                 const buf = o.data[0];
-                if (windows.kernel32.ReadFile(o.file.handle, buf.ptr, buf.len, &n, overlapped) == 0) {
+                const buf_len = std.math.lossyCast(windows.DWORD, buf.len);
+                if (windows.kernel32.ReadFile(o.file.handle, buf.ptr, buf_len, &n, overlapped) == 0) {
                     @panic("TODO");
                 }
                 handles_buffer[buffer_i] = o.file.handle;
@@ -2663,6 +2661,7 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
             try operate(t, &operations[op]);
             ring[complete_tail.index(len)] = op;
             complete_tail = complete_tail.next(len);
+            buffer_i = 0;
             return;
         },
         else => {},
@@ -2672,10 +2671,15 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
     const map = map_buffer[0..buffer_i];
 
     const syscall: Syscall = try .start();
-    const index = windows.WaitForMultipleObjectsEx(handles, false, windows.INFINITE, true);
+    const index_result = windows.WaitForMultipleObjectsEx(handles, false, windows.INFINITE, true);
     syscall.finish();
+    const index = index_result catch |err| switch (err) {
+        error.Unexpected => @panic("TODO"),
+        error.WaitAbandoned => @panic("TODO"),
+        error.WaitTimeOut => @panic("TODO"),
+    };
     var n: windows.DWORD = undefined;
-    if (0 == windows.kernel32.GetOverlappedResult(handles[index], overlapped_buffer[index], &n, 0)) {
+    if (0 == windows.kernel32.GetOverlappedResult(handles[index], &overlapped_buffer[index], &n, 0)) {
         switch (windows.GetLastError()) {
             .BROKEN_PIPE => @panic("TODO"),
             .OPERATION_ABORTED => @panic("TODO"),
