@@ -2486,8 +2486,8 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
     const submit_tail = b.user.submit_tail;
     b.impl.submit_tail = submit_tail;
     var complete_tail = b.impl.complete_tail;
-    var map_buffer: [poll_buffer_len]u32 = undefined; // poll_buffer index to operations index
-    var poll_i: usize = 0;
+    var map_buffer: [poll_buffer_len]u8 = undefined; // poll_buffer index to operations index
+    var poll_i: u8 = 0;
     defer {
         for (map_buffer[0..poll_i]) |op| {
             submit_head = submit_head.prev(len);
@@ -2515,7 +2515,7 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
                     .events = posix.POLL.IN,
                     .revents = 0,
                 };
-                map_buffer[poll_i] = op;
+                map_buffer[poll_i] = @intCast(op);
                 poll_i += 1;
             },
         }
