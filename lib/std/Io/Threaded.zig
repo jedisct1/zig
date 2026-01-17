@@ -2475,6 +2475,7 @@ fn operate(userdata: ?*anyopaque, op: *Io.Operation) Io.Cancelable!void {
 fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.WaitError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     if (is_windows) return batchWaitWindows(t, b, timeout);
+    if (native_os == .wasi and !builtin.link_libc) @panic("TODO");
     const operations = b.operations;
     const len: u31 = @intCast(operations.len);
     const ring = b.ring[0..len];
@@ -2597,7 +2598,7 @@ fn batchCancel(userdata: ?*anyopaque, b: *Io.Batch) void {
     b.user.complete_tail = complete_tail;
 }
 
-fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.ConcurrentError!void {
+fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.WaitError!void {
     const operations = b.operations;
     const len: u31 = @intCast(operations.len);
     const ring = b.ring[0..len];
