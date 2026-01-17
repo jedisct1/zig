@@ -2524,6 +2524,7 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
             try operate(t, &operations[op]);
             ring[complete_tail.index(len)] = op;
             complete_tail = complete_tail.next(len);
+            poll_i = 0;
             return;
         },
         else => {},
@@ -2548,24 +2549,20 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
                     if (deadline == null) continue;
                     return error.Timeout;
                 }
-                var canceled = false;
-                for (poll_buffer[0..poll_i], map_buffer[0..poll_i]) |*poll_fd, op| {
+                while (poll_i != 0) {
+                    poll_i -= 1;
+                    const poll_fd = &poll_buffer[poll_i];
+                    const op = map_buffer[poll_i];
                     if (poll_fd.revents == 0) {
                         submit_head = submit_head.prev(len);
                         ring[submit_head.index(len)] = op;
                     } else {
-                        operate(t, &operations[op]) catch |err| switch (err) {
-                            error.Canceled => {
-                                canceled = true;
-                                continue;
-                            },
-                        };
+                        try operate(t, &operations[op]);
                         ring[complete_tail.index(len)] = op;
                         complete_tail = complete_tail.next(len);
                     }
                 }
-                poll_i = 0;
-                return if (canceled) error.Canceled;
+                return;
             },
             .INTR => continue,
             else => return error.ConcurrencyUnavailable,
