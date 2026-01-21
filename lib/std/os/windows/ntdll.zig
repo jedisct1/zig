@@ -596,7 +596,7 @@ pub extern "ntdll" fn NtCancelSynchronousIoFile(
 
 pub extern "ntdll" fn NtDelayExecution(
     Alertable: BOOLEAN,
-    DelayInterval: *const LARGE_INTEGER,
+    DelayInterval: ?*const LARGE_INTEGER,
 ) callconv(.winapi) NTSTATUS;
 
 pub extern "ntdll" fn NtCancelIoFileEx(

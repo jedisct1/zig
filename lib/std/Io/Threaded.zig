@@ -1173,6 +1173,11 @@ const Syscall = struct {
             .blocked_canceling => return error.Canceled, // new status is `.canceled`
         }
     }
+    fn toApc(s: Syscall) Io.Cancelable!void {
+        // TODO set state to indicate instead of NtCancelSynchronousIoFile we
+        // need to use NtCancelIoFileEx
+        return s.checkCancel();
+    }
     /// Marks this syscall as finished.
     fn finish(s: Syscall) void {
         const thread = s.thread orelse return;
@@ -2759,7 +2764,12 @@ fn dirCreateDirPathOpenWasi(
 
 fn dirStat(userdata: ?*anyopaque, dir: Dir) Dir.StatError!Dir.Stat {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    const file: File = .{ .handle = dir.handle };
+    const file: File = if (is_windows) .{
+        .handle = dir.handle,
+        .flags = .{ .nonblocking = false },
+    } else .{
+        .handle = dir.handle,
+    };
     return fileStat(t, file);
 }
 
@@ -3682,7 +3692,10 @@ fn dirCreateFileWindows(
     errdefer windows.CloseHandle(handle);
 
     const exclusive = switch (flags.lock) {
-        .none => return .{ .handle = handle },
+        .none => return .{
+            .handle = handle,
+            .flags = .{ .nonblocking = false },
+        },
         .shared => false,
         .exclusive => true,
     };
@@ -3702,7 +3715,10 @@ fn dirCreateFileWindows(
     )) {
         .SUCCESS => {
             syscall.finish();
-            return .{ .handle = handle };
+            return .{
+                .handle = handle,
+                .flags = .{ .nonblocking = false },
+            };
         },
         .INSUFFICIENT_RESOURCES => return syscall.fail(error.SystemResources),
         .LOCK_NOT_GRANTED => return syscall.fail(error.WouldBlock),
@@ -4273,7 +4289,10 @@ pub fn dirOpenFileWtf16(
     errdefer w.CloseHandle(handle);
 
     const exclusive = switch (flags.lock) {
-        .none => return .{ .handle = handle },
+        .none => return .{
+            .handle = handle,
+            .flags = .{ .nonblocking = false },
+        },
         .shared => false,
         .exclusive => true,
     };
@@ -4296,7 +4315,10 @@ pub fn dirOpenFileWtf16(
         .ACCESS_VIOLATION => |err| return syscall.ntstatusBug(err), // bad io_status_block pointer
         else => |status| return syscall.unexpectedNtstatus(status),
     };
-    return .{ .handle = handle };
+    return .{
+        .handle = handle,
+        .flags = .{ .nonblocking = false },
+    };
 }
 
 fn dirOpenFileWasi(
@@ -8365,46 +8387,66 @@ fn fileReadStreamingPosix(file: File, data: []const []u8) File.Reader.Error!usiz
 }
 
 fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!usize {
-    const DWORD = windows.DWORD;
     var index: usize = 0;
     while (index < data.len and data[index].len == 0) index += 1;
     if (index == data.len) return 0;
     const buffer = data[index];
-    const want_read_count: DWORD = @min(std.math.maxInt(DWORD), buffer.len);
 
-    const syscall: Syscall = try .start();
-    while (true) {
-        var n: DWORD = undefined;
-        if (windows.kernel32.ReadFile(file.handle, buffer.ptr, want_read_count, &n, null) != 0) {
-            syscall.finish();
-            return n;
+    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+
+    read: {
+        const syscall: Syscall = try .start();
+        while (true) {
+            switch (windows.ntdll.NtReadFile(
+                file.handle,
+                null, // event
+                noopApc, // apc callback
+                null, // apc context
+                &io_status_block,
+                buffer.ptr,
+                @min(std.math.maxInt(u32), buffer.len),
+                null, // byte offset
+                null, // key
+            )) {
+                .SUCCESS => break :read syscall.finish(),
+                .PENDING => break,
+                .CANCELLED => {
+                    try syscall.checkCancel();
+                    continue;
+                },
+                .INVALID_PARAMETER => |err| return syscall.ntstatusBug(err), // wrong value for flags.nonblocking
+                else => |status| return syscall.unexpectedNtstatus(status),
+            }
         }
-        switch (windows.GetLastError()) {
-            .IO_PENDING => |err| {
-                syscall.finish();
-                return windows.errorBug(err);
-            },
-            .OPERATION_ABORTED => {
-                try syscall.checkCancel();
-                continue;
-            },
-            .BROKEN_PIPE, .HANDLE_EOF => {
-                syscall.finish();
-                return 0;
-            },
-            .NETNAME_DELETED => if (is_debug) unreachable else return error.Unexpected,
-            .LOCK_VIOLATION => return syscall.fail(error.LockViolation),
-            .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
-            .INVALID_HANDLE => if (is_debug) unreachable else return error.Unexpected,
-            // TODO: Determine if INVALID_FUNCTION is possible in more scenarios than just passing
-            // a handle to a directory.
-            .INVALID_FUNCTION => return syscall.fail(error.IsDir),
-            else => |err| {
-                syscall.finish();
-                return windows.unexpectedError(err);
-            },
+        try syscall.toApc();
+        while (true) {
+            switch (windows.ntdll.NtDelayExecution(1, null)) {
+                .USER_APC => break syscall.finish(),
+                .SUCCESS, .CANCELLED => {
+                    try syscall.checkCancel();
+                    continue;
+                },
+                else => |status| return syscall.unexpectedNtstatus(status),
+            }
         }
     }
+
+    switch (io_status_block.u.Status) {
+        .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => {},
+        .ACCESS_DENIED => return error.AccessDenied,
+        else => |status| return windows.unexpectedStatus(status),
+    }
+    return io_status_block.Information;
+}
+
+fn noopApc(
+    apc_context: ?*anyopaque,
+    io_status_block: *windows.IO_STATUS_BLOCK,
+    unused: windows.ULONG,
+) callconv(.winapi) void {
+    _ = apc_context;
+    _ = io_status_block;
+    _ = unused;
 }
 
 fn fileReadPositionalPosix(file: File, data: []const []u8, offset: u64) File.ReadPositionalError!usize {
@@ -14560,9 +14602,9 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
     return .{
         .id = piProcInfo.hProcess,
         .thread_handle = piProcInfo.hThread,
-        .stdin = if (g_hChildStd_IN_Wr) |h| .{ .handle = h } else null,
-        .stdout = if (g_hChildStd_OUT_Rd) |h| .{ .handle = h } else null,
-        .stderr = if (g_hChildStd_ERR_Rd) |h| .{ .handle = h } else null,
+        .stdin = if (g_hChildStd_IN_Wr) |h| .{ .handle = h, .flags = .{ .nonblocking = true } } else null,
+        .stdout = if (g_hChildStd_OUT_Rd) |h| .{ .handle = h, .flags = .{ .nonblocking = true } } else null,
+        .stderr = if (g_hChildStd_ERR_Rd) |h| .{ .handle = h, .flags = .{ .nonblocking = true } } else null,
         .request_resource_usage_statistics = options.request_resource_usage_statistics,
     };
 }
@@ -15696,6 +15738,7 @@ fn progressParentFile(userdata: ?*anyopaque) std.Progress.ParentFileError!File {
             .pointer => @ptrFromInt(int),
             else => return error.UnsupportedOperation,
         },
+        .flags = if (is_windows) .{ .nonblocking = true } else .{},
     };
 }
 

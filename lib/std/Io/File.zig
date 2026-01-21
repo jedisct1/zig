@@ -10,8 +10,20 @@ const assert = std.debug.assert;
 const Dir = std.Io.Dir;
 
 handle: Handle,
+flags: Flags = .{},
 
 pub const Handle = std.posix.fd_t;
+pub const Flags = switch (native_os) {
+    .windows => packed struct(u1) {
+        /// * true: opened with MODE.IO.ASYNCHRONOUS
+        /// * false: opened with SYNCHRONOUS_ALERT or SYNCHRONOUS_NONALERT, or
+        ///   not a file.
+        /// This is default-initialized to false as a workaround for
+        /// https://codeberg.org/ziglang/zig/issues/30842
+        nonblocking: bool = false,
+    },
+    else => packed struct(u0) {},
+};
 
 pub const Reader = @import("File/Reader.zig");
 pub const Writer = @import("File/Writer.zig");
@@ -77,6 +89,7 @@ pub fn stdout() File {
     return switch (native_os) {
         .windows => .{
             .handle = std.os.windows.peb().ProcessParameters.hStdOutput,
+            .flags = .{ .nonblocking = false },
         },
         else => .{
             .handle = std.posix.STDOUT_FILENO,
@@ -88,6 +101,7 @@ pub fn stderr() File {
     return switch (native_os) {
         .windows => .{
             .handle = std.os.windows.peb().ProcessParameters.hStdError,
+            .flags = .{ .nonblocking = false },
         },
         else => .{
             .handle = std.posix.STDERR_FILENO,
@@ -99,6 +113,7 @@ pub fn stdin() File {
     return switch (native_os) {
         .windows => .{
             .handle = std.os.windows.peb().ProcessParameters.hStdInput,
+            .flags = .{ .nonblocking = false },
         },
         else => .{
             .handle = std.posix.STDIN_FILENO,
