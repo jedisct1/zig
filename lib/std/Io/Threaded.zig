@@ -632,11 +632,16 @@ const Thread = struct {
     cancel_protection: Io.CancelProtection,
     /// Always released when `Status.cancelation` is set to `.parked`.
     futex_waiter: if (use_parking_futex) ?*parking_futex.Waiter else ?noreturn,
-    apc_context: if (is_windows) ?*anyopaque else void,
+    apc: Apc,
     /// Used only by group cancelation code for temporary storage.
     interrupt_method: InterruptMethod,
 
     csprng: Csprng,
+
+    const Apc = if (is_windows) struct {
+        handle: windows.HANDLE,
+        iosb: ?*windows.IO_STATUS_BLOCK,
+    } else void;
 
     const Handle = Handle: {
         if (std.Thread.use_pthreads) break :Handle std.c.pthread_t;
@@ -1116,7 +1121,14 @@ const Thread = struct {
                     };
                 },
                 .dns => @panic("TODO call GetAddrInfoExCancel"),
-                .apc => @panic("TODO call NtCancelIoFileEx"),
+                .apc => {
+                    var iosb: windows.IO_STATUS_BLOCK = undefined;
+                    return switch (windows.ntdll.NtCancelIoFileEx(thread.apc.handle, thread.apc.iosb, &iosb)) {
+                        .NOT_FOUND => true, // this might mean the operation hasn't started yet
+                        .SUCCESS => false, // the OS confirmed that our cancelation worked
+                        else => false,
+                    };
+                },
             },
 
             else => {
@@ -1213,9 +1225,9 @@ const Syscall = struct {
     /// `NtCancelIoFileEx` to interrupt the wait.
     ///
     /// Windows only, called from blocked state only.
-    fn toApc(s: Syscall, apc_context: ?*anyopaque) Io.Cancelable!void {
+    fn toApc(s: Syscall, apc: Thread.Apc) Io.Cancelable!void {
         const thread = s.thread orelse return;
-        thread.apc_context = apc_context;
+        thread.apc = apc;
         var prev = thread.status.load(.monotonic);
         while (true) prev = switch (prev.cancelation) {
             .none => unreachable,
@@ -1554,7 +1566,7 @@ fn worker(t: *Threaded) void {
         .cancel_protection = .unblocked,
         .futex_waiter = undefined,
         .csprng = .{},
-        .apc_context = undefined,
+        .apc = undefined,
         .interrupt_method = undefined,
     };
     Thread.current = &thread;
@@ -8458,10 +8470,17 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
                 //else => |status| return syscall.unexpectedNtstatus(status),
             }
         }
-        try syscall.toApc(&done);
+        try syscall.toApc(.{ .handle = file.handle, .iosb = &io_status_block });
         while (true) {
             switch (windows.ntdll.NtDelayExecution(1, null)) {
-                .USER_APC => break syscall.finishApc(),
+                .USER_APC => {
+                    if (!done) {
+                        // Other APC work was queued before calling into this function.
+                        try syscall.checkCancelApc();
+                        continue;
+                    }
+                    break syscall.finishApc();
+                },
                 .SUCCESS, .CANCELLED => {
                     try syscall.checkCancelApc();
                     continue;
