@@ -601,7 +601,7 @@ pub extern "ntdll" fn NtDelayExecution(
 
 pub extern "ntdll" fn NtCancelIoFileEx(
     FileHandle: HANDLE,
-    IoRequestToCancel: ?*IO_STATUS_BLOCK,
+    IoRequestToCancel: *const IO_STATUS_BLOCK,
     IoStatusBlock: *IO_STATUS_BLOCK,
 ) callconv(.winapi) NTSTATUS;
 
