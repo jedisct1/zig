@@ -339,8 +339,8 @@ const Group = struct {
                 .canceled => true,
                 .parked => unreachable,
                 .blocked => unreachable,
-                .blocked_alertable => unreachable,
-                .blocked_alertable_canceling => unreachable,
+                .blocked_apc => unreachable,
+                .blocked_windows_dns => unreachable,
                 .blocked_canceling => unreachable,
             };
             if (result) {
@@ -379,7 +379,10 @@ const Group = struct {
         while (it) |thread| : (it = thread.next) {
             // This non-mutating RMW exists for ordering reasons: see comment in `Group.Task.start` for reasons.
             _ = thread.status.fetchOr(.{ .cancelation = @enumFromInt(0), .awaitable = .null }, .release);
-            if (thread.cancelAwaitable(.fromGroup(g.ptr))) any_blocked = true;
+            if (thread.cancelAwaitable(.fromGroup(g.ptr))) |method| {
+                thread.interrupt_method = method;
+                any_blocked = true;
+            }
         }
         return any_blocked;
     }
@@ -391,7 +394,7 @@ const Group = struct {
         var any_signaled = false;
         var it = t.worker_threads.load(.acquire); // acquire `Thread` values
         while (it) |thread| : (it = thread.next) {
-            if (thread.signalCanceledSyscall(t, .fromGroup(g.ptr))) any_signaled = true;
+            if (thread.signalCanceledSyscall(t, .fromGroup(g.ptr), thread.interrupt_method)) any_signaled = true;
         }
         return any_signaled;
     }
@@ -543,8 +546,8 @@ const Future = struct {
             .canceled => true,
             .parked => unreachable,
             .blocked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .blocked_canceling => unreachable,
         };
         thread.status.store(.{ .cancelation = .none, .awaitable = .null }, .monotonic);
@@ -573,11 +576,15 @@ const Future = struct {
         num_completed: *std.atomic.Value(u32),
         thread: ?*Thread,
     ) void {
-        var need_signal: bool = if (thread) |th| th.cancelAwaitable(.fromFuture(future)) else false;
+        var interrupt_method: ?Thread.InterruptMethod =
+            if (thread) |th| th.cancelAwaitable(.fromFuture(future)) else null;
         var timeout_ns: u64 = 1 << 10;
         while (true) {
-            need_signal = need_signal and thread.?.signalCanceledSyscall(t, .fromFuture(future));
-            Thread.futexWaitUncancelable(&num_completed.raw, 0, if (need_signal) timeout_ns else null);
+            if (interrupt_method) |method| {
+                if (!thread.?.signalCanceledSyscall(t, .fromFuture(future), method))
+                    interrupt_method = null;
+            }
+            Thread.futexWaitUncancelable(&num_completed.raw, 0, if (interrupt_method != null) timeout_ns else null);
             switch (num_completed.load(.acquire)) { // acquire task results
                 0 => {},
                 1 => break,
@@ -625,6 +632,9 @@ const Thread = struct {
     cancel_protection: Io.CancelProtection,
     /// Always released when `Status.cancelation` is set to `.parked`.
     futex_waiter: if (use_parking_futex) ?*parking_futex.Waiter else ?noreturn,
+    apc_context: if (is_windows) ?*anyopaque else void,
+    /// Used only by group cancelation code for temporary storage.
+    interrupt_method: InterruptMethod,
 
     csprng: Csprng,
 
@@ -652,11 +662,13 @@ const Thread = struct {
             /// To request cancelation, set the status to `.blocked_canceling` and repeatedly interrupt the system call until the status changes.
             blocked = 0b011,
 
-            /// Windows-only: the thread is blocked in an alertable wait via
-            /// `NtDelayExecution`. To request cancelation, set the status to
-            /// `blocked_alertable_canceling` and repeatedly alert the thread
-            /// until the status changes.
-            blocked_alertable = 0b010,
+            /// Windows-only: the thread is blocked in a call to `NtDelayExecution`.
+            /// To request cancelation, set the status to `.canceling` and call `NtCancelIoFileEx`.
+            blocked_apc = 0b100,
+
+            /// Windows-only: the thread is blocked in a call to `GetAddrInfoExW`.
+            /// To request cancelation, set the status to `.canceling` and call `GetAddrInfoExCancel`.
+            blocked_windows_dns = 0b010,
 
             /// The thread has an outstanding cancelation request but is not in a cancelable operation.
             /// When it acknowledges the cancelation, it will set the status to `.canceled`.
@@ -705,8 +717,8 @@ const Thread = struct {
         switch (status.cancelation) {
             .parked => unreachable,
             .blocked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .blocked_canceling => unreachable,
             .none, .canceled => {},
             .canceling => {
@@ -986,17 +998,17 @@ const Thread = struct {
     /// It is possible that `thread` gets canceled by this function, but is blocked in a syscall. In
     /// that case, the thread may need to be sent a signal to interrupt the call. This function will
     /// return `true` to indicate this, in which case the caller must call `signalCanceledSyscall`.
-    fn cancelAwaitable(thread: *Thread, awaitable: AwaitableId) bool {
+    fn cancelAwaitable(thread: *Thread, awaitable: AwaitableId) ?InterruptMethod {
         var status = thread.status.load(.monotonic);
         while (true) {
-            if (status.awaitable != awaitable) return false; // thread is working on something else
+            if (status.awaitable != awaitable) return null; // thread is working on something else
             status = switch (status.cancelation) {
                 .none => thread.status.cmpxchgWeak(
                     .{ .cancelation = .none, .awaitable = awaitable },
                     .{ .cancelation = .canceling, .awaitable = awaitable },
                     .monotonic,
                     .monotonic,
-                ) orelse return false,
+                ) orelse return null,
 
                 .parked => thread.status.cmpxchgWeak(
                     .{ .cancelation = .parked, .awaitable = awaitable },
@@ -1009,7 +1021,7 @@ const Thread = struct {
                         parking_futex.removeCanceledWaiter(futex_waiter);
                     }
                     unpark(&.{thread.id}, null);
-                    return false;
+                    return null;
                 },
 
                 .blocked => thread.status.cmpxchgWeak(
@@ -1017,7 +1029,17 @@ const Thread = struct {
                     .{ .cancelation = .blocked_canceling, .awaitable = awaitable },
                     .monotonic,
                     .monotonic,
-                ) orelse return true,
+                ) orelse return .sync,
+
+                .blocked_apc => thread.status.cmpxchgWeak(
+                    .{ .cancelation = .blocked_apc, .awaitable = awaitable },
+                    .{ .cancelation = .canceling, .awaitable = awaitable },
+                    .monotonic,
+                    .monotonic,
+                ) orelse {
+                    if (!is_windows) unreachable;
+                    return .apc;
+                },
 
                 .blocked_alertable => thread.status.cmpxchgWeak(
                     .{ .cancelation = .blocked_alertable, .awaitable = awaitable },
@@ -1026,14 +1048,14 @@ const Thread = struct {
                     .monotonic,
                 ) orelse {
                     if (!is_windows) unreachable;
-                    return true;
+                    return .dns;
                 },
 
                 .canceling, .canceled => {
                     // This can happen when the task start raced with the cancelation, so the thread
                     // saw the cancelation on the future/group *and* we are trying to signal the
                     // thread here.
-                    return false;
+                    return null;
                 },
 
                 .blocked_canceling => unreachable, // `awaitable` has not been canceled before now
@@ -1041,6 +1063,11 @@ const Thread = struct {
             };
         }
     }
+
+    const InterruptMethod = switch (native_os) {
+        .windows => enum { sync, dns, apc },
+        else => enum { sync },
+    };
 
     /// Sends a signal to `thread` if it is still blocked in a syscall (i.e. has not yet observed
     /// the cancelation request from `cancelAwaitable`).
@@ -1051,24 +1078,21 @@ const Thread = struct {
     /// the thread is still blocked. For the implementation, `Future.waitForCancelWithSignaling` and
     /// `Group.waitForCancelWithSignaling`: they use exponential backoff starting at a 1us delay and
     /// doubling each call. In practice, it is rare to send more than one signal.
-    fn signalCanceledSyscall(thread: *Thread, t: *Threaded, awaitable: AwaitableId) bool {
-        const status = thread.status.load(.monotonic);
-        if (status.awaitable != awaitable) {
-            // The thread has moved on and is working on something totally different.
-            return false;
-        }
+    fn signalCanceledSyscall(thread: *Thread, t: *Threaded, awaitable: AwaitableId, method: InterruptMethod) bool {
+        const bad_status: Status = .{ .cancelation = .blocked_canceling, .awaitable = awaitable };
+        if (thread.status.load(.monotonic) != bad_status) return false;
 
         // The thread ID and/or handle can be read non-atomically because they never change and were
         // released by the store that made `thread` available to us.
 
-        switch (status.cancelation) {
-            .blocked_canceling => if (std.Thread.use_pthreads) {
-                return switch (std.c.pthread_kill(thread.handle, .IO)) {
-                    0 => true,
-                    else => false,
-                };
-            } else switch (native_os) {
-                .linux => {
+        if (std.Thread.use_pthreads) switch (method) {
+            .sync => return switch (std.c.pthread_kill(thread.handle, .IO)) {
+                0 => true,
+                else => false,
+            },
+        } else switch (native_os) {
+            .linux => switch (method) {
+                .sync => {
                     const pid: posix.pid_t = pid: {
                         const cached_pid = @atomicLoad(Pid, &t.pid, .monotonic);
                         if (cached_pid != .unknown) break :pid @intFromEnum(cached_pid);
@@ -1081,7 +1105,9 @@ const Thread = struct {
                         else => false,
                     };
                 },
-                .windows => {
+            },
+            .windows => switch (method) {
+                .sync => {
                     var iosb: windows.IO_STATUS_BLOCK = undefined;
                     return switch (windows.ntdll.NtCancelSynchronousIoFile(thread.handle, null, &iosb)) {
                         .NOT_FOUND => true, // this might mean the operation hasn't started yet
@@ -1089,15 +1115,8 @@ const Thread = struct {
                         else => false,
                     };
                 },
-                else => return false,
-            },
-
-            .blocked_alertable_canceling => {
-                if (!is_windows) unreachable;
-                return switch (windows.ntdll.NtAlertThread(thread.handle)) {
-                    .SUCCESS => true,
-                    else => false,
-                };
+                .dns => @panic("TODO call GetAddrInfoExCancel"),
+                .apc => @panic("TODO call NtCancelIoFileEx"),
             },
 
             else => {
@@ -1145,8 +1164,8 @@ const Syscall = struct {
         }, .monotonic).cancelation) {
             .parked => unreachable,
             .blocked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .blocked_canceling => unreachable,
             .none => return .{ .thread = thread }, // new status is `.blocked`
             .canceling => return error.Canceled, // new status is `.canceled`
@@ -1165,18 +1184,13 @@ const Syscall = struct {
         }, .monotonic).cancelation) {
             .none => unreachable,
             .parked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .canceling => unreachable,
             .canceled => unreachable,
             .blocked => {}, // new status is `.blocked` (unchanged)
             .blocked_canceling => return error.Canceled, // new status is `.canceled`
         }
-    }
-    fn toApc(s: Syscall) Io.Cancelable!void {
-        // TODO set state to indicate instead of NtCancelSynchronousIoFile we
-        // need to use NtCancelIoFileEx
-        return s.checkCancel();
     }
     /// Marks this syscall as finished.
     fn finish(s: Syscall) void {
@@ -1187,8 +1201,8 @@ const Syscall = struct {
         }, .monotonic).cancelation) {
             .none => unreachable,
             .parked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .canceling => unreachable,
             .canceled => unreachable,
             .blocked => {}, // new status is `.none`
@@ -1196,30 +1210,69 @@ const Syscall = struct {
         }
     }
     /// Indicates instead of `NtCancelSynchronousIoFile` we need to use
-    /// `NtAlertThread` to interrupt the wait.
+    /// `NtCancelIoFileEx` to interrupt the wait.
     ///
     /// Windows only, called from blocked state only.
-    fn toAlertable(s: Syscall) Io.Cancelable!AlertableSyscall {
-        comptime assert(is_windows);
-        const thread = s.thread orelse return .{ .thread = null };
+    fn toApc(s: Syscall, apc_context: ?*anyopaque) Io.Cancelable!void {
+        const thread = s.thread orelse return;
+        thread.apc_context = apc_context;
         var prev = thread.status.load(.monotonic);
         while (true) prev = switch (prev.cancelation) {
             .none => unreachable,
             .parked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .canceling => unreachable,
             .canceled => unreachable,
 
             .blocked => thread.status.cmpxchgWeak(prev, .{
-                .cancelation = .blocked_alertable,
+                .cancelation = .blocked_apc,
                 .awaitable = prev.awaitable,
-            }, .monotonic, .monotonic) orelse return .{ .thread = thread },
+            }, .monotonic, .monotonic) orelse return,
 
             .blocked_canceling => thread.status.cmpxchgWeak(prev, .{
                 .cancelation = .canceled,
                 .awaitable = prev.awaitable,
             }, .monotonic, .monotonic) orelse return error.Canceled,
+        };
+    }
+    /// Windows only, called from blocked_apc state only.
+    fn checkCancelApc(s: Syscall) Io.Cancelable!void {
+        const thread = s.thread orelse return;
+        var prev = thread.status.load(.monotonic);
+        while (true) prev = switch (prev.cancelation) {
+            .none => unreachable,
+            .parked => unreachable,
+            .blocked_windows_dns => unreachable,
+            .blocked => unreachable,
+            .canceling => unreachable,
+            .canceled => unreachable,
+            .blocked_apc => return,
+            .blocked_canceling => thread.status.cmpxchgWeak(prev, .{
+                .cancelation = .canceled,
+                .awaitable = prev.awaitable,
+            }, .monotonic, .monotonic) orelse return error.Canceled,
+        };
+    }
+    /// Windows only, called from blocked_apc state only.
+    fn finishApc(s: Syscall) void {
+        const thread = s.thread orelse return;
+        var prev = thread.status.load(.monotonic);
+        while (true) prev = switch (prev.cancelation) {
+            .none => unreachable,
+            .parked => unreachable,
+            .blocked_windows_dns => unreachable,
+            .blocked => unreachable,
+            .canceling => unreachable,
+            .canceled => unreachable,
+            .blocked_apc => thread.status.cmpxchgWeak(prev, .{
+                .cancelation = .none,
+                .awaitable = prev.awaitable,
+            }, .monotonic, .monotonic) orelse return,
+            .blocked_canceling => thread.status.cmpxchgWeak(prev, .{
+                .cancelation = .canceling,
+                .awaitable = prev.awaitable,
+            }, .monotonic, .monotonic) orelse return,
         };
     }
     /// Convenience wrapper which calls `finish`, then returns `err`.
@@ -1501,6 +1554,8 @@ fn worker(t: *Threaded) void {
         .cancel_protection = .unblocked,
         .futex_waiter = undefined,
         .csprng = .{},
+        .apc_context = undefined,
+        .interrupt_method = undefined,
     };
     Thread.current = &thread;
 
@@ -2109,8 +2164,8 @@ fn groupAsyncEager(
             .canceled => true,
             .parked => unreachable,
             .blocked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .blocked_canceling => unreachable,
         };
     } else false;
@@ -2121,8 +2176,8 @@ fn groupAsyncEager(
             .canceled => true,
             .parked => unreachable,
             .blocked => unreachable,
-            .blocked_alertable => unreachable,
-            .blocked_alertable_canceling => unreachable,
+            .blocked_apc => unreachable,
+            .blocked_windows_dns => unreachable,
             .blocked_canceling => unreachable,
         };
     } else false;
@@ -2301,8 +2356,8 @@ fn recancelInner() void {
         .canceling => unreachable, // called `recancel` but cancelation was already pending
         .parked => unreachable,
         .blocked => unreachable,
-        .blocked_alertable => unreachable,
-        .blocked_alertable_canceling => unreachable,
+        .blocked_apc => unreachable,
+        .blocked_windows_dns => unreachable,
         .blocked_canceling => unreachable,
     }
 }
@@ -8376,6 +8431,7 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
     const buffer = data[index];
 
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+    var done: bool = false;
 
     read: {
         const syscall: Syscall = try .start();
@@ -8383,8 +8439,8 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
             switch (windows.ntdll.NtReadFile(
                 file.handle,
                 null, // event
-                noopApc, // apc callback
-                null, // apc context
+                flagApc, // apc callback
+                &done, // apc context
                 &io_status_block,
                 buffer.ptr,
                 @min(std.math.maxInt(u32), buffer.len),
@@ -8402,12 +8458,12 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
                 //else => |status| return syscall.unexpectedNtstatus(status),
             }
         }
-        try syscall.toApc();
+        try syscall.toApc(&done);
         while (true) {
             switch (windows.ntdll.NtDelayExecution(1, null)) {
-                .USER_APC => break syscall.finish(),
+                .USER_APC => break syscall.finishApc(),
                 .SUCCESS, .CANCELLED => {
-                    try syscall.checkCancel();
+                    try syscall.checkCancelApc();
                     continue;
                 },
                 else => |status| std.debug.panic("fileReadStreamingWindows NtDelayExecution returned {t}", .{status}),
@@ -8425,12 +8481,13 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
     return io_status_block.Information;
 }
 
-fn noopApc(
+fn flagApc(
     apc_context: ?*anyopaque,
     io_status_block: *windows.IO_STATUS_BLOCK,
     unused: windows.ULONG,
 ) callconv(.winapi) void {
-    _ = apc_context;
+    const flag: *bool = @ptrCast(apc_context);
+    flag.* = true;
     _ = io_status_block;
     _ = unused;
 }
@@ -12442,7 +12499,7 @@ fn netLookupFallible(
         var res: *ws2_32.ADDRINFOEXW = undefined;
         const timeout: ?*ws2_32.timeval = null;
         while (true) {
-            // TODO: hook this up to cancelation with `NtDelayExecution` and APC callbacks.
+            // TODO: hook this up to cancelation with `Thread.Status.cancelation.blocked_windows_dns`.
             try Thread.checkCancel();
             // TODO make this append to the queue eagerly rather than blocking until the whole thing finishes
             const rc: ws2_32.WinsockError = @enumFromInt(ws2_32.GetAddrInfoExW(name_w, port_w, .DNS, null, &hints, &res, timeout, null, null, null));
@@ -16176,8 +16233,8 @@ const parking_futex = struct {
                         .canceled => break :cancelable, // status is still `.canceled`
                         .parked => unreachable,
                         .blocked => unreachable,
-                        .blocked_alertable => unreachable,
-                        .blocked_alertable_canceling => unreachable,
+                        .blocked_apc => unreachable,
+                        .blocked_windows_dns => unreachable,
                         .blocked_canceling => unreachable,
                     }
                     // We could now be unparked for a cancelation at any time!
@@ -16228,8 +16285,8 @@ const parking_futex = struct {
                 },
                 .canceled => unreachable,
                 .blocked => unreachable,
-                .blocked_alertable => unreachable,
-                .blocked_alertable_canceling => unreachable,
+                .blocked_apc => unreachable,
+                .blocked_windows_dns => unreachable,
                 .blocked_canceling => unreachable,
             },
         }
@@ -16270,8 +16327,8 @@ const parking_futex = struct {
                     .canceling => continue, // race with a canceler who hasn't called `removeCanceledWaiter` yet
                     .canceled => unreachable,
                     .blocked => unreachable,
-                    .blocked_alertable => unreachable,
-                    .blocked_alertable_canceling => unreachable,
+                    .blocked_apc => unreachable,
+                    .blocked_windows_dns => unreachable,
                     .blocked_canceling => unreachable,
                 }
                 // We're waking this waiter. Remove them from the bucket and add them to our local list.
@@ -16337,8 +16394,8 @@ const parking_sleep = struct {
                 .canceled => break :cancelable, // status is still `.canceled`
                 .parked => unreachable,
                 .blocked => unreachable,
-                .blocked_alertable => unreachable,
-                .blocked_alertable_canceling => unreachable,
+                .blocked_apc => unreachable,
+                .blocked_windows_dns => unreachable,
                 .blocked_canceling => unreachable,
             }
             while (park(deadline, null)) {
@@ -16356,8 +16413,8 @@ const parking_sleep = struct {
                     .none => unreachable,
                     .canceled => unreachable,
                     .blocked => unreachable,
-                    .blocked_alertable => unreachable,
-                    .blocked_alertable_canceling => unreachable,
+                    .blocked_apc => unreachable,
+                    .blocked_windows_dns => unreachable,
                     .blocked_canceling => unreachable,
                 }
             } else |err| switch (err) {
@@ -16376,8 +16433,8 @@ const parking_sleep = struct {
                     .none => unreachable,
                     .canceled => unreachable,
                     .blocked => unreachable,
-                    .blocked_alertable => unreachable,
-                    .blocked_alertable_canceling => unreachable,
+                    .blocked_apc => unreachable,
+                    .blocked_windows_dns => unreachable,
                     .blocked_canceling => unreachable,
                 },
             }
