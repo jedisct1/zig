@@ -979,7 +979,6 @@ fn serializeIpc(start_serialized_len: usize, serialized_buffer: *Serialized.Buff
         if (main_parent == .unused) continue;
         const file: Io.File = .{
             .handle = main_storage.getIpcFd() orelse continue,
-            .flags = if (is_windows) .{ .nonblocking = true } else .{},
         };
         const opt_saved_metadata = findOld(file.handle, old_ipc_metadata_fds, old_ipc_metadata);
         var bytes_read: usize = 0;
