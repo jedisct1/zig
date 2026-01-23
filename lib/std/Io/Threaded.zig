@@ -8372,7 +8372,7 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
 
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     var done: bool = false;
-    const infinite: windows.LARGE_INTEGER = windows.INFINITE;
+    const max_delay_interval: windows.LARGE_INTEGER = std.math.minInt(i64);
 
     read: {
         const syscall: Syscall = try .start();
@@ -8404,7 +8404,7 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
         // Once we get here we received PENDING so we must not return from the
         // function until the operation completes.
         defer while (!done) {
-            _ = windows.ntdll.NtDelayExecution(1, &infinite);
+            _ = windows.ntdll.NtDelayExecution(1, &max_delay_interval);
         };
 
         const alertable_syscall = syscall.toAlertable() catch |err| switch (err) {
@@ -8415,7 +8415,7 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
         };
         defer alertable_syscall.finish();
         while (!done) {
-            _ = windows.ntdll.NtDelayExecution(1, &infinite);
+            _ = windows.ntdll.NtDelayExecution(1, &max_delay_interval);
             alertable_syscall.checkCancel() catch |err| switch (err) {
                 error.Canceled => |e| {
                     _ = windows.ntdll.NtCancelIoFile(file.handle, &io_status_block);
