@@ -8388,12 +8388,15 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
                 null, // byte offset
                 null, // key
             )) {
-                .SUCCESS => break :read syscall.finish(),
+                .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => break :read syscall.finish(),
                 .PENDING => break,
                 .CANCELLED => {
                     try syscall.checkCancel();
                     continue;
                 },
+                .INVALID_DEVICE_REQUEST => return syscall.fail(error.IsDir),
+                .LOCK_NOT_GRANTED => return syscall.fail(error.LockViolation),
+                .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
                 .INVALID_PARAMETER => |err| return syscall.ntstatusBug(err), // streaming read of async mode file
                 else => |status| return syscall.unexpectedNtstatus(status),
             }
@@ -8424,6 +8427,8 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
 
     switch (io_status_block.u.Status) {
         .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => {},
+        .INVALID_DEVICE_REQUEST => return error.IsDir,
+        .LOCK_NOT_GRANTED => return error.LockViolation,
         .ACCESS_DENIED => return error.AccessDenied,
         else => |status| return windows.unexpectedStatus(status),
     }
