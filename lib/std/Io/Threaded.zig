@@ -1314,6 +1314,13 @@ const AlertableSyscall = struct {
     }
 };
 
+fn noopApc(_: ?*anyopaque, _: *windows.IO_STATUS_BLOCK, _: windows.ULONG) callconv(.winapi) void {}
+
+fn waitForApcOrAlert() void {
+    const infinite_timeout: windows.LARGE_INTEGER = std.math.minInt(windows.LARGE_INTEGER);
+    _ = windows.ntdll.NtDelayExecution(windows.TRUE, &infinite_timeout);
+}
+
 const max_iovecs_len = 8;
 const splat_buffer_size = 64;
 const default_PATH = "/usr/local/bin:/bin/:/usr/bin";
@@ -8371,40 +8378,41 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
     const buffer = data[index];
 
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
-    var done: bool = false;
-    const max_delay_interval: windows.LARGE_INTEGER = std.math.minInt(i64);
-
-    read: {
-        const syscall: Syscall = try .start();
-        while (true) {
-            switch (windows.ntdll.NtReadFile(
-                file.handle,
-                null, // event
-                flagApc, // apc callback
-                &done, // apc context
-                &io_status_block,
-                buffer.ptr,
-                @min(std.math.maxInt(u32), buffer.len),
-                null, // byte offset
-                null, // key
-            )) {
-                .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => break :read syscall.finish(),
-                .PENDING => break,
-                .CANCELLED => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                .INVALID_DEVICE_REQUEST => return syscall.fail(error.IsDir),
-                .LOCK_NOT_GRANTED => return syscall.fail(error.LockViolation),
-                .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
-                .INVALID_PARAMETER => |err| return syscall.ntstatusBug(err), // streaming read of async mode file
-                else => |status| return syscall.unexpectedNtstatus(status),
-            }
+    const syscall: Syscall = try .start();
+    while (true) {
+        io_status_block.u.Status = .PENDING;
+        switch (windows.ntdll.NtReadFile(
+            file.handle,
+            null, // event
+            noopApc, // apc callback
+            null, // apc context
+            &io_status_block,
+            buffer.ptr,
+            @min(std.math.maxInt(u32), buffer.len),
+            null, // byte offset
+            null, // key
+        )) {
+            .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => {
+                syscall.finish();
+                return io_status_block.Information;
+            },
+            .PENDING => break,
+            .CANCELLED => {
+                try syscall.checkCancel();
+                continue;
+            },
+            .INVALID_DEVICE_REQUEST => return syscall.fail(error.IsDir),
+            .LOCK_NOT_GRANTED => return syscall.fail(error.LockViolation),
+            .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
+            .INVALID_PARAMETER => |err| return syscall.ntstatusBug(err), // streaming read of async mode file
+            else => |status| return syscall.unexpectedNtstatus(status),
         }
+    }
+    {
         // Once we get here we received PENDING so we must not return from the
         // function until the operation completes.
-        defer while (!done) {
-            _ = windows.ntdll.NtDelayExecution(1, &max_delay_interval);
+        defer while (@atomicLoad(windows.NTSTATUS, &io_status_block.u.Status, .acquire) == .PENDING) {
+            waitForApcOrAlert();
         };
 
         const alertable_syscall = syscall.toAlertable() catch |err| switch (err) {
@@ -8414,36 +8422,25 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
             },
         };
         defer alertable_syscall.finish();
-        while (!done) {
-            _ = windows.ntdll.NtDelayExecution(1, &max_delay_interval);
+        waitForApcOrAlert();
+        while (@atomicLoad(windows.NTSTATUS, &io_status_block.u.Status, .acquire) == .PENDING) {
             alertable_syscall.checkCancel() catch |err| switch (err) {
                 error.Canceled => |e| {
                     _ = windows.ntdll.NtCancelIoFile(file.handle, &io_status_block);
                     return e;
                 },
             };
+            waitForApcOrAlert();
         }
     }
-
     switch (io_status_block.u.Status) {
-        .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => {},
+        .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => return io_status_block.Information,
+        .PENDING => unreachable, // cannot return until the operation completes
         .INVALID_DEVICE_REQUEST => return error.IsDir,
         .LOCK_NOT_GRANTED => return error.LockViolation,
         .ACCESS_DENIED => return error.AccessDenied,
         else => |status| return windows.unexpectedStatus(status),
     }
-    return io_status_block.Information;
-}
-
-fn flagApc(
-    apc_context: ?*anyopaque,
-    io_status_block: *windows.IO_STATUS_BLOCK,
-    unused: windows.ULONG,
-) callconv(.winapi) void {
-    const flag: *bool = @ptrCast(apc_context);
-    flag.* = true;
-    _ = io_status_block;
-    _ = unused;
 }
 
 fn fileReadPositionalPosix(file: File, data: []const []u8, offset: u64) File.ReadPositionalError!usize {
@@ -14646,7 +14643,7 @@ fn getCngHandle(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
             t.mutex.lock(); // Another thread might have won the race.
             defer t.mutex.unlock();
             if (t.random_file.handle) |prev_handle| {
-                _ = windows.ntdll.NtClose(fresh_handle);
+                windows.CloseHandle(fresh_handle);
                 return prev_handle;
             } else {
                 t.random_file.handle = fresh_handle;
