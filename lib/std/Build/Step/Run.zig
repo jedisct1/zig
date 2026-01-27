@@ -1930,7 +1930,28 @@ fn waitZigTest(
         }
         // There is definitely a header available now -- read it.
         const header = stdout.takeStruct(Header, .little) catch unreachable;
-        try stdout.fill(header.bytes_len);
+
+        while (stdout.buffered().len < header.bytes_len) {
+            const timeout: Io.Timeout = t: {
+                const t = if (timer) |*t| t else break :t .none;
+                if (response_timeout_ns) |timeout_ns| break :t .{ .duration = .{
+                    .raw = .fromNanoseconds(timeout_ns -| t.read()),
+                    .clock = .awake,
+                } };
+                break :t .none;
+            };
+            multi_reader.fill(64, timeout) catch |err| switch (err) {
+                error.Timeout, error.EndOfStream => return .{ .no_poll = .{
+                    .active_test_index = active_test_index,
+                    .ns_elapsed = if (timer) |*t| t.read() else 0,
+                } },
+                error.UnsupportedClock => {
+                    timer = null;
+                    continue;
+                },
+                else => |e| return e,
+            };
+        }
 
         const body = stdout.take(header.bytes_len) catch unreachable;
         var body_r: std.Io.Reader = .fixed(body);
