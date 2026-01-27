@@ -350,6 +350,8 @@ pub const Batch = struct {
         }
     };
 
+    /// After calling this, it is safe to unconditionally defer a call to
+    /// `cancel`.
     pub fn init(operations: []Operation, ring: []u32) Batch {
         const len: u31 = @intCast(operations.len);
         assert(ring.len == len);
@@ -408,12 +410,18 @@ pub const Batch = struct {
     /// Starts work on any submitted operations and returns when at least one has completeed.
     ///
     /// Returns `error.Timeout` if `timeout` expires first.
+    ///
+    /// Depending on the `Io` implementation, may allocate resources that are
+    /// freed with `cancel`, even if an error is returned.
     pub fn wait(b: *Batch, io: Io, timeout: Timeout) WaitError!void {
         return io.vtable.batchWait(io.userdata, b, timeout);
     }
 
     /// Returns after all `operations` have completed. Operations which have not completed
     /// after this function returns were successfully dropped and had no side effects.
+    ///
+    /// This function is idempotent with respect to itself and `wait`. It is
+    /// safe to unconditionally `defer` a call to this function after `init`.
     pub fn cancel(b: *Batch, io: Io) void {
         return io.vtable.batchCancel(io.userdata, b);
     }

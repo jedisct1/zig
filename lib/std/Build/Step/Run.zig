@@ -1721,7 +1721,6 @@ fn evalZigTest(
                 // a crash of some kind. Either way, the child will terminate by itself -- wait for it.
                 const stderr_reader = multi_reader.reader(1);
                 const stderr_owned = try arena.dupe(u8, stderr_reader.buffered());
-                stderr_reader.tossBuffered();
 
                 // Clean up everything and wait for the child to exit.
                 child.stdin.?.close(io);
