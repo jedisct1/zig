@@ -2705,18 +2705,6 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
     var delay_interval: windows.LARGE_INTEGER = timeoutToWindowsInterval(timeout);
 
     while (true) {
-        const alertable_syscall = try AlertableSyscall.start();
-        const delay_rc = windows.ntdll.NtDelayExecution(windows.TRUE, &delay_interval);
-        alertable_syscall.finish();
-        switch (delay_rc) {
-            .SUCCESS => {
-                // The thread woke due to the timeout. Although spurious
-                // timeouts are OK, when no deadline is passed we must not
-                // return `error.Timeout`.
-                if (timeout != .none) return error.Timeout;
-            },
-            else => {},
-        }
         var any_done = false;
         var any_pending = false;
         for (metadatas, 0..) |*metadata, op_usize| {
@@ -2738,6 +2726,18 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
         }
         if (any_done) return;
         if (!any_pending) return;
+        const alertable_syscall = try AlertableSyscall.start();
+        const delay_rc = windows.ntdll.NtDelayExecution(windows.TRUE, &delay_interval);
+        alertable_syscall.finish();
+        switch (delay_rc) {
+            .SUCCESS => {
+                // The thread woke due to the timeout. Although spurious
+                // timeouts are OK, when no deadline is passed we must not
+                // return `error.Timeout`.
+                if (timeout != .none) return error.Timeout;
+            },
+            else => {},
+        }
     }
 }
 
@@ -8707,7 +8707,11 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
 
 fn ntReadFileResult(io_status_block: *windows.IO_STATUS_BLOCK) !usize {
     switch (io_status_block.u.Status) {
-        .SUCCESS, .END_OF_FILE, .PIPE_BROKEN => return io_status_block.Information,
+        .SUCCESS => {
+            assert(io_status_block.Information != 0);
+            return io_status_block.Information;
+        },
+        .END_OF_FILE, .PIPE_BROKEN => return 0,
         .PENDING => unreachable,
         .INVALID_DEVICE_REQUEST => return error.IsDir,
         .LOCK_NOT_GRANTED => return error.LockViolation,
@@ -8743,6 +8747,17 @@ fn ntReadFile(handle: windows.HANDLE, data: []const []u8, iosb: *windows.IO_STAT
             .PENDING => {
                 syscall.finish();
                 return .pending;
+            },
+            .SUCCESS => {
+                // Only END_OF_FILE is the true end.
+                if (iosb.Information == 0) {
+                    try syscall.checkCancel();
+                    continue;
+                } else {
+                    syscall.finish();
+                    iosb.u.Status = .SUCCESS;
+                    return .status;
+                }
             },
             .CANCELLED => {
                 try syscall.checkCancel();
@@ -9709,6 +9724,7 @@ fn writeFileStreamingWindows(
     handle: windows.HANDLE,
     bytes: []const u8,
 ) File.Writer.Error!usize {
+    assert(bytes.len != 0);
     var bytes_written: windows.DWORD = undefined;
     const adjusted_len = std.math.lossyCast(u32, bytes.len);
     const syscall: Syscall = try .start();
