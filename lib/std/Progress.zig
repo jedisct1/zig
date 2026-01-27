@@ -984,7 +984,7 @@ fn serializeIpc(start_serialized_len: usize, serialized_buffer: *Serialized.Buff
         var bytes_read: usize = 0;
         while (true) {
             const n = file.readStreaming(io, &.{pipe_buf[bytes_read..]}) catch |err| switch (err) {
-                error.WouldBlock => break,
+                error.WouldBlock, error.EndOfStream => break,
                 else => |e| {
                     std.log.debug("failed to read child progress data: {t}", .{e});
                     main_storage.completed_count = 0;
@@ -992,7 +992,6 @@ fn serializeIpc(start_serialized_len: usize, serialized_buffer: *Serialized.Buff
                     continue :main_loop;
                 },
             };
-            if (n == 0) break;
             if (opt_saved_metadata) |m| {
                 if (m.remaining_read_trash_bytes > 0) {
                     assert(bytes_read == 0);

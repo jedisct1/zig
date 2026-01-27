@@ -15,10 +15,9 @@ pub const Context = struct {
     fr: File.Reader,
     vec: [1][]u8,
     err: ?Error,
-    eos: bool,
 };
 
-pub const Error = Allocator.Error || File.Reader.Error || Io.ConcurrentError;
+pub const Error = Allocator.Error || File.ReadStreamingError || Io.ConcurrentError;
 
 /// Trailing:
 /// * `contexts: [len]Context`
@@ -85,7 +84,6 @@ pub fn init(mr: *MultiReader, gpa: Allocator, io: Io, streams: *Streams, files: 
         },
         .vec = .{&.{}},
         .err = null,
-        .eos = false,
     };
     const operations = streams.operations();
     const ring = streams.ring();
@@ -198,8 +196,10 @@ fn fillUntimed(context: *Context, capacity: usize) Io.Reader.Error!void {
         },
         error.EndOfStream => |e| return e,
     };
-    if (context.err != null) return error.ReadFailed;
-    if (context.eos) return error.EndOfStream;
+    if (context.err) |err| switch (err) {
+        error.EndOfStream => |e| return e,
+        else => return error.ReadFailed,
+    };
 }
 
 pub const FillError = Io.Batch.WaitError || error{
@@ -225,10 +225,6 @@ pub fn fill(mr: *MultiReader, unused_capacity: usize, timeout: Io.Timeout) FillE
             context.err = err;
             continue;
         };
-        if (n == 0) {
-            context.eos = true;
-            continue;
-        }
         const r = &context.fr.interface;
         r.end += n;
         if (r.buffer.len - r.end < unused_capacity) {

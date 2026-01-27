@@ -176,19 +176,21 @@ pub fn collectOutput(child: *const Child, io: Io, options: CollectOutputOptions)
     while (remaining > 0) {
         try batch.wait(io, options.timeout);
         while (batch.next()) |op| {
-            const n = try reads[op].file_read_streaming.status.result;
-            if (n == 0) {
-                remaining -= 1;
-            } else {
-                lists[op].items.len += n;
-                if (lists[op].items.len > @intFromEnum(limits[op])) return error.StreamTooLong;
-                if (options.allocator) |gpa| try lists[op].ensureUnusedCapacity(gpa, 1);
-                const cap = lists[op].unusedCapacitySlice();
-                if (cap.len == 0) return error.StreamTooLong;
-                vecs[op][0] = cap;
-                reads[op].file_read_streaming.status = .{ .unstarted = {} };
-                batch.add(op);
-            }
+            const n = reads[op].file_read_streaming.status.result catch |err| switch (err) {
+                error.EndOfStream => {
+                    remaining -= 1;
+                    continue;
+                },
+                else => |e| return e,
+            };
+            lists[op].items.len += n;
+            if (lists[op].items.len > @intFromEnum(limits[op])) return error.StreamTooLong;
+            if (options.allocator) |gpa| try lists[op].ensureUnusedCapacity(gpa, 1);
+            const cap = lists[op].unusedCapacitySlice();
+            if (cap.len == 0) return error.StreamTooLong;
+            vecs[op][0] = cap;
+            reads[op].file_read_streaming.status = .{ .unstarted = {} };
+            batch.add(op);
         }
     }
 }

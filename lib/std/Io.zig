@@ -187,7 +187,7 @@ pub const VTable = struct {
     fileWritePositional: *const fn (?*anyopaque, File, header: []const u8, data: []const []const u8, splat: usize, offset: u64) File.WritePositionalError!usize,
     fileWriteFileStreaming: *const fn (?*anyopaque, File, header: []const u8, *Io.File.Reader, Io.Limit) File.Writer.WriteFileError!usize,
     fileWriteFilePositional: *const fn (?*anyopaque, File, header: []const u8, *Io.File.Reader, Io.Limit, offset: u64) File.WriteFilePositionalError!usize,
-    /// Returns 0 on end of stream.
+    /// Returns 0 if reading at or past the end.
     fileReadPositional: *const fn (?*anyopaque, File, data: []const []u8, offset: u64) File.ReadPositionalError!usize,
     fileSeekBy: *const fn (?*anyopaque, File, relative_offset: i64) File.SeekError!void,
     fileSeekTo: *const fn (?*anyopaque, File, absolute_offset: u64) File.SeekError!void,
@@ -263,18 +263,18 @@ pub const Operation = union(enum) {
         status: Status(void) = .{ .unstarted = {} },
     };
 
-    /// Returns 0 on end of stream.
+    /// May return 0 reads which is different than `error.EndOfStream`.
     pub const FileReadStreaming = struct {
         file: File,
         data: []const []u8,
         status: Status(Error!usize) = .{ .unstarted = {} },
 
-        pub const Error = error{
+        pub const Error = UnendingError || error{EndOfStream};
+        pub const UnendingError = error{
             InputOutput,
             SystemResources,
             /// Trying to read a directory file descriptor as if it were a file.
             IsDir,
-            BrokenPipe,
             ConnectionResetByPeer,
             /// File was not opened with read capability.
             NotOpenForReading,

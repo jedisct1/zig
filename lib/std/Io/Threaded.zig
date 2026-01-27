@@ -8583,14 +8583,14 @@ fn fileClose(userdata: ?*anyopaque, files: []const File) void {
     for (files) |file| posix.close(file.handle);
 }
 
-fn fileReadStreaming(userdata: ?*anyopaque, file: File, data: []const []u8) File.Reader.Error!usize {
+fn fileReadStreaming(userdata: ?*anyopaque, file: File, data: []const []u8) File.ReadStreamingError!usize {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
     if (is_windows) return fileReadStreamingWindows(file, data);
     return fileReadStreamingPosix(file, data);
 }
 
-fn fileReadStreamingPosix(file: File, data: []const []u8) File.Reader.Error!usize {
+fn fileReadStreamingPosix(file: File, data: []const []u8) File.ReadStreamingError!usize {
     var iovecs_buffer: [max_iovecs_len]posix.iovec = undefined;
     var i: usize = 0;
     for (data) |buf| {
@@ -8611,28 +8611,24 @@ fn fileReadStreamingPosix(file: File, data: []const []u8) File.Reader.Error!usiz
             switch (std.os.wasi.fd_read(file.handle, dest.ptr, dest.len, &nread)) {
                 .SUCCESS => {
                     syscall.finish();
+                    if (nread == 0) return error.EndOfStream;
                     return nread;
                 },
                 .INTR, .TIMEDOUT => {
                     try syscall.checkCancel();
                     continue;
                 },
-                else => |e| {
-                    syscall.finish();
-                    switch (e) {
-                        .INVAL => |err| return errnoBug(err),
-                        .FAULT => |err| return errnoBug(err),
-                        .BADF => return error.IsDir, // File operation on directory.
-                        .IO => return error.InputOutput,
-                        .ISDIR => return error.IsDir,
-                        .NOBUFS => return error.SystemResources,
-                        .NOMEM => return error.SystemResources,
-                        .NOTCONN => return error.SocketUnconnected,
-                        .CONNRESET => return error.ConnectionResetByPeer,
-                        .NOTCAPABLE => return error.AccessDenied,
-                        else => |err| return posix.unexpectedErrno(err),
-                    }
-                },
+                .BADF => return syscall.fail(error.IsDir), // File operation on directory.
+                .IO => return syscall.fail(error.InputOutput),
+                .ISDIR => return syscall.fail(error.IsDir),
+                .NOBUFS => return syscall.fail(error.SystemResources),
+                .NOMEM => return syscall.fail(error.SystemResources),
+                .NOTCONN => return syscall.fail(error.SocketUnconnected),
+                .CONNRESET => return syscall.fail(error.ConnectionResetByPeer),
+                .NOTCAPABLE => return syscall.fail(error.AccessDenied),
+                .INVAL => |err| return syscall.errnoBug(err),
+                .FAULT => |err| return syscall.errnoBug(err),
+                else => |err| return syscall.unexpectedErrno(err),
             }
         }
     }
@@ -8643,36 +8639,33 @@ fn fileReadStreamingPosix(file: File, data: []const []u8) File.Reader.Error!usiz
         switch (posix.errno(rc)) {
             .SUCCESS => {
                 syscall.finish();
+                if (rc == 0) return error.EndOfStream;
                 return @intCast(rc);
             },
             .INTR, .TIMEDOUT => {
                 try syscall.checkCancel();
                 continue;
             },
-            else => |e| {
+            .BADF => {
                 syscall.finish();
-                switch (e) {
-                    .INVAL => |err| return errnoBug(err),
-                    .FAULT => |err| return errnoBug(err),
-                    .AGAIN => return error.WouldBlock,
-                    .BADF => {
-                        if (native_os == .wasi) return error.IsDir; // File operation on directory.
-                        return error.NotOpenForReading;
-                    },
-                    .IO => return error.InputOutput,
-                    .ISDIR => return error.IsDir,
-                    .NOBUFS => return error.SystemResources,
-                    .NOMEM => return error.SystemResources,
-                    .NOTCONN => return error.SocketUnconnected,
-                    .CONNRESET => return error.ConnectionResetByPeer,
-                    else => |err| return posix.unexpectedErrno(err),
-                }
+                if (native_os == .wasi) return error.IsDir; // File operation on directory.
+                return error.NotOpenForReading;
             },
+            .AGAIN => return syscall.fail(error.WouldBlock),
+            .IO => return syscall.fail(error.InputOutput),
+            .ISDIR => return syscall.fail(error.IsDir),
+            .NOBUFS => return syscall.fail(error.SystemResources),
+            .NOMEM => return syscall.fail(error.SystemResources),
+            .NOTCONN => return syscall.fail(error.SocketUnconnected),
+            .CONNRESET => return syscall.fail(error.ConnectionResetByPeer),
+            .INVAL => |err| return syscall.errnoBug(err),
+            .FAULT => |err| return syscall.errnoBug(err),
+            else => |err| return syscall.unexpectedErrno(err),
         }
     }
 }
 
-fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!usize {
+fn fileReadStreamingWindows(file: File, data: []const []u8) File.ReadStreamingError!usize {
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     if (ntReadFile(file.handle, data, &io_status_block)) |result| switch (result) {
         .status => return ntReadFileResult(&io_status_block),
@@ -8707,11 +8700,9 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.Reader.Error!us
 
 fn ntReadFileResult(io_status_block: *windows.IO_STATUS_BLOCK) !usize {
     switch (io_status_block.u.Status) {
-        .SUCCESS => {
-            assert(io_status_block.Information != 0);
-            return io_status_block.Information;
-        },
-        .END_OF_FILE, .PIPE_BROKEN => return 0,
+        .SUCCESS => return io_status_block.Information,
+        .END_OF_FILE => return error.EndOfStream,
+        .PIPE_BROKEN => return error.EndOfStream,
         .PENDING => unreachable,
         .INVALID_DEVICE_REQUEST => return error.IsDir,
         .LOCK_NOT_GRANTED => return error.LockViolation,
@@ -8749,15 +8740,9 @@ fn ntReadFile(handle: windows.HANDLE, data: []const []u8, iosb: *windows.IO_STAT
                 return .pending;
             },
             .SUCCESS => {
-                // Only END_OF_FILE is the true end.
-                if (iosb.Information == 0) {
-                    try syscall.checkCancel();
-                    continue;
-                } else {
-                    syscall.finish();
-                    iosb.u.Status = .SUCCESS;
-                    return .status;
-                }
+                syscall.finish();
+                iosb.u.Status = .SUCCESS;
+                return .status;
             },
             .CANCELLED => {
                 try syscall.checkCancel();
