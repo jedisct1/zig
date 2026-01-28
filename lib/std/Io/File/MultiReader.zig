@@ -17,7 +17,8 @@ pub const Context = struct {
     err: ?Error,
 };
 
-pub const Error = Allocator.Error || File.ReadStreamingError || Io.ConcurrentError;
+pub const Error = UnendingError || error{EndOfStream};
+pub const UnendingError = Allocator.Error || File.Reader.Error || Io.ConcurrentError;
 
 /// Trailing:
 /// * `contexts: [len]Context`
@@ -126,13 +127,14 @@ pub fn reader(mr: *MultiReader, index: usize) *Io.Reader {
 }
 
 /// Checks for errors in all streams, prioritizing `error.Canceled` if it
-/// occurred anywhere.
-pub fn checkAnyError(mr: *const MultiReader) Error!void {
+/// occurred anywhere, and ignoring `error.EndOfStream`.
+pub fn checkAnyError(mr: *const MultiReader) UnendingError!void {
     const contexts = mr.streams.contexts();
-    var other: Error!void = {};
+    var other: UnendingError!void = {};
     for (contexts) |*context| {
         if (context.err) |err| switch (err) {
             error.Canceled => |e| return e,
+            error.EndOfStream => continue,
             else => |e| other = e,
         };
     }

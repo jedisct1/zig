@@ -1385,14 +1385,12 @@ fn runCommand(
             break :term spawnChildAndCollect(run, interp_argv.items, &environ_map, has_side_effects, options, fuzz_context) catch |e| {
                 if (!run.failing_to_execute_foreign_is_an_error) return error.MakeSkipped;
                 if (e == error.MakeFailed) return error.MakeFailed; // error already reported
-                return step.fail("unable to spawn interpreter {s}: {s}", .{
-                    interp_argv.items[0], @errorName(e),
-                });
+                return step.fail("unable to spawn interpreter {s}: {t}", .{ interp_argv.items[0], e });
             };
         }
         if (err == error.MakeFailed) return error.MakeFailed; // error already reported
 
-        return step.fail("failed to spawn and capture stdio from {s}: {s}", .{ argv[0], @errorName(err) });
+        return step.fail("failed to spawn and capture stdio from {s}: {t}", .{ argv[0], err });
     };
 
     const generic_result = opt_generic_result orelse {
