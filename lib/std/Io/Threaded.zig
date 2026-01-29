@@ -2761,7 +2761,7 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
         const delay_rc = windows.ntdll.NtDelayExecution(windows.TRUE, &delay_interval);
         alertable_syscall.finish();
         switch (delay_rc) {
-            .SUCCESS => {
+            .SUCCESS, .TIMEOUT => {
                 // The thread woke due to the timeout. Although spurious
                 // timeouts are OK, when no deadline is passed we must not
                 // return `error.Timeout`.
