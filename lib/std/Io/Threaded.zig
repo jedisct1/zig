@@ -2695,7 +2695,10 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
         const op = ring[submit_head.index(len)];
         const operation = &operations[op];
         const metadata = &metadatas[op];
-        metadata.* = .{ .iosb = undefined, .pending = false };
+        metadata.* = .{ .iosb = .{
+            .u = .{ .Status = .PENDING },
+            .Information = 0,
+        }, .pending = false };
         switch (operation.*) {
             .noop => |*o| {
                 _ = o.status.unstarted;
@@ -2704,15 +2707,13 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
             },
             .file_read_streaming => |*o| {
                 _ = o.status.unstarted;
-                switch (try ntReadFile(o.file.handle, o.data, &metadata.iosb)) {
-                    .status => {
-                        o.status = .{ .result = ntReadFileResult(&metadata.iosb) };
-                        submitComplete(ring, &complete_tail, op);
-                    },
-                    .pending => {
-                        o.status = .{ .pending = b };
-                        metadata.pending = true;
-                    },
+                try ntReadFile(o.file.handle, o.data, &metadata.iosb);
+                if (@atomicLoad(windows.NTSTATUS, &metadata.iosb.u.Status, .acquire) == .PENDING) {
+                    o.status = .{ .pending = b };
+                    metadata.pending = true;
+                } else {
+                    o.status = .{ .result = ntReadFileResult(&metadata.iosb) };
+                    submitComplete(ring, &complete_tail, op);
                 }
             },
         }
@@ -8680,44 +8681,36 @@ fn fileReadStreamingPosix(file: File, data: []const []u8) File.ReadStreamingErro
 }
 
 fn fileReadStreamingWindows(file: File, data: []const []u8) File.ReadStreamingError!usize {
-    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
-    if (ntReadFile(file.handle, data, &io_status_block)) |result| switch (result) {
-        .status => return ntReadFileResult(&io_status_block),
-        .pending => {
-            // Once we get here we received PENDING so we must not return from the
-            // function until the operation completes.
-            defer while (@atomicLoad(windows.NTSTATUS, &io_status_block.u.Status, .acquire) == .PENDING) {
-                waitForApcOrAlert();
-            };
-
-            const alertable_syscall = AlertableSyscall.start() catch |err| switch (err) {
-                error.Canceled => |e| {
-                    _ = windows.ntdll.NtCancelIoFile(file.handle, &io_status_block);
-                    return e;
-                },
-            };
-            waitForApcOrAlert();
-            while (@atomicLoad(windows.NTSTATUS, &io_status_block.u.Status, .acquire) == .PENDING) {
-                alertable_syscall.checkCancel() catch |err| switch (err) {
-                    error.Canceled => |e| {
-                        _ = windows.ntdll.NtCancelIoFile(file.handle, &io_status_block);
-                        return e;
-                    },
-                };
-                waitForApcOrAlert();
-            }
-            alertable_syscall.finish();
-        },
-    } else |err| return err;
+    var io_status_block: windows.IO_STATUS_BLOCK = .{
+        .u = .{ .Status = .PENDING },
+        .Information = 0,
+    };
+    try ntReadFile(file.handle, data, &io_status_block);
+    while (@atomicLoad(windows.NTSTATUS, &io_status_block.u.Status, .acquire) == .PENDING) {
+        // Once we get here we must not return from the function until the
+        // operation completes, thereby releasing reference to io_status_block.
+        const alertable_syscall = AlertableSyscall.start() catch |err| switch (err) {
+            error.Canceled => |e| {
+                _ = windows.ntdll.NtCancelIoFile(file.handle, &io_status_block);
+                while (@atomicLoad(windows.NTSTATUS, &io_status_block.u.Status, .acquire) == .PENDING) {
+                    waitForApcOrAlert();
+                }
+                return e;
+            },
+        };
+        waitForApcOrAlert();
+        alertable_syscall.finish();
+    }
     return ntReadFileResult(&io_status_block);
 }
 
-fn ntReadFileResult(io_status_block: *windows.IO_STATUS_BLOCK) !usize {
+fn ntReadFileResult(io_status_block: *const windows.IO_STATUS_BLOCK) !usize {
     switch (io_status_block.u.Status) {
+        .PENDING => unreachable,
+        .CANCELLED => unreachable,
         .SUCCESS => return io_status_block.Information,
         .END_OF_FILE => return error.EndOfStream,
         .PIPE_BROKEN => return error.EndOfStream,
-        .PENDING => unreachable,
         .INVALID_DEVICE_REQUEST => return error.IsDir,
         .LOCK_NOT_GRANTED => return error.LockViolation,
         .ACCESS_DENIED => return error.AccessDenied,
@@ -8725,50 +8718,42 @@ fn ntReadFileResult(io_status_block: *windows.IO_STATUS_BLOCK) !usize {
     }
 }
 
-fn ntReadFile(handle: windows.HANDLE, data: []const []u8, iosb: *windows.IO_STATUS_BLOCK) Io.Cancelable!enum { status, pending } {
+fn ntReadFile(handle: windows.HANDLE, data: []const []u8, iosb: *windows.IO_STATUS_BLOCK) Io.Cancelable!void {
     var index: usize = 0;
     while (index < data.len and data[index].len == 0) index += 1;
     if (index == data.len) {
         iosb.u.Status = .SUCCESS;
         iosb.Information = 0;
-        return .status;
+        return;
     }
     const buffer = data[index];
 
     const syscall: Syscall = try .start();
-    while (true) {
-        iosb.u.Status = .PENDING;
-        switch (windows.ntdll.NtReadFile(
-            handle,
-            null, // event
-            noopApc, // apc callback
-            null, // apc context
-            iosb,
-            buffer.ptr,
-            @min(std.math.maxInt(u32), buffer.len),
-            null, // byte offset
-            null, // key
-        )) {
-            .PENDING => {
-                syscall.finish();
-                return .pending;
-            },
-            .SUCCESS => {
-                syscall.finish();
-                iosb.u.Status = .SUCCESS;
-                return .status;
-            },
-            .CANCELLED => {
-                try syscall.checkCancel();
-                continue;
-            },
-            else => |status| {
-                syscall.finish();
-                iosb.u.Status = status;
-                return .status;
-            },
-        }
-    }
+    while (true) switch (windows.ntdll.NtReadFile(
+        handle,
+        null, // event
+        noopApc, // apc callback
+        null, // apc context
+        iosb,
+        buffer.ptr,
+        @min(std.math.maxInt(u32), buffer.len),
+        null, // byte offset
+        null, // key
+    )) {
+        .PENDING => {
+            syscall.finish();
+            return;
+        },
+        .CANCELLED => {
+            try syscall.checkCancel();
+            continue;
+        },
+        else => |status| {
+            syscall.finish();
+            iosb.u.Status = status;
+            return;
+        },
+    };
 }
 
 fn fileReadPositionalPosix(file: File, data: []const []u8, offset: u64) File.ReadPositionalError!usize {
