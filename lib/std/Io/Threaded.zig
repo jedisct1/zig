@@ -8709,8 +8709,10 @@ fn ntReadFileResult(io_status_block: *const windows.IO_STATUS_BLOCK) !usize {
         .PENDING => unreachable,
         .CANCELLED => unreachable,
         .SUCCESS => return io_status_block.Information,
-        .END_OF_FILE => return error.EndOfStream,
-        .PIPE_BROKEN => return error.EndOfStream,
+        .END_OF_FILE, .PIPE_BROKEN => {
+            if (io_status_block.Information == 0) return error.EndOfStream;
+            return io_status_block.Information;
+        },
         .INVALID_DEVICE_REQUEST => return error.IsDir,
         .LOCK_NOT_GRANTED => return error.LockViolation,
         .ACCESS_DENIED => return error.AccessDenied,
