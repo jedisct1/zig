@@ -2560,17 +2560,31 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
     const deadline = timeout.toDeadline(t_io) catch return error.UnsupportedClock;
     const max_poll_ms = std.math.maxInt(i32);
     while (true) {
-        const timeout_ms: i32 = if (deadline) |d| t: {
+        const timeout_ms: i32 = t: {
+            if (b.user.complete_head != complete_tail) {
+                // It is legal to call batchWait with already completed
+                // operations in the ring. In such case, we need to avoid
+                // blocking in the poll syscall, but we can still take this
+                // opportunity to find additional ready operations.
+                break :t 0;
+            }
+            const d = deadline orelse break :t -1;
             const duration = d.durationFromNow(t_io) catch return error.UnsupportedClock;
             if (duration.raw.nanoseconds <= 0) return error.Timeout;
             break :t @intCast(@min(max_poll_ms, duration.raw.toMilliseconds()));
-        } else -1;
+        };
         const syscall = try Syscall.start();
         const rc = posix.system.poll(&poll_buffer, poll_i, timeout_ms);
         syscall.finish();
         switch (posix.errno(rc)) {
             .SUCCESS => {
                 if (rc == 0) {
+                    if (b.user.complete_head != complete_tail) {
+                        // Since there are already completions available in the
+                        // queue, this is neither a timeout nor a case for
+                        // retrying.
+                        return;
+                    }
                     // Although spurious timeouts are OK, when no deadline is
                     // passed we must not return `error.Timeout`.
                     if (deadline == null) continue;
@@ -2677,8 +2691,6 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
         b.user.complete_tail = complete_tail;
     }
 
-    var any_done = false;
-
     while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
         const op = ring[submit_head.index(len)];
         const operation = &operations[op];
@@ -2688,7 +2700,6 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
             .noop => |*o| {
                 _ = o.status.unstarted;
                 o.status = .{ .result = {} };
-                any_done = true;
                 submitComplete(ring, &complete_tail, op);
             },
             .file_read_streaming => |*o| {
@@ -2696,7 +2707,6 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
                 switch (try ntReadFile(o.file.handle, o.data, &metadata.iosb)) {
                     .status => {
                         o.status = .{ .result = ntReadFileResult(&metadata.iosb) };
-                        any_done = true;
                         submitComplete(ring, &complete_tail, op);
                     },
                     .pending => {
@@ -2725,11 +2735,10 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
                     o.status = .{ .result = ntReadFileResult(&metadata.iosb) };
                 },
             }
-            any_done = true;
             metadata.pending = false;
             submitComplete(ring, &complete_tail, op);
         }
-        if (any_done) return;
+        if (b.user.complete_head != complete_tail) return;
         if (!any_pending) return;
         const alertable_syscall = try AlertableSyscall.start();
         const delay_rc = windows.ntdll.NtDelayExecution(windows.TRUE, &delay_interval);
