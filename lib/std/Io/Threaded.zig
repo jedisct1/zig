@@ -2495,7 +2495,7 @@ fn operate(userdata: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Oper
     }
 }
 
-fn batchAwaitAsync(userdata: ?*anyopaque, b: *Io.Batch) Io.Batch.AwaitAsyncError!void {
+fn batchAwaitAsync(userdata: ?*anyopaque, b: *Io.Batch) Io.Cancelable!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     if (is_windows) {
         batchAwaitWindows(b, false) catch |err| switch (err) {

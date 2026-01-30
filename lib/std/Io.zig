@@ -150,7 +150,7 @@ pub const VTable = struct {
     futexWake: *const fn (?*anyopaque, ptr: *const u32, max_waiters: u32) void,
 
     operate: *const fn (?*anyopaque, Operation) Cancelable!Operation.Result,
-    batchAwaitAsync: *const fn (?*anyopaque, *Batch) Batch.AwaitAsyncError!void,
+    batchAwaitAsync: *const fn (?*anyopaque, *Batch) Cancelable!void,
     batchAwaitConcurrent: *const fn (?*anyopaque, *Batch, Timeout) Batch.AwaitConcurrentError!void,
     batchCancel: *const fn (?*anyopaque, *Batch) void,
 
@@ -359,7 +359,7 @@ pub fn operate(io: Io, operation: Operation) Cancelable!Operation.Result {
 /// complete.
 ///
 /// This is a low-level abstraction based on `Operation`. For a higher
-/// level API that operates on `Future`, see `Select`.
+/// level API that operates on `Future`, see `Select` and `Group`.
 pub const Batch = struct {
     storage: []Operation.Storage,
     unused: Operation.List,
@@ -422,6 +422,11 @@ pub const Batch = struct {
         b.submissions.tail = .fromIndex(index);
     }
 
+    /// After calling `awaitAsync`, `awaitConcurrent`, or `cancel`, this
+    /// function iterates over the completed operations.
+    ///
+    /// Each completion returned from this function dequeues from the `Batch`.
+    /// It is not required to dequeue all completions before awaiting again.
     pub fn next(b: *Batch) ?struct { index: u32, result: Operation.Result } {
         const index = b.completions.head;
         if (index == .none) return null;
@@ -441,16 +446,37 @@ pub const Batch = struct {
         return .{ .index = index.toIndex(), .result = completion.result };
     }
 
-    pub const AwaitAsyncError = Cancelable;
-    pub fn awaitAsync(b: *Batch, io: Io) AwaitAsyncError!void {
+    /// Waits for at least one of the submitted operations to complete. After
+    /// this function returns the completed operations can be iterated with
+    /// `next`.
+    ///
+    /// This function provides opportunity for the implementation to introduce
+    /// concurrency into the batched operations, but unlike `awaitConcurrent`,
+    /// does not require it, and therefore cannot fail with
+    /// `error.ConcurrencyUnavailable`.
+    pub fn awaitAsync(b: *Batch, io: Io) Cancelable!void {
         return io.vtable.batchAwaitAsync(io.userdata, b);
     }
 
     pub const AwaitConcurrentError = ConcurrentError || Cancelable || Timeout.Error;
+
+    /// Waits for at least one of the submitted operations to complete. After
+    /// this function returns the completed operations can be iterated with
+    /// `next`.
+    ///
+    /// Unlike `awaitAsync`, this function requires the implementation to
+    /// perform the operations concurrently and therefore can fail with
+    /// `error.ConcurrencyUnavailable`.
     pub fn awaitConcurrent(b: *Batch, io: Io, timeout: Timeout) AwaitConcurrentError!void {
         return io.vtable.batchAwaitConcurrent(io.userdata, b, timeout);
     }
 
+    /// Requests all pending operations to be interrupted, then waits for all
+    /// pending operations to complete. After this returns, the `Batch` is in a
+    /// well-defined state, ready to be iterated with `next`. Successfully
+    /// canceled operations will be absent from the iteration. Some operations
+    /// may have successfully completed regardless of the cancel request and
+    /// will appear in the iteration.
     pub fn cancel(b: *Batch, io: Io) void {
         return io.vtable.batchCancel(io.userdata, b);
     }
