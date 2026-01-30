@@ -559,12 +559,11 @@ pub const ReadStreamingError = error{EndOfStream} || Reader.Error;
 /// See also:
 /// * `reader`
 pub fn readStreaming(file: File, io: Io, buffer: []const []u8) ReadStreamingError!usize {
-    var operation: Io.Operation = .{ .file_read_streaming = .{
+    const result = try io.operate(.{ .file_read_streaming = .{
         .file = file,
         .data = buffer,
-    } };
-    try io.operate(&operation);
-    return operation.file_read_streaming.status.result;
+    } });
+    return result.file_read_streaming;
 }
 
 pub const ReadPositionalError = error{

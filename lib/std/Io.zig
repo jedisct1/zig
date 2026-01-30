@@ -149,8 +149,9 @@ pub const VTable = struct {
     futexWaitUncancelable: *const fn (?*anyopaque, ptr: *const u32, expected: u32) void,
     futexWake: *const fn (?*anyopaque, ptr: *const u32, max_waiters: u32) void,
 
-    operate: *const fn (?*anyopaque, *Operation) Cancelable!void,
-    batchWait: *const fn (?*anyopaque, *Batch, Timeout) Batch.WaitError!void,
+    operate: *const fn (?*anyopaque, Operation) Cancelable!Operation.Result,
+    batchAwaitAsync: *const fn (?*anyopaque, *Batch) Batch.AwaitAsyncError!void,
+    batchAwaitConcurrent: *const fn (?*anyopaque, *Batch, Timeout) Batch.AwaitConcurrentError!void,
     batchCancel: *const fn (?*anyopaque, *Batch) void,
 
     dirCreateDir: *const fn (?*anyopaque, Dir, []const u8, Dir.Permissions) Dir.CreateDirError!void,
@@ -255,19 +256,14 @@ pub const VTable = struct {
 };
 
 pub const Operation = union(enum) {
-    noop: Noop,
     file_read_streaming: FileReadStreaming,
 
-    pub const Noop = struct {
-        reserved: [2]usize = .{ 0, 0 },
-        status: Status(void) = .{ .unstarted = {} },
-    };
+    pub const Tag = @typeInfo(Operation).@"union".tag_type.?;
 
     /// May return 0 reads which is different than `error.EndOfStream`.
     pub const FileReadStreaming = struct {
         file: File,
         data: []const []u8,
-        status: Status(Error!usize) = .{ .unstarted = {} },
 
         pub const Error = UnendingError || error{EndOfStream};
         pub const UnendingError = error{
@@ -290,19 +286,72 @@ pub const Operation = union(enum) {
             /// lock.
             LockViolation,
         } || Io.UnexpectedError;
+
+        pub const Result = usize;
     };
 
-    pub fn Status(Result: type) type {
-        return union {
-            unstarted: void,
-            pending: *Batch,
+    pub const Result = Result: {
+        const operation_fields = @typeInfo(Operation).@"union".fields;
+        var field_names: [operation_fields.len][]const u8 = undefined;
+        var field_types: [operation_fields.len]type = undefined;
+        for (operation_fields, &field_names, &field_types) |field, *field_name, *field_type| {
+            field_name.* = field.name;
+            field_type.* = field.type.Error!field.type.Result;
+        }
+        break :Result @Union(.auto, Tag, &field_names, &field_types, &@splat(.{}));
+    };
+
+    pub const Storage = union {
+        unused: List.DoubleNode,
+        submission: Submission,
+        pending: Pending,
+        completion: Completion,
+
+        pub const Submission = struct {
+            node: List.SingleNode,
+            operation: Operation,
+        };
+
+        pub const Pending = struct {
+            node: List.DoubleNode,
+            tag: Tag,
+            context: [3]usize,
+        };
+
+        pub const Completion = struct {
+            node: List.SingleNode,
             result: Result,
         };
-    }
+    };
+
+    pub const OptionalIndex = enum(u32) {
+        none = std.math.maxInt(u32),
+        _,
+
+        pub fn fromIndex(i: usize) OptionalIndex {
+            const oi: OptionalIndex = @enumFromInt(i);
+            assert(oi != .none);
+            return oi;
+        }
+
+        pub fn toIndex(oi: OptionalIndex) u32 {
+            assert(oi != .none);
+            return @intFromEnum(oi);
+        }
+    };
+    pub const List = struct {
+        head: OptionalIndex,
+        tail: OptionalIndex,
+
+        pub const empty: List = .{ .head = .none, .tail = .none };
+
+        pub const SingleNode = struct { next: OptionalIndex };
+        pub const DoubleNode = struct { prev: OptionalIndex, next: OptionalIndex };
+    };
 };
 
 /// Performs one `Operation`.
-pub fn operate(io: Io, operation: *Operation) Cancelable!void {
+pub fn operate(io: Io, operation: Operation) Cancelable!Operation.Result {
     return io.vtable.operate(io.userdata, operation);
 }
 
@@ -312,116 +361,96 @@ pub fn operate(io: Io, operation: *Operation) Cancelable!void {
 /// This is a low-level abstraction based on `Operation`. For a higher
 /// level API that operates on `Future`, see `Select`.
 pub const Batch = struct {
-    operations: []Operation,
-    ring: [*]u32,
-    user: struct {
-        submit_tail: RingIndex,
-        complete_head: RingIndex,
-        complete_tail: RingIndex,
-    },
-    impl: struct {
-        submit_head: RingIndex,
-        submit_tail: RingIndex,
-        complete_tail: RingIndex,
-        reserved: ?*anyopaque,
-    },
-
-    pub const RingIndex = enum(u32) {
-        _,
-
-        pub fn index(ri: RingIndex, len: u31) u31 {
-            const i = @intFromEnum(ri);
-            assert(i < @as(u32, len) * 2);
-            return @intCast(if (i < len) i else i - len);
-        }
-
-        pub fn prev(ri: RingIndex, len: u31) RingIndex {
-            const i = @intFromEnum(ri);
-            const double_len = @as(u32, len) * 2;
-            assert(i <= double_len);
-            return @enumFromInt((if (i > 0) i else double_len) - 1);
-        }
-
-        pub fn next(ri: RingIndex, len: u31) RingIndex {
-            const i = @intFromEnum(ri) + 1;
-            const double_len = @as(u32, len) * 2;
-            assert(i <= double_len);
-            return @enumFromInt(if (i < double_len) i else 0);
-        }
-    };
+    storage: []Operation.Storage,
+    unused: Operation.List,
+    submissions: Operation.List,
+    pending: Operation.List,
+    completions: Operation.List,
+    context: ?*anyopaque,
 
     /// After calling this, it is safe to unconditionally defer a call to
     /// `cancel`.
-    pub fn init(operations: []Operation, ring: []u32) Batch {
-        const len: u31 = @intCast(operations.len);
-        assert(ring.len == len);
+    pub fn init(storage: []Operation.Storage) Batch {
+        var prev: Operation.OptionalIndex = .none;
+        for (storage, 0..) |*operation, index| {
+            operation.* = .{ .unused = .{ .prev = prev, .next = .fromIndex(index + 1) } };
+            prev = .fromIndex(index);
+        }
+        storage[storage.len - 1].unused.next = .none;
         return .{
-            .operations = operations,
-            .ring = ring.ptr,
-            .user = .{
-                .submit_tail = @enumFromInt(0),
-                .complete_head = @enumFromInt(0),
-                .complete_tail = @enumFromInt(0),
+            .storage = storage,
+            .unused = .{
+                .head = .fromIndex(0),
+                .tail = .fromIndex(storage.len - 1),
             },
-            .impl = .{
-                .submit_head = @enumFromInt(0),
-                .submit_tail = @enumFromInt(0),
-                .complete_tail = @enumFromInt(0),
-                .reserved = null,
-            },
+            .submissions = .empty,
+            .pending = .empty,
+            .completions = .empty,
+            .context = null,
         };
     }
 
-    /// Adds `b.operations[operation]` to the list of submitted operations
-    /// that will be performed when `wait` is called.
-    pub fn add(b: *Batch, operation: usize) void {
-        const tail = b.user.submit_tail;
-        const len: u31 = @intCast(b.operations.len);
-        b.user.submit_tail = tail.next(len);
-        b.ring[0..len][tail.index(len)] = @intCast(operation);
+    /// Adds an operation to be performed at the next await call.
+    /// Returns the index that will be returned by `next` after the operation completes.
+    /// Asserts that no more than `storage.len` operations are active at a time.
+    pub fn add(b: *Batch, operation: Operation) u32 {
+        const index = b.unused.next;
+        b.addAt(index.toIndex(), operation);
+        return index;
     }
 
-    fn flush(b: *Batch) void {
-        @atomicStore(RingIndex, &b.impl.submit_tail, b.user.submit_tail, .release);
-    }
-
-    /// Returns `operation` such that `b.operations[operation]` has completed.
-    /// Returns `null` when `wait` should be called.
-    pub fn next(b: *Batch) ?u32 {
-        const head = b.user.complete_head;
-        if (head == b.user.complete_tail) {
-            @branchHint(.unlikely);
-            b.flush();
-            const tail = @atomicLoad(RingIndex, &b.impl.complete_tail, .acquire);
-            if (head == tail) {
-                @branchHint(.unlikely);
-                return null;
-            }
-            assert(head != tail);
-            b.user.complete_tail = tail;
+    /// Adds an operation to be performed at the next await call.
+    /// After the operation completes, `next` will return `index`.
+    /// Asserts that the operation at `index` is not active.
+    pub fn addAt(b: *Batch, index: u32, operation: Operation) void {
+        const storage = &b.storage[index];
+        const unused = storage.unused;
+        switch (unused.prev) {
+            .none => b.unused.head = .none,
+            else => |prev_index| b.storage[prev_index.toIndex()].unused.next = unused.next,
         }
-        const len: u31 = @intCast(b.operations.len);
-        b.user.complete_head = head.next(len);
-        return b.ring[0..len][head.index(len)];
+        switch (unused.next) {
+            .none => b.unused.tail = .none,
+            else => |next_index| b.storage[next_index.toIndex()].unused.prev = unused.prev,
+        }
+
+        switch (b.submissions.tail) {
+            .none => b.submissions.head = .fromIndex(index),
+            else => |tail_index| b.storage[tail_index.toIndex()].submission.node.next = .fromIndex(index),
+        }
+        storage.* = .{ .submission = .{ .node = .{ .next = .none }, .operation = operation } };
+        b.submissions.tail = .fromIndex(index);
     }
 
-    pub const WaitError = ConcurrentError || Cancelable || Timeout.Error;
+    pub fn next(b: *Batch) ?struct { index: u32, result: Operation.Result } {
+        const index = b.completions.head;
+        if (index == .none) return null;
+        const storage = &b.storage[index.toIndex()];
+        const completion = storage.completion;
+        const next_index = completion.node.next;
+        b.completions.head = next_index;
+        if (next_index == .none) b.completions.tail = .none;
 
-    /// Starts work on any submitted operations and returns when at least one has completeed.
-    ///
-    /// Returns `error.Timeout` if `timeout` expires first.
-    ///
-    /// Depending on the `Io` implementation, may allocate resources that are
-    /// freed with `cancel`, even if an error is returned.
-    pub fn wait(b: *Batch, io: Io, timeout: Timeout) WaitError!void {
-        return io.vtable.batchWait(io.userdata, b, timeout);
+        const tail_index = b.unused.tail;
+        switch (tail_index) {
+            .none => b.unused.head = index,
+            else => b.storage[tail_index.toIndex()].unused.next = index,
+        }
+        storage.* = .{ .unused = .{ .prev = tail_index, .next = .none } };
+        b.unused.tail = index;
+        return .{ .index = index.toIndex(), .result = completion.result };
     }
 
-    /// Returns after all `operations` have completed. Operations which have not completed
-    /// after this function returns were successfully dropped and had no side effects.
-    ///
-    /// This function is idempotent with respect to itself and `wait`. It is
-    /// safe to unconditionally `defer` a call to this function after `init`.
+    pub const AwaitAsyncError = Cancelable;
+    pub fn awaitAsync(b: *Batch, io: Io) AwaitAsyncError!void {
+        return io.vtable.batchAwaitAsync(io.userdata, b);
+    }
+
+    pub const AwaitConcurrentError = ConcurrentError || Cancelable || Timeout.Error;
+    pub fn awaitConcurrent(b: *Batch, io: Io, timeout: Timeout) AwaitConcurrentError!void {
+        return io.vtable.batchAwaitConcurrent(io.userdata, b, timeout);
+    }
+
     pub fn cancel(b: *Batch, io: Io) void {
         return io.vtable.batchCancel(io.userdata, b);
     }

@@ -1617,7 +1617,8 @@ pub fn io(t: *Threaded) Io {
             .futexWake = futexWake,
 
             .operate = operate,
-            .batchWait = batchWait,
+            .batchAwaitAsync = batchAwaitAsync,
+            .batchAwaitConcurrent = batchAwaitConcurrent,
             .batchCancel = batchCancel,
 
             .dirCreateDir = dirCreateDir,
@@ -1780,7 +1781,8 @@ pub fn ioBasic(t: *Threaded) Io {
             .futexWake = futexWake,
 
             .operate = operate,
-            .batchWait = batchWait,
+            .batchAwaitAsync = batchAwaitAsync,
+            .batchAwaitConcurrent = batchAwaitConcurrent,
             .batchCancel = batchCancel,
 
             .dirCreateDir = dirCreateDir,
@@ -2483,85 +2485,227 @@ fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
     Thread.futexWake(ptr, max_waiters);
 }
 
-fn operate(userdata: ?*anyopaque, op: *Io.Operation) Io.Cancelable!void {
+fn operate(userdata: ?*anyopaque, operation: Io.Operation) Io.Cancelable!Io.Operation.Result {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    switch (op.*) {
-        .noop => |*o| {
-            _ = o.status.unstarted;
-            o.status = .{ .result = {} };
-        },
-        .file_read_streaming => |*o| {
-            _ = o.status.unstarted;
-            o.status = .{ .result = fileReadStreaming(t, o.file, o.data) catch |err| switch (err) {
+    switch (operation) {
+        .file_read_streaming => |o| return .{
+            .file_read_streaming = fileReadStreaming(t, o.file, o.data) catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 else => |e| e,
-            } };
+            },
         },
     }
 }
 
-fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.WaitError!void {
+fn batchAwaitAsync(userdata: ?*anyopaque, b: *Io.Batch) Io.Batch.AwaitAsyncError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    if (is_windows) return batchWaitWindows(t, b, timeout);
+    if (is_windows) {
+        try batchAwaitWindows(b);
+        const alertable_syscall = try AlertableSyscall.start();
+        while (b.pending.head != .none and b.completions.head == .none) waitForApcOrAlert();
+        alertable_syscall.finish();
+        return;
+    }
     if (native_os == .wasi and !builtin.link_libc) @panic("TODO");
-    const operations = b.operations;
-    const len: u31 = @intCast(operations.len);
-    const ring = b.ring[0..len];
-    var submit_head = b.impl.submit_head;
-    const submit_tail = b.user.submit_tail;
-    b.impl.submit_tail = submit_tail;
-    var complete_tail = b.impl.complete_tail;
-    var map_buffer: [poll_buffer_len]u8 = undefined; // poll_buffer index to operations index
-    var poll_i: u8 = 0;
-    defer {
-        for (map_buffer[0..poll_i]) |op| {
-            submit_head = submit_head.prev(len);
-            ring[submit_head.index(len)] = op;
-        }
-        b.impl.submit_head = submit_head;
-        b.impl.complete_tail = complete_tail;
-        b.user.complete_tail = complete_tail;
-    }
     var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
-    while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
-        const op = ring[submit_head.index(len)];
-        const operation = &operations[op];
-        switch (operation.*) {
-            .noop => |*o| {
-                _ = o.status.unstarted;
-                o.status = .{ .result = {} };
-                submitComplete(ring, &complete_tail, op);
-            },
-            .file_read_streaming => |*o| {
-                _ = o.status.unstarted;
-                if (poll_buffer.len - poll_i == 0) return error.ConcurrencyUnavailable;
-                poll_buffer[poll_i] = .{
-                    .fd = o.file.handle,
-                    .events = posix.POLL.IN,
-                    .revents = 0,
-                };
-                map_buffer[poll_i] = @intCast(op);
-                poll_i += 1;
-            },
+    var poll_len: u32 = 0;
+    {
+        var index = b.submissions.head;
+        while (index != .none and poll_len < poll_buffer_len) {
+            const submission = &b.storage[index.toIndex()].submission;
+            switch (submission.operation) {
+                .file_read_streaming => |o| {
+                    poll_buffer[poll_len] = .{ .fd = o.file.handle, .events = posix.POLL.IN, .revents = 0 };
+                    poll_len += 1;
+                },
+            }
+            index = submission.node.next;
         }
     }
-    switch (poll_i) {
+    switch (poll_len) {
+        0 => return,
+        1 => {},
+        else => while (true) {
+            const timeout_ms: i32 = t: {
+                if (b.completions.head != .none) {
+                    // It is legal to call batchWait with already completed
+                    // operations in the ring. In such case, we need to avoid
+                    // blocking in the poll syscall, but we can still take this
+                    // opportunity to find additional ready operations.
+                    break :t 0;
+                }
+                const max_poll_ms = std.math.maxInt(i32);
+                break :t max_poll_ms;
+            };
+            const syscall = try Syscall.start();
+            const rc = posix.system.poll(&poll_buffer, poll_len, timeout_ms);
+            syscall.finish();
+            switch (posix.errno(rc)) {
+                .SUCCESS => {
+                    if (rc == 0) {
+                        if (b.completions.head != .none) {
+                            // Since there are already completions available in the
+                            // queue, this is neither a timeout nor a case for
+                            // retrying.
+                            return;
+                        }
+                        continue;
+                    }
+                    var prev_index: Io.Operation.OptionalIndex = .none;
+                    var index = b.submissions.head;
+                    for (poll_buffer[0..poll_len]) |poll_entry| {
+                        const storage = &b.storage[index.toIndex()];
+                        const submission = &storage.submission;
+                        const next_index = submission.node.next;
+                        if (poll_entry.revents != 0) {
+                            const result = try operate(t, submission.operation);
+
+                            switch (prev_index) {
+                                .none => b.submissions.head = next_index,
+                                else => b.storage[prev_index.toIndex()].submission.node.next = next_index,
+                            }
+                            if (next_index == .none) b.submissions.tail = prev_index;
+
+                            switch (b.completions.tail) {
+                                .none => b.completions.head = index,
+                                else => |tail_index| b.storage[tail_index.toIndex()].completion.node.next = index,
+                            }
+                            storage.* = .{ .completion = .{ .node = .{ .next = .none }, .result = result } };
+                            b.completions.tail = index;
+                        } else prev_index = index;
+                        index = next_index;
+                    }
+                    assert(index == .none);
+                    return;
+                },
+                .INTR => continue,
+                else => break,
+            }
+        },
+    }
+    {
+        var tail_index = b.completions.tail;
+        defer b.completions.tail = tail_index;
+        var index = b.submissions.head;
+        errdefer b.submissions.head = index;
+        while (index != .none) {
+            const storage = &b.storage[index.toIndex()];
+            const submission = &storage.submission;
+            const next_index = submission.node.next;
+            const result = try operate(t, submission.operation);
+
+            switch (tail_index) {
+                .none => b.completions.head = index,
+                else => b.storage[tail_index.toIndex()].completion.node.next = index,
+            }
+            storage.* = .{ .completion = .{ .node = .{ .next = .none }, .result = result } };
+            tail_index = index;
+            index = next_index;
+        }
+        b.submissions = .{ .head = .none, .tail = .none };
+    }
+}
+
+fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.AwaitConcurrentError!void {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    if (is_windows) {
+        const deadline: ?Io.Clock.Timestamp = timeout.toDeadline(ioBasic(t)) catch |err| switch (err) {
+            error.Unexpected => deadline: {
+                recoverableOsBugDetected();
+                break :deadline .{ .raw = .{ .nanoseconds = 0 }, .clock = .awake };
+            },
+            error.UnsupportedClock => |e| return e,
+        };
+        try batchAwaitWindows(b);
+        while (b.pending.head != .none and b.completions.head == .none) {
+            var delay_interval: windows.LARGE_INTEGER = interval: {
+                const d = deadline orelse break :interval std.math.minInt(windows.LARGE_INTEGER);
+                break :interval t.deadlineToWindowsInterval(d) catch |err| switch (err) {
+                    error.UnsupportedClock => |e| return e,
+                    error.Unexpected => {
+                        recoverableOsBugDetected();
+                        break :interval -1;
+                    },
+                };
+            };
+            const alertable_syscall = try AlertableSyscall.start();
+            const delay_rc = windows.ntdll.NtDelayExecution(windows.TRUE, &delay_interval);
+            alertable_syscall.finish();
+            switch (delay_rc) {
+                .SUCCESS, .TIMEOUT => {
+                    // The thread woke due to the timeout. Although spurious
+                    // timeouts are OK, when no deadline is passed we must not
+                    // return `error.Timeout`.
+                    if (timeout != .none and b.completions.head == .none) return error.Timeout;
+                },
+                else => {},
+            }
+        }
+        return;
+    }
+    if (native_os == .wasi and !builtin.link_libc) @panic("TODO");
+    var poll_buffer: [poll_buffer_len]posix.pollfd = undefined;
+    var poll_storage: struct {
+        gpa: std.mem.Allocator,
+        b: *Io.Batch,
+        slice: []posix.pollfd,
+        len: u32,
+
+        fn add(storage: *@This(), file: Io.File, events: @FieldType(posix.pollfd, "events")) Io.ConcurrentError!void {
+            const len = storage.len;
+            if (len == poll_buffer_len) {
+                const slice: []posix.pollfd = if (storage.b.context) |context|
+                    @as([*]posix.pollfd, @ptrCast(@alignCast(context)))[0..storage.b.storage.len]
+                else allocation: {
+                    const allocation = storage.gpa.alloc(posix.pollfd, storage.b.storage.len) catch
+                        return error.ConcurrencyUnavailable;
+                    storage.b.context = allocation.ptr;
+                    break :allocation allocation;
+                };
+                @memcpy(slice[0..poll_buffer_len], storage.slice);
+            }
+            storage.slice[len] = .{
+                .fd = file.handle,
+                .events = events,
+                .revents = 0,
+            };
+            storage.len = len + 1;
+        }
+    } = .{ .gpa = t.allocator, .b = b, .slice = &poll_buffer, .len = 0 };
+    {
+        var index = b.submissions.head;
+        while (index != .none) {
+            const submission = &b.storage[index.toIndex()].submission;
+            switch (submission.operation) {
+                .file_read_streaming => |o| try poll_storage.add(o.file, posix.POLL.IN),
+            }
+            index = submission.node.next;
+        }
+    }
+    switch (poll_storage.len) {
         0 => return,
         1 => if (timeout == .none) {
-            const op = map_buffer[0];
-            try operate(t, &operations[op]);
-            submitComplete(ring, &complete_tail, op);
-            poll_i = 0;
+            const index = b.submissions.head;
+            const storage = &b.storage[index.toIndex()];
+            const result = try operate(t, storage.submission.operation);
+
+            b.submissions = .{ .head = .none, .tail = .none };
+
+            switch (b.completions.tail) {
+                .none => b.completions.head = index,
+                else => |tail_index| b.storage[tail_index.toIndex()].completion.node.next = index,
+            }
+            storage.* = .{ .completion = .{ .node = .{ .next = .none }, .result = result } };
+            b.completions.tail = index;
             return;
         },
         else => {},
     }
     const t_io = ioBasic(t);
     const deadline = timeout.toDeadline(t_io) catch return error.UnsupportedClock;
-    const max_poll_ms = std.math.maxInt(i32);
     while (true) {
         const timeout_ms: i32 = t: {
-            if (b.user.complete_head != complete_tail) {
+            if (b.completions.head != .none) {
                 // It is legal to call batchWait with already completed
                 // operations in the ring. In such case, we need to avoid
                 // blocking in the poll syscall, but we can still take this
@@ -2571,15 +2715,16 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
             const d = deadline orelse break :t -1;
             const duration = d.durationFromNow(t_io) catch return error.UnsupportedClock;
             if (duration.raw.nanoseconds <= 0) return error.Timeout;
+            const max_poll_ms = std.math.maxInt(i32);
             break :t @intCast(@min(max_poll_ms, duration.raw.toMilliseconds()));
         };
         const syscall = try Syscall.start();
-        const rc = posix.system.poll(&poll_buffer, poll_i, timeout_ms);
+        const rc = posix.system.poll(&poll_buffer, poll_storage.len, timeout_ms);
         syscall.finish();
         switch (posix.errno(rc)) {
             .SUCCESS => {
                 if (rc == 0) {
-                    if (b.user.complete_head != complete_tail) {
+                    if (b.completions.head != .none) {
                         // Since there are already completions available in the
                         // queue, this is neither a timeout nor a case for
                         // retrying.
@@ -2590,18 +2735,30 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
                     if (deadline == null) continue;
                     return error.Timeout;
                 }
-                while (poll_i != 0) {
-                    poll_i -= 1;
-                    const poll_fd = &poll_buffer[poll_i];
-                    const op = map_buffer[poll_i];
-                    if (poll_fd.revents == 0) {
-                        submit_head = submit_head.prev(len);
-                        ring[submit_head.index(len)] = op;
-                    } else {
-                        try operate(t, &operations[op]);
-                        submitComplete(ring, &complete_tail, op);
-                    }
+                var prev_index: Io.Operation.OptionalIndex = .none;
+                var index = b.submissions.head;
+                for (poll_storage.slice[0..poll_storage.len]) |poll_entry| {
+                    const submission = &b.storage[index.toIndex()].submission;
+                    const next_index = submission.node.next;
+                    if (poll_entry.revents != 0) {
+                        const result = try operate(t, submission.operation);
+
+                        switch (prev_index) {
+                            .none => b.submissions.head = next_index,
+                            else => b.storage[prev_index.toIndex()].submission.node.next = next_index,
+                        }
+                        if (next_index == .none) b.submissions.tail = prev_index;
+
+                        switch (b.completions.tail) {
+                            .none => b.completions.head = index,
+                            else => |tail_index| b.storage[tail_index.toIndex()].completion.node.next = index,
+                        }
+                        b.completions.tail = index;
+                        b.storage[index.toIndex()] = .{ .completion = .{ .node = .{ .next = .none }, .result = result } };
+                    } else prev_index = index;
+                    index = next_index;
                 }
+                assert(index == .none);
                 return;
             },
             .INTR => continue,
@@ -2610,166 +2767,126 @@ fn batchWait(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.
     }
 }
 
-fn batchCancel(userdata: ?*anyopaque, b: *Io.Batch) void {
-    const t: *Threaded = @ptrCast(@alignCast(userdata));
-    const operations = b.operations;
-    const len: u31 = @intCast(operations.len);
-    const ring = b.ring[0..len];
-    var submit_head = b.impl.submit_head;
-    const submit_tail = b.user.submit_tail;
-    b.impl.submit_tail = submit_tail;
-    var complete_tail = b.impl.complete_tail;
-    while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
-        const op = ring[submit_head.index(len)];
-        switch (operations[op]) {
-            .noop => |*o| {
-                _ = o.status.unstarted;
-                o.status = .{ .result = {} };
-                submitComplete(ring, &complete_tail, op);
-            },
-            .file_read_streaming => |*o| _ = o.status.unstarted,
-        }
-    }
-    if (is_windows) {
-        // Iterate over pending and issue cancelations, then free the allocation for IO_STATUS_BLOCK
-        if (b.impl.reserved) |reserved| {
-            const gpa = t.allocator;
-            const metadatas_ptr: [*]WinOpMetadata = @ptrCast(@alignCast(reserved));
-            const metadatas = metadatas_ptr[0..b.operations.len];
-            for (metadatas, 0..) |*metadata, op| {
-                if (!metadata.pending) continue;
-                const done = @atomicLoad(windows.NTSTATUS, &metadata.iosb.u.Status, .acquire) != .PENDING;
-                if (done) continue;
-                switch (operations[op]) {
-                    .noop => unreachable,
-                    .file_read_streaming => |*o| {
-                        _ = windows.ntdll.NtCancelIoFile(o.file.handle, &metadata.iosb);
-                    },
-                }
-            }
-            for (metadatas) |*metadata| {
-                if (!metadata.pending) continue;
-                while (@atomicLoad(windows.NTSTATUS, &metadata.iosb.u.Status, .acquire) == .PENDING) {
-                    waitForApcOrAlert();
-                }
-            }
-            gpa.free(metadatas);
-            b.impl.reserved = null;
-        }
-    }
-    b.impl.submit_head = submit_tail;
-    b.impl.complete_tail = complete_tail;
-    b.user.complete_tail = complete_tail;
-}
-
-const WinOpMetadata = struct {
+const WindowsBatchPendingOperationContext = extern struct {
+    file: windows.HANDLE,
     iosb: windows.IO_STATUS_BLOCK,
-    pending: bool,
+
+    const Erased = [3]usize;
+
+    comptime {
+        assert(@sizeOf(Erased) <= @sizeOf(WindowsBatchPendingOperationContext));
+    }
+
+    fn toErased(context: *WindowsBatchPendingOperationContext) *Erased {
+        return @ptrCast(context);
+    }
+
+    fn fromErased(erased: *Erased) *WindowsBatchPendingOperationContext {
+        return @ptrCast(erased);
+    }
 };
 
-fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.WaitError!void {
-    const operations = b.operations;
-    const len: u31 = @intCast(operations.len);
-    const ring = b.ring[0..len];
-    var submit_head = b.impl.submit_head;
-    const submit_tail = b.user.submit_tail;
-    b.impl.submit_tail = submit_tail;
-    var complete_tail = b.impl.complete_tail;
-
-    const metadatas_ptr: [*]WinOpMetadata = if (b.impl.reserved) |reserved| @ptrCast(@alignCast(reserved)) else a: {
-        const gpa = t.allocator;
-        const metadatas = gpa.alloc(WinOpMetadata, operations.len) catch return error.ConcurrencyUnavailable;
-        b.impl.reserved = metadatas.ptr;
-        @memset(metadatas, .{ .iosb = undefined, .pending = false });
-        break :a metadatas.ptr;
-    };
-    const metadatas = metadatas_ptr[0..operations.len];
-
-    defer {
-        b.impl.submit_head = submit_head;
-        b.impl.complete_tail = complete_tail;
-        b.user.complete_tail = complete_tail;
-    }
-
-    while (submit_head != submit_tail) : (submit_head = submit_head.next(len)) {
-        const op = ring[submit_head.index(len)];
-        const operation = &operations[op];
-        const metadata = &metadatas[op];
-        metadata.* = .{ .iosb = .{
-            .u = .{ .Status = .PENDING },
-            .Information = 0,
-        }, .pending = false };
-        switch (operation.*) {
-            .noop => |*o| {
-                _ = o.status.unstarted;
-                o.status = .{ .result = {} };
-                submitComplete(ring, &complete_tail, op);
-            },
-            .file_read_streaming => |*o| {
-                _ = o.status.unstarted;
-                try ntReadFile(o.file.handle, o.data, &metadata.iosb);
-                if (@atomicLoad(windows.NTSTATUS, &metadata.iosb.u.Status, .acquire) == .PENDING) {
-                    o.status = .{ .pending = b };
-                    metadata.pending = true;
-                } else {
-                    o.status = .{ .result = ntReadFileResult(&metadata.iosb) };
-                    submitComplete(ring, &complete_tail, op);
-                }
-            },
-        }
-    }
-
-    const deadline: ?Io.Clock.Timestamp = timeout.toDeadline(ioBasic(t)) catch |err| switch (err) {
-        error.Unexpected => deadline: {
-            recoverableOsBugDetected();
-            break :deadline .{ .raw = .{ .nanoseconds = 0 }, .clock = .awake };
-        },
-        error.UnsupportedClock => |e| return e,
-    };
-
-    while (true) {
-        var any_pending = false;
-        for (metadatas, 0..) |*metadata, op_usize| {
-            if (!metadata.pending) continue;
-            any_pending = true;
-            const op: u31 = @intCast(op_usize);
-            const done = @atomicLoad(windows.NTSTATUS, &metadata.iosb.u.Status, .acquire) != .PENDING;
-            switch (operations[op]) {
-                .noop => unreachable,
-                .file_read_streaming => |*o| {
-                    assert(o.status.pending == b);
-                    if (!done) continue;
-                    o.status = .{ .result = ntReadFileResult(&metadata.iosb) };
-                },
+fn batchCancel(userdata: ?*anyopaque, b: *Io.Batch) void {
+    const t: *Threaded = @ptrCast(@alignCast(userdata));
+    {
+        var tail_index = b.unused.tail;
+        defer b.unused.tail = tail_index;
+        var index = b.submissions.head;
+        errdefer b.submissions.head = index;
+        while (index != .none) {
+            const next_index = b.storage[index.toIndex()].submission.node.next;
+            switch (tail_index) {
+                .none => b.unused.head = index,
+                else => b.storage[tail_index.toIndex()].unused.next = index,
             }
-            metadata.pending = false;
-            submitComplete(ring, &complete_tail, op);
+            b.storage[index.toIndex()] = .{ .unused = .{ .prev = tail_index, .next = .none } };
+            tail_index = index;
+            index = next_index;
         }
-        if (b.user.complete_head != complete_tail) return;
-        if (!any_pending) return;
-        var delay_interval: windows.LARGE_INTEGER = interval: {
-            const d = deadline orelse break :interval std.math.minInt(windows.LARGE_INTEGER);
-            break :interval t.deadlineToWindowsInterval(d) catch |err| switch (err) {
-                error.UnsupportedClock => |e| return e,
-                error.Unexpected => {
-                    recoverableOsBugDetected();
-                    break :interval -1;
-                },
-            };
-        };
-        const alertable_syscall = try AlertableSyscall.start();
-        const delay_rc = windows.ntdll.NtDelayExecution(windows.TRUE, &delay_interval);
-        alertable_syscall.finish();
-        switch (delay_rc) {
-            .SUCCESS, .TIMEOUT => {
-                // The thread woke due to the timeout. Although spurious
-                // timeouts are OK, when no deadline is passed we must not
-                // return `error.Timeout`.
-                if (timeout != .none) return error.Timeout;
-            },
-            else => {},
-        }
+        b.submissions = .{ .head = .none, .tail = .none };
     }
+    if (is_windows) {
+        var index = b.pending.head;
+        while (index != .none) {
+            const pending = &b.storage[index.toIndex()].pending;
+            const context: *WindowsBatchPendingOperationContext = .fromErased(&pending.context);
+            _ = windows.ntdll.NtCancelIoFile(context.file, &context.iosb);
+            index = pending.node.next;
+        }
+        while (b.pending.head != .none) waitForApcOrAlert();
+    } else if (b.context) |context| {
+        t.allocator.free(@as([*]posix.pollfd, @ptrCast(@alignCast(context)))[0..b.storage.len]);
+        b.context = null;
+    }
+    assert(b.pending.head == .none);
+}
+
+fn batchApc(apc_context: ?*anyopaque, iosb: *windows.IO_STATUS_BLOCK, _: windows.ULONG) callconv(.winapi) void {
+    const b: *Io.Batch = @ptrCast(@alignCast(apc_context));
+    const context: *WindowsBatchPendingOperationContext = @fieldParentPtr("iosb", iosb);
+    const erased_context = context.toErased();
+    const pending: *Io.Operation.Storage.Pending = @fieldParentPtr("context", erased_context);
+    switch (pending.node.prev) {
+        .none => b.pending.head = pending.node.next,
+        else => |prev_index| b.storage[prev_index.toIndex()].pending.node.next = pending.node.next,
+    }
+    switch (pending.node.next) {
+        .none => b.pending.tail = pending.node.prev,
+        else => |next_index| b.storage[next_index.toIndex()].pending.node.prev = pending.node.prev,
+    }
+    const storage: *Io.Operation.Storage = @fieldParentPtr("pending", pending);
+    const index = storage - b.storage.ptr;
+    switch (iosb.u.Status) {
+        .CANCELLED => {
+            const tail_index = b.unused.tail;
+            switch (tail_index) {
+                .none => b.unused.head = .fromIndex(index),
+                else => b.storage[tail_index.toIndex()].unused.next = .fromIndex(index),
+            }
+            storage.* = .{ .unused = .{ .prev = tail_index, .next = .none } };
+            b.unused.tail = .fromIndex(index);
+        },
+        else => {
+            switch (b.completions.tail) {
+                .none => b.completions.head = .fromIndex(index),
+                else => |tail_index| b.storage[tail_index.toIndex()].completion.node.next = .fromIndex(index),
+            }
+            b.completions.tail = .fromIndex(index);
+            const result: Io.Operation.Result = switch (pending.tag) {
+                .file_read_streaming => .{ .file_read_streaming = ntReadFileResult(iosb) },
+            };
+            storage.* = .{ .completion = .{ .node = .{ .next = .none }, .result = result } };
+        },
+    }
+}
+
+fn batchAwaitWindows(b: *Io.Batch) Io.Cancelable!void {
+    var index = b.submissions.head;
+    errdefer b.submissions.head = index;
+    while (index != .none) {
+        const storage = &b.storage[index.toIndex()];
+        const submission = storage.submission;
+        errdefer storage.* = .{ .submission = submission };
+        storage.* = .{ .pending = .{
+            .node = .{ .prev = b.pending.tail, .next = .none },
+            .tag = submission.operation,
+            .context = undefined,
+        } };
+        const context: *WindowsBatchPendingOperationContext = .fromErased(&storage.pending.context);
+        switch (submission.operation) {
+            .file_read_streaming => |o| {
+                context.file = o.file.handle;
+                try ntReadFile(o.file.handle, o.data, &batchApc, b, &context.iosb);
+            },
+        }
+        switch (b.pending.tail) {
+            .none => b.pending.head = index,
+            else => |tail_index| b.storage[tail_index.toIndex()].pending.node.next = index,
+        }
+        b.pending.tail = index;
+        index = submission.node.next;
+    }
+    b.submissions = .{ .head = .none, .tail = .none };
 }
 
 fn submitComplete(ring: []u32, complete_tail: *Io.Batch.RingIndex, op: u32) void {
@@ -8701,7 +8818,7 @@ fn fileReadStreamingWindows(file: File, data: []const []u8) File.ReadStreamingEr
         .u = .{ .Status = .PENDING },
         .Information = 0,
     };
-    try ntReadFile(file.handle, data, &io_status_block);
+    try ntReadFile(file.handle, data, &noopApc, null, &io_status_block);
     while (@atomicLoad(windows.NTSTATUS, &io_status_block.u.Status, .acquire) == .PENDING) {
         // Once we get here we must not return from the function until the
         // operation completes, thereby releasing reference to io_status_block.
@@ -8736,12 +8853,20 @@ fn ntReadFileResult(io_status_block: *const windows.IO_STATUS_BLOCK) !usize {
     }
 }
 
-fn ntReadFile(handle: windows.HANDLE, data: []const []u8, iosb: *windows.IO_STATUS_BLOCK) Io.Cancelable!void {
+fn ntReadFile(
+    handle: windows.HANDLE,
+    data: []const []u8,
+    apcRoutine: ?*const windows.IO_APC_ROUTINE,
+    apc_context: ?*anyopaque,
+    iosb: *windows.IO_STATUS_BLOCK,
+) Io.Cancelable!void {
     var index: usize = 0;
     while (index < data.len and data[index].len == 0) index += 1;
     if (index == data.len) {
-        iosb.u.Status = .SUCCESS;
-        iosb.Information = 0;
+        iosb.* = .{ .u = .{ .Status = .SUCCESS }, .Information = 0 };
+        if (apcRoutine) |routine| if (routine != &noopApc) {
+            _ = windows.ntdll.NtQueueApcThread(windows.current_process, routine, apc_context, iosb, null);
+        };
         return;
     }
     const buffer = data[index];
@@ -8750,8 +8875,8 @@ fn ntReadFile(handle: windows.HANDLE, data: []const []u8, iosb: *windows.IO_STAT
     while (true) switch (windows.ntdll.NtReadFile(
         handle,
         null, // event
-        noopApc, // apc callback
-        null, // apc context
+        apcRoutine,
+        apc_context,
         iosb,
         buffer.ptr,
         @min(std.math.maxInt(u32), buffer.len),
