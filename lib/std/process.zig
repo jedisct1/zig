@@ -453,9 +453,9 @@ pub fn spawnPath(io: Io, dir: Io.Dir, options: SpawnOptions) SpawnError!Child {
     return io.vtable.processSpawnPath(io.userdata, dir, options);
 }
 
-pub const RunError = SpawnError || error{
+pub const RunError = error{
     StreamTooLong,
-} || Io.ConcurrentError || Allocator.Error || Io.File.Reader.Error || Io.Timeout.Error;
+} || SpawnError || Io.File.MultiReader.UnendingError || Io.Timeout.Error;
 
 pub const RunOptions = struct {
     argv: []const []const u8,
