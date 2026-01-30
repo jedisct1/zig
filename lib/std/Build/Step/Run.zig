@@ -1587,9 +1587,13 @@ fn spawnChildAndCollect(
     };
 
     if (run.stdio == .zig_test) {
-        var timer = try std.time.Timer.start();
-        defer run.step.result_duration_ns = timer.read();
-        try evalZigTest(run, spawn_options, options, fuzz_context);
+        const started: Io.Clock.Timestamp = try .now(io, .awake);
+        const result = evalZigTest(run, spawn_options, options, fuzz_context) catch |err| switch (err) {
+            error.Canceled => |e| return e,
+            else => |e| e,
+        };
+        run.step.result_duration_ns = @intCast((try started.untilNow(io)).raw.nanoseconds);
+        try result;
         return null;
     } else {
         const inherit = spawn_options.stdout == .inherit or spawn_options.stderr == .inherit;
@@ -1602,10 +1606,14 @@ fn spawnChildAndCollect(
         } else .no_color;
         defer if (inherit) io.unlockStderr();
         try setColorEnvironmentVariables(run, environ_map, terminal_mode);
-        var timer = try std.time.Timer.start();
-        const res = try evalGeneric(run, spawn_options);
-        run.step.result_duration_ns = timer.read();
-        return .{ .term = res.term, .stdout = res.stdout, .stderr = res.stderr };
+
+        const started: Io.Clock.Timestamp = try .now(io, .awake);
+        const result = evalGeneric(run, spawn_options) catch |err| switch (err) {
+            error.Canceled => |e| return e,
+            else => |e| e,
+        };
+        run.step.result_duration_ns = @intCast((try started.untilNow(io)).raw.nanoseconds);
+        return try result;
     }
 }
 
@@ -1861,9 +1869,7 @@ fn waitZigTest(
 
     var active_test_index: ?u32 = null;
 
-    // `null` means this host does not support `std.time.Timer`. This timer is `reset()` whenever we
-    // change `active_test_index`, i.e. whenever a test starts or finishes.
-    var timer: ?std.time.Timer = std.time.Timer.start() catch null;
+    var last_update: Io.Clock.Timestamp = try .now(io, .awake);
 
     var coverage_id: ?u64 = null;
 
@@ -1871,16 +1877,27 @@ fn waitZigTest(
     // test. For instance, if the test runner leaves this much time between us requesting a test to
     // start and it acknowledging the test starting, we terminate the child and raise an error. This
     // *should* never happen, but could in theory be caused by some very unlucky IB in a test.
-    const response_timeout_ns: ?u64 = ns: {
-        if (fuzz_context != null) break :ns null; // don't timeout fuzz tests
-        break :ns @max(options.unit_test_timeout_ns orelse 0, 60 * std.time.ns_per_s);
+    const response_timeout: ?Io.Clock.Duration = t: {
+        if (fuzz_context != null) break :t null; // don't timeout fuzz tests
+        const ns = @max(options.unit_test_timeout_ns orelse 0, 60 * std.time.ns_per_s);
+        break :t .{ .clock = .awake, .raw = .fromNanoseconds(ns) };
     };
+    const test_timeout: ?Io.Clock.Duration = if (options.unit_test_timeout_ns) |ns| .{
+        .clock = .awake,
+        .raw = .fromNanoseconds(ns),
+    } else null;
 
     const stdout = multi_reader.reader(0);
     const stderr = multi_reader.reader(1);
     const Header = std.zig.Server.Message.Header;
 
     while (true) {
+        const timeout: Io.Timeout = t: {
+            const opt_duration = if (active_test_index == null) response_timeout else test_timeout;
+            const duration = opt_duration orelse break :t .none;
+            break :t .{ .deadline = last_update.addDuration(duration) };
+        };
+
         // This block is exited when `stdout` contains enough bytes for a `Header`.
         header_ready: {
             if (stdout.buffered().len >= @sizeOf(Header)) {
@@ -1888,65 +1905,33 @@ fn waitZigTest(
                 break :header_ready;
             }
 
-            // Always `null` if `timer` is `null`.
-            const opt_timeout_ns: ?u64 = ns: {
-                if (timer == null) break :ns null;
-                if (active_test_index == null) break :ns response_timeout_ns;
-                break :ns options.unit_test_timeout_ns;
-            };
-
-            const timeout: Io.Timeout = if (opt_timeout_ns) |timeout_ns| .{ .duration = .{
-                .raw = .fromNanoseconds(timeout_ns -| timer.?.read()),
-                .clock = .awake,
-            } } else .none;
-
             multi_reader.fill(64, timeout) catch |err| switch (err) {
-                error.Timeout, error.EndOfStream => return .{ .no_poll = .{
+                error.Timeout => return .{ .timeout = .{
                     .active_test_index = active_test_index,
-                    .ns_elapsed = if (timer) |*t| t.read() else 0,
+                    .ns_elapsed = @intCast((try last_update.untilNow(io)).raw.nanoseconds),
                 } },
-                error.UnsupportedClock => {
-                    timer = null;
-                    continue;
-                },
+                error.EndOfStream => return .{ .no_poll = .{
+                    .active_test_index = active_test_index,
+                    .ns_elapsed = @intCast((try last_update.untilNow(io)).raw.nanoseconds),
+                } },
                 else => |e| return e,
             };
 
-            if (stdout.buffered().len >= @sizeOf(Header)) {
-                // There wasn't a header before, but there is one after the `poll`.
-                break :header_ready;
-            }
-
-            if (opt_timeout_ns) |timeout_ns| {
-                const cur_ns = timer.?.read();
-                if (cur_ns >= timeout_ns) return .{ .timeout = .{
-                    .active_test_index = active_test_index,
-                    .ns_elapsed = cur_ns,
-                } };
-            }
             continue;
         }
         // There is definitely a header available now -- read it.
         const header = stdout.takeStruct(Header, .little) catch unreachable;
 
         while (stdout.buffered().len < header.bytes_len) {
-            const timeout: Io.Timeout = t: {
-                const t = if (timer) |*t| t else break :t .none;
-                if (response_timeout_ns) |timeout_ns| break :t .{ .duration = .{
-                    .raw = .fromNanoseconds(timeout_ns -| t.read()),
-                    .clock = .awake,
-                } };
-                break :t .none;
-            };
             multi_reader.fill(64, timeout) catch |err| switch (err) {
-                error.Timeout, error.EndOfStream => return .{ .no_poll = .{
+                error.Timeout => return .{ .timeout = .{
                     .active_test_index = active_test_index,
-                    .ns_elapsed = if (timer) |*t| t.read() else 0,
+                    .ns_elapsed = @intCast((try last_update.untilNow(io)).raw.nanoseconds),
                 } },
-                error.UnsupportedClock => {
-                    timer = null;
-                    continue;
-                },
+                error.EndOfStream => return .{ .no_poll = .{
+                    .active_test_index = active_test_index,
+                    .ns_elapsed = @intCast((try last_update.untilNow(io)).raw.nanoseconds),
+                } },
                 else => |e| return e,
             };
         }
@@ -1991,13 +1976,13 @@ fn waitZigTest(
                 @memset(opt_metadata.*.?.ns_per_test, std.math.maxInt(u64));
 
                 active_test_index = null;
-                if (timer) |*t| t.reset();
+                last_update = try .now(io, .awake);
 
                 requestNextTest(io, child.stdin.?, &opt_metadata.*.?, &sub_prog_node) catch |err| return .{ .write_failed = err };
             },
             .test_started => {
                 active_test_index = opt_metadata.*.?.next_index - 1;
-                if (timer) |*t| t.reset();
+                last_update = try .now(io, .awake);
             },
             .test_results => {
                 assert(fuzz_context == null);
@@ -2040,7 +2025,10 @@ fn waitZigTest(
                 }
 
                 active_test_index = null;
-                if (timer) |*t| md.ns_per_test[tr_hdr.index] = t.lap();
+
+                const now: Io.Clock.Timestamp = try .now(io, .awake);
+                md.ns_per_test[tr_hdr.index] = @intCast(last_update.durationTo(now).raw.nanoseconds);
+                last_update = now;
 
                 requestNextTest(io, child.stdin.?, md, &sub_prog_node) catch |err| return .{ .write_failed = err };
             },
