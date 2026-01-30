@@ -416,7 +416,8 @@ pub fn evalZigProcess(
         assert(watch);
         if (std.Progress.have_ipc) if (zp.progress_ipc_fd) |fd| prog_node.setIpcFd(fd);
         const result = zigProcessUpdate(s, zp, watch, web_server, gpa) catch |err| switch (err) {
-            error.BrokenPipe => {
+            error.BrokenPipe, error.EndOfStream => |reason| {
+                std.log.info("{s} restart required: {t}", .{ argv[0], reason });
                 // Process restart required.
                 const term = zp.child.wait(io) catch |e| {
                     return s.fail("unable to wait for {s}: {t}", .{ argv[0], e });
