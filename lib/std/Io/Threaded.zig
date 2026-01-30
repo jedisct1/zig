@@ -76,6 +76,7 @@ environ: Environ,
 
 null_file: NullFile = .{},
 random_file: RandomFile = .{},
+pipe_file: PipeFile = .{},
 
 csprng: Csprng = .{},
 
@@ -121,7 +122,7 @@ pub const Argv0 = switch (native_os) {
 
 const Environ = struct {
     /// Unmodified data directly from the OS.
-    process_environ: process.Environ = .empty,
+    process_environ: process.Environ,
     /// Protected by `mutex`. Determines whether the other fields have been
     /// memoized based on `process_environ`.
     initialized: bool = false,
@@ -131,12 +132,14 @@ const Environ = struct {
     /// Protected by `mutex`. Memoized based on `process_environ`.
     string: String = .{},
     /// ZIG_PROGRESS
-    zig_progress_handle: std.Progress.ParentFileError!u31 = error.EnvironmentVariableMissing,
+    zig_progress_file: std.Progress.ParentFileError!File = error.EnvironmentVariableMissing,
     /// Protected by `mutex`. Tracks the problem, if any, that occurred when
     /// trying to scan environment variables.
     ///
     /// Errors are only possible on WASI.
     err: ?Error = null,
+
+    pub const empty: Environ = .{ .process_environ = .empty };
 
     pub const Error = Allocator.Error || Io.UnexpectedError;
 
@@ -187,6 +190,24 @@ pub const NullFile = switch (native_os) {
 pub const RandomFile = switch (native_os) {
     .windows => NullFile,
     else => if (use_dev_urandom) NullFile else struct {
+        fn deinit(this: @This()) void {
+            _ = this;
+        }
+    },
+};
+
+pub const PipeFile = switch (native_os) {
+    .windows => struct {
+        handle: ?windows.HANDLE = null,
+
+        fn deinit(this: *@This()) void {
+            if (this.handle) |handle| {
+                windows.CloseHandle(handle);
+                this.handle = null;
+            }
+        }
+    },
+    else => struct {
         fn deinit(this: @This()) void {
             _ = this;
         }
@@ -1496,7 +1517,9 @@ pub const init_single_threaded: Threaded = .{
     .old_sig_pipe = undefined,
     .have_signal_handler = false,
     .argv0 = .empty,
-    .environ = .{},
+    .environ = .{ .process_environ = .{
+        .block = if (process.Environ.Block == process.Environ.GlobalBlock) .global else .empty,
+    } },
     .worker_threads = .init(null),
     .disable_memory_mapping = false,
 };
@@ -1531,6 +1554,7 @@ pub fn deinit(t: *Threaded) void {
     }
     t.null_file.deinit();
     t.random_file.deinit();
+    t.pipe_file.deinit();
     t.* = undefined;
 }
 
@@ -1573,14 +1597,7 @@ fn worker(t: *Threaded) void {
                     },
                 },
             },
-            &.{
-                .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
-                .RootDirectory = null,
-                .ObjectName = null,
-                .Attributes = .{},
-                .SecurityDescriptor = null,
-                .SecurityQualityOfService = null,
-            },
+            &.{ .ObjectName = null },
             &windows.teb().ClientId,
         ) == .SUCCESS);
     }
@@ -3376,12 +3393,8 @@ fn dirCreateDirPathOpenWindows(
                 },
             },
             &.{
-                .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
                 .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else dir.handle,
-                .Attributes = .{},
                 .ObjectName = &nt_name,
-                .SecurityDescriptor = null,
-                .SecurityQualityOfService = null,
             },
             &io_status_block,
             null,
@@ -4063,13 +4076,9 @@ fn dirAccessWindows(
         .MaximumLength = path_len_bytes,
         .Buffer = @constCast(sub_path_w.ptr),
     };
-    var attr: windows.OBJECT_ATTRIBUTES = .{
-        .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
+    const attr: windows.OBJECT_ATTRIBUTES = .{
         .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else dir.handle,
-        .Attributes = .{},
         .ObjectName = &nt_name,
-        .SecurityDescriptor = null,
-        .SecurityQualityOfService = null,
     };
     var basic_info: windows.FILE.BASIC_INFORMATION = undefined;
     const syscall: Syscall = try .start();
@@ -4285,14 +4294,8 @@ fn dirCreateFileWindows(
         .Buffer = @constCast(sub_path_w.ptr),
     };
     const attr: windows.OBJECT_ATTRIBUTES = .{
-        .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
         .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else dir.handle,
-        .Attributes = .{
-            .INHERIT = false,
-        },
         .ObjectName = &nt_name,
-        .SecurityDescriptor = null,
-        .SecurityQualityOfService = null,
     };
     const create_disposition: windows.FILE.CREATE_DISPOSITION = if (flags.exclusive)
         .CREATE
@@ -4905,17 +4908,6 @@ pub fn dirOpenFileWtf16(
         .MaximumLength = path_len_bytes,
         .Buffer = @constCast(sub_path_w.ptr),
     };
-    var attr: w.OBJECT_ATTRIBUTES = .{
-        .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
-        .RootDirectory = dir_handle,
-        .Attributes = .{
-            // TODO should we set INHERIT=false?
-            //.INHERIT = false,
-        },
-        .ObjectName = &nt_name,
-        .SecurityDescriptor = null,
-        .SecurityQualityOfService = null,
-    };
     var io_status_block: w.IO_STATUS_BLOCK = undefined;
 
     // There are multiple kernel bugs being worked around with retries.
@@ -4934,7 +4926,10 @@ pub fn dirOpenFileWtf16(
                     .WRITE = flags.isWrite(),
                 },
             },
-            &attr,
+            &.{
+                .RootDirectory = dir_handle,
+                .ObjectName = &nt_name,
+            },
             &io_status_block,
             null,
             .{ .NORMAL = true },
@@ -5302,12 +5297,8 @@ pub fn dirOpenDirWindows(
             },
         },
         &.{
-            .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
             .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else dir.handle,
-            .Attributes = .{},
             .ObjectName = &nt_name,
-            .SecurityDescriptor = null,
-            .SecurityQualityOfService = null,
         },
         &io_status_block,
         null,
@@ -6517,12 +6508,8 @@ fn dirDeleteWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, remov
                 .SYNCHRONIZE = true,
             } },
             &.{
-                .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
                 .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else dir.handle,
-                .Attributes = .{},
                 .ObjectName = &nt_name,
-                .SecurityDescriptor = null,
-                .SecurityQualityOfService = null,
             },
             &io_status_block,
             null,
@@ -6531,6 +6518,7 @@ fn dirDeleteWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, remov
             .OPEN,
             .{
                 .DIRECTORY_FILE = remove_dir,
+                .IO = .SYNCHRONOUS_NONALERT,
                 .NON_DIRECTORY_FILE = !remove_dir,
                 .OPEN_REPARSE_POINT = true, // would we ever want to delete the target instead?
             },
@@ -7342,14 +7330,8 @@ fn dirReadLinkWindows(dir: Dir, sub_path: []const u8, buffer: []u8) Dir.ReadLink
         .Buffer = @constCast(sub_path_w.ptr),
     };
     const attr: windows.OBJECT_ATTRIBUTES = .{
-        .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
         .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else dir.handle,
-        .Attributes = .{
-            .INHERIT = false,
-        },
         .ObjectName = &nt_name,
-        .SecurityDescriptor = null,
-        .SecurityQualityOfService = null,
     };
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     var result_handle: windows.HANDLE = undefined;
@@ -7906,24 +7888,19 @@ fn fileSyncWindows(userdata: ?*anyopaque, file: File) File.SyncError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
 
+    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     const syscall: Syscall = try .start();
     while (true) {
-        if (windows.kernel32.FlushFileBuffers(file.handle) != 0) {
-            return syscall.finish();
-        }
-        switch (windows.GetLastError()) {
-            .SUCCESS => unreachable, // `FlushFileBuffers` returned nonzero
-            .INVALID_HANDLE => unreachable,
-            .ACCESS_DENIED => return syscall.fail(error.AccessDenied), // a sync was performed but the system couldn't update the access time
-            .UNEXP_NET_ERR => return syscall.fail(error.InputOutput),
-            .OPERATION_ABORTED => {
+        switch (windows.ntdll.NtFlushBuffersFile(file.handle, &io_status_block)) {
+            .SUCCESS => break syscall.finish(),
+            .CANCELLED => {
                 try syscall.checkCancel();
                 continue;
             },
-            else => |err| {
-                syscall.finish();
-                return windows.unexpectedError(err);
-            },
+            .INVALID_HANDLE => unreachable,
+            .ACCESS_DENIED => return syscall.fail(error.AccessDenied), // a sync was performed but the system couldn't update the access time
+            .UNEXPECTED_NETWORK_ERROR => return syscall.fail(error.InputOutput),
+            else => |status| return syscall.unexpectedNtstatus(status),
         }
     }
 }
@@ -14556,22 +14533,39 @@ fn scanEnviron(t: *Threaded) void {
             comptime assert(@sizeOf(Environ.String) == 0);
         }
     } else {
-        for (t.environ.process_environ.block) |opt_line| {
-            const line = opt_line.?;
-            var line_i: usize = 0;
-            while (line[line_i] != 0 and line[line_i] != '=') : (line_i += 1) {}
-            const key = line[0..line_i];
+        for (t.environ.process_environ.block.slice) |opt_entry| {
+            const entry = opt_entry.?;
+            var entry_i: usize = 0;
+            while (entry[entry_i] != 0 and entry[entry_i] != '=') : (entry_i += 1) {}
+            const key = entry[0..entry_i];
 
-            var end_i: usize = line_i;
-            while (line[end_i] != 0) : (end_i += 1) {}
-            const value = line[line_i + 1 .. end_i :0];
+            var end_i: usize = entry_i;
+            while (entry[end_i] != 0) : (end_i += 1) {}
+            const value = entry[entry_i + 1 .. end_i :0];
 
             if (std.mem.eql(u8, key, "NO_COLOR")) {
                 t.environ.exist.NO_COLOR = true;
             } else if (std.mem.eql(u8, key, "CLICOLOR_FORCE")) {
                 t.environ.exist.CLICOLOR_FORCE = true;
             } else if (std.mem.eql(u8, key, "ZIG_PROGRESS")) {
-                t.environ.zig_progress_handle = std.fmt.parseInt(u31, value, 10) catch error.UnrecognizedFormat;
+                t.environ.zig_progress_file = file: {
+                    const int = std.fmt.parseInt(switch (@typeInfo(File.Handle)) {
+                        .int => |int_info| @Int(
+                            .unsigned,
+                            int_info.bits - @intFromBool(int_info.signedness == .signed),
+                        ),
+                        .pointer => usize,
+                        else => break :file error.UnsupportedOperation,
+                    }, value, 10) catch break :file error.UnrecognizedFormat;
+                    break :file .{
+                        .handle = switch (@typeInfo(File.Handle)) {
+                            .int => int,
+                            .pointer => @ptrFromInt(int),
+                            else => comptime unreachable,
+                        },
+                        .flags = .{ .nonblocking = true },
+                    };
+                };
             } else inline for (@typeInfo(Environ.String).@"struct".fields) |field| {
                 if (std.mem.eql(u8, key, field.name)) @field(t.environ.string, field.name) = value;
             }
@@ -14594,19 +14588,17 @@ fn processReplace(userdata: ?*anyopaque, options: process.ReplaceOptions) proces
     const argv_buf = try arena.allocSentinel(?[*:0]const u8, options.argv.len, null);
     for (options.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
 
-    const envp: [*:null]const ?[*:0]const u8 = m: {
+    const env_block = env_block: {
         const prog_fd: i32 = -1;
-        if (options.environ_map) |environ_map| {
-            break :m (try environ_map.createBlockPosix(arena, .{
-                .zig_progress_fd = prog_fd,
-            })).ptr;
-        }
-        break :m (try process.Environ.createBlockPosix(t.environ.process_environ, arena, .{
+        if (options.environ_map) |environ_map| break :env_block try environ_map.createPosixBlock(arena, .{
             .zig_progress_fd = prog_fd,
-        })).ptr;
+        });
+        break :env_block try t.environ.process_environ.createPosixBlock(arena, .{
+            .zig_progress_fd = prog_fd,
+        });
     };
 
-    return posixExecv(options.expand_arg0, argv_buf.ptr[0].?, argv_buf.ptr, envp, PATH);
+    return posixExecv(options.expand_arg0, argv_buf.ptr[0].?, argv_buf.ptr, env_block, PATH);
 }
 
 fn processReplacePath(userdata: ?*anyopaque, dir: Dir, options: process.ReplaceOptions) process.ReplaceError {
@@ -14705,16 +14697,14 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
     const prog_fileno = 3;
     comptime assert(@max(posix.STDIN_FILENO, posix.STDOUT_FILENO, posix.STDERR_FILENO) + 1 == prog_fileno);
 
-    const envp: [*:null]const ?[*:0]const u8 = m: {
+    const env_block = env_block: {
         const prog_fd: i32 = if (prog_pipe[1] == -1) -1 else prog_fileno;
-        if (options.environ_map) |environ_map| {
-            break :m (try environ_map.createBlockPosix(arena, .{
-                .zig_progress_fd = prog_fd,
-            })).ptr;
-        }
-        break :m (try process.Environ.createBlockPosix(t.environ.process_environ, arena, .{
+        if (options.environ_map) |environ_map| break :env_block try environ_map.createPosixBlock(arena, .{
             .zig_progress_fd = prog_fd,
-        })).ptr;
+        });
+        break :env_block try t.environ.process_environ.createPosixBlock(arena, .{
+            .zig_progress_fd = prog_fd,
+        });
     };
 
     // This pipe communicates to the parent errors in the child between `fork` and `execvpe`.
@@ -14797,7 +14787,7 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
             }
         }
 
-        const err = posixExecv(options.expand_arg0, argv_buf.ptr[0].?, argv_buf.ptr, envp, PATH);
+        const err = posixExecv(options.expand_arg0, argv_buf.ptr[0].?, argv_buf.ptr, env_block, PATH);
         forkBail(ep1, err);
     }
 
@@ -14811,7 +14801,6 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
     if (options.stderr == .pipe) posix.close(stderr_pipe[1]);
 
     if (prog_pipe[1] != -1) posix.close(prog_pipe[1]);
-
     options.progress_node.setIpcFd(prog_pipe[0]);
 
     return .{
@@ -14935,42 +14924,44 @@ fn childKillWindows(t: *Threaded, child: *process.Child, exit_code: windows.UINT
                 // some rare edge cases where our process handle no longer has the
                 // PROCESS_TERMINATE access right, so let's do another check to make
                 // sure the process is really no longer running:
-                windows.WaitForSingleObjectEx(handle, 0, false) catch return error.AccessDenied;
-                return error.AlreadyTerminated;
+                const minimal_timeout: windows.LARGE_INTEGER = -1;
+                switch (windows.ntdll.NtWaitForSingleObject(handle, windows.FALSE, &minimal_timeout)) {
+                    .SUCCESS => return error.AlreadyTerminated,
+                    else => return error.AccessDenied,
+                }
             },
             else => |err| return windows.unexpectedError(err),
         }
     }
-    _ = windows.kernel32.WaitForSingleObjectEx(handle, windows.INFINITE, windows.FALSE);
+    const infinite_timeout: windows.LARGE_INTEGER = std.math.minInt(windows.LARGE_INTEGER);
+    _ = windows.ntdll.NtWaitForSingleObject(handle, windows.FALSE, &infinite_timeout);
     childCleanupWindows(child);
 }
 
 fn childWaitWindows(child: *process.Child) process.Child.WaitError!process.Child.Term {
     const handle = child.id.?;
 
-    const syscall: Syscall = try .start();
-    while (true) switch (windows.kernel32.WaitForSingleObjectEx(handle, windows.INFINITE, windows.FALSE)) {
-        windows.WAIT_OBJECT_0 => break syscall.finish(),
-        windows.WAIT_ABANDONED, windows.WAIT_TIMEOUT => {
-            try syscall.checkCancel();
+    const alertable_syscall: AlertableSyscall = try .start();
+    const infinite_timeout: windows.LARGE_INTEGER = std.math.minInt(windows.LARGE_INTEGER);
+    while (true) switch (windows.ntdll.NtWaitForSingleObject(handle, windows.TRUE, &infinite_timeout)) {
+        windows.NTSTATUS.WAIT_0 => break alertable_syscall.finish(),
+        .USER_APC, .ALERTED, .TIMEOUT => {
+            try alertable_syscall.checkCancel();
             continue;
         },
-        windows.WAIT_FAILED => {
-            syscall.finish();
-            switch (windows.GetLastError()) {
-                else => |err| return windows.unexpectedError(err),
-            }
-        },
-        else => return syscall.fail(error.Unexpected),
+        else => |status| return alertable_syscall.unexpectedNtstatus(status),
     };
 
-    const term: process.Child.Term = x: {
-        var exit_code: windows.DWORD = undefined;
-        if (windows.kernel32.GetExitCodeProcess(handle, &exit_code) == 0) {
-            break :x .{ .unknown = 0 };
-        } else {
-            break :x .{ .exited = @as(u8, @truncate(exit_code)) };
-        }
+    var info: windows.PROCESS_BASIC_INFORMATION = undefined;
+    const term: process.Child.Term = switch (windows.ntdll.NtQueryInformationProcess(
+        handle,
+        .BasicInformation,
+        &info,
+        @sizeOf(windows.PROCESS_BASIC_INFORMATION),
+        null,
+    )) {
+        .SUCCESS => .{ .exited = @as(u8, @truncate(@intFromEnum(info.ExitStatus))) },
+        else => .{ .unknown = 0 },
     };
 
     childCleanupWindows(child);
@@ -15233,88 +15224,70 @@ fn setUpChildIo(stdio: process.SpawnOptions.StdIo, pipe_fd: i32, std_fileno: i32
 fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) process.SpawnError!process.Child {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
 
-    var saAttr: windows.SECURITY_ATTRIBUTES = .{
-        .nLength = @sizeOf(windows.SECURITY_ATTRIBUTES),
-        .bInheritHandle = windows.TRUE,
-        .lpSecurityDescriptor = null,
-    };
-
     const any_ignore =
         options.stdin == .ignore or
         options.stdout == .ignore or
         options.stderr == .ignore;
+    const nul_handle = if (any_ignore) try getNulDevice(t) else undefined;
 
-    const nul_handle = if (any_ignore) try getNulHandle(t) else undefined;
+    const any_inherit =
+        options.stdin == .inherit or
+        options.stdout == .inherit or
+        options.stderr == .inherit;
+    const peb = if (any_inherit) windows.peb() else undefined;
 
-    var g_hChildStd_IN_Rd: ?windows.HANDLE = null;
-    var g_hChildStd_IN_Wr: ?windows.HANDLE = null;
-    switch (options.stdin) {
-        .pipe => {
-            try windowsMakePipeIn(&g_hChildStd_IN_Rd, &g_hChildStd_IN_Wr, &saAttr);
-        },
-        .ignore => {
-            g_hChildStd_IN_Rd = nul_handle;
-        },
-        .inherit => {
-            g_hChildStd_IN_Rd = windows.GetStdHandle(windows.STD_INPUT_HANDLE) catch null;
-        },
-        .close => {
-            g_hChildStd_IN_Rd = null;
-        },
-        .file => @panic("TODO implement passing file stdio in processSpawnWindows"),
-    }
-    errdefer if (options.stdin == .pipe) {
-        windowsDestroyPipe(g_hChildStd_IN_Rd, g_hChildStd_IN_Wr);
-    };
+    const stdin_pipe = if (options.stdin == .pipe) try t.windowsCreatePipe(.{
+        .server = .{ .attributes = .{ .INHERIT = false }, .mode = .{ .IO = .SYNCHRONOUS_NONALERT } },
+        .client = .{ .attributes = .{ .INHERIT = true }, .mode = .{ .IO = .SYNCHRONOUS_NONALERT } },
+        .outbound = true,
+    }) else undefined;
+    errdefer if (options.stdin == .pipe) for (stdin_pipe) |handle| windows.CloseHandle(handle);
 
-    var g_hChildStd_OUT_Rd: ?windows.HANDLE = null;
-    var g_hChildStd_OUT_Wr: ?windows.HANDLE = null;
-    switch (options.stdout) {
-        .pipe => {
-            try windowsMakeAsyncPipe(&g_hChildStd_OUT_Rd, &g_hChildStd_OUT_Wr, &saAttr);
-        },
-        .ignore => {
-            g_hChildStd_OUT_Wr = nul_handle;
-        },
-        .inherit => {
-            g_hChildStd_OUT_Wr = windows.GetStdHandle(windows.STD_OUTPUT_HANDLE) catch null;
-        },
-        .close => {
-            g_hChildStd_OUT_Wr = null;
-        },
-        .file => @panic("TODO implement passing file stdio in processSpawnWindows"),
-    }
-    errdefer if (options.stdout == .pipe) {
-        windowsDestroyPipe(g_hChildStd_OUT_Rd, g_hChildStd_OUT_Wr);
-    };
+    const stdout_pipe = if (options.stdout == .pipe) try t.windowsCreatePipe(.{
+        .server = .{ .attributes = .{ .INHERIT = false }, .mode = .{ .IO = .ASYNCHRONOUS } },
+        .client = .{ .attributes = .{ .INHERIT = true }, .mode = .{ .IO = .SYNCHRONOUS_NONALERT } },
+        .inbound = true,
+    }) else undefined;
+    errdefer if (options.stdout == .pipe) for (stdout_pipe) |handle| windows.CloseHandle(handle);
 
-    var g_hChildStd_ERR_Rd: ?windows.HANDLE = null;
-    var g_hChildStd_ERR_Wr: ?windows.HANDLE = null;
-    switch (options.stderr) {
-        .pipe => {
-            try windowsMakeAsyncPipe(&g_hChildStd_ERR_Rd, &g_hChildStd_ERR_Wr, &saAttr);
-        },
-        .ignore => {
-            g_hChildStd_ERR_Wr = nul_handle;
-        },
-        .inherit => {
-            g_hChildStd_ERR_Wr = windows.GetStdHandle(windows.STD_ERROR_HANDLE) catch null;
-        },
-        .close => {
-            g_hChildStd_ERR_Wr = null;
-        },
-        .file => @panic("TODO implement passing file stdio in processSpawnWindows"),
-    }
-    errdefer if (options.stderr == .pipe) {
-        windowsDestroyPipe(g_hChildStd_ERR_Rd, g_hChildStd_ERR_Wr);
-    };
+    const stderr_pipe = if (options.stderr == .pipe) try t.windowsCreatePipe(.{
+        .server = .{ .attributes = .{ .INHERIT = false }, .mode = .{ .IO = .ASYNCHRONOUS } },
+        .client = .{ .attributes = .{ .INHERIT = true }, .mode = .{ .IO = .SYNCHRONOUS_NONALERT } },
+        .inbound = true,
+    }) else undefined;
+    errdefer if (options.stderr == .pipe) for (stderr_pipe) |handle| windows.CloseHandle(handle);
+
+    const prog_pipe = if (options.progress_node.index != .none) try t.windowsCreatePipe(.{
+        .server = .{ .attributes = .{ .INHERIT = false }, .mode = .{ .IO = .ASYNCHRONOUS } },
+        .client = .{ .attributes = .{ .INHERIT = true }, .mode = .{ .IO = .SYNCHRONOUS_NONALERT } },
+        .inbound = true,
+    }) else undefined;
+    errdefer if (options.progress_node.index != .none) for (prog_pipe) |handle| windows.CloseHandle(handle);
 
     var siStartInfo: windows.STARTUPINFOW = .{
         .cb = @sizeOf(windows.STARTUPINFOW),
-        .hStdError = g_hChildStd_ERR_Wr,
-        .hStdOutput = g_hChildStd_OUT_Wr,
-        .hStdInput = g_hChildStd_IN_Rd,
         .dwFlags = windows.STARTF_USESTDHANDLES,
+        .hStdInput = switch (options.stdin) {
+            .inherit => peb.ProcessParameters.hStdInput,
+            .file => |file| file.handle,
+            .ignore => nul_handle,
+            .pipe => stdin_pipe[1],
+            .close => null,
+        },
+        .hStdOutput = switch (options.stdout) {
+            .inherit => peb.ProcessParameters.hStdOutput,
+            .file => |file| file.handle,
+            .ignore => nul_handle,
+            .pipe => stdout_pipe[1],
+            .close => null,
+        },
+        .hStdError = switch (options.stderr) {
+            .inherit => peb.ProcessParameters.hStdError,
+            .file => |file| file.handle,
+            .ignore => nul_handle,
+            .pipe => stderr_pipe[1],
+            .close => null,
+        },
 
         .lpReserved = null,
         .lpDesktop = null,
@@ -15360,8 +15333,18 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
     };
     const cwd_w_ptr = if (cwd_w) |cwd| cwd.ptr else null;
 
-    const maybe_envp_buf = if (options.environ_map) |environ_map| try environ_map.createBlockWindows(arena) else null;
-    const envp_ptr = if (maybe_envp_buf) |envp_buf| envp_buf.ptr else null;
+    const env_block = env_block: {
+        const prog_handle = if (options.progress_node.index != .none)
+            prog_pipe[1]
+        else
+            windows.INVALID_HANDLE_VALUE;
+        if (options.environ_map) |environ_map| break :env_block try environ_map.createWindowsBlock(arena, .{
+            .zig_progress_handle = prog_handle,
+        });
+        break :env_block try t.environ.process_environ.createWindowsBlock(arena, .{
+            .zig_progress_handle = if (options.progress_node.index != .none) prog_pipe[1] else windows.INVALID_HANDLE_VALUE,
+        });
+    };
 
     const app_name_wtf8 = options.argv[0];
     const app_name_is_absolute = Dir.path.isAbsolute(app_name_wtf8);
@@ -15436,7 +15419,7 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
             &app_buf,
             PATHEXT,
             &cmd_line_cache,
-            envp_ptr,
+            env_block,
             cwd_w_ptr,
             flags,
             &siStartInfo,
@@ -15471,7 +15454,7 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
                     &app_buf,
                     PATHEXT,
                     &cmd_line_cache,
-                    envp_ptr,
+                    env_block,
                     cwd_w_ptr,
                     flags,
                     &siStartInfo,
@@ -15491,21 +15474,40 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
         };
     }
 
-    if (options.stdin == .pipe) windows.CloseHandle(g_hChildStd_IN_Rd.?);
-    if (options.stderr == .pipe) windows.CloseHandle(g_hChildStd_ERR_Wr.?);
-    if (options.stdout == .pipe) windows.CloseHandle(g_hChildStd_OUT_Wr.?);
+    if (options.progress_node.index != .none) {
+        windows.CloseHandle(prog_pipe[1]);
+        options.progress_node.setIpcFd(prog_pipe[0]);
+    }
 
     return .{
         .id = piProcInfo.hProcess,
         .thread_handle = piProcInfo.hThread,
-        .stdin = if (g_hChildStd_IN_Wr) |h| .{ .handle = h, .flags = .{ .nonblocking = false } } else null,
-        .stdout = if (g_hChildStd_OUT_Rd) |h| .{ .handle = h, .flags = .{ .nonblocking = true } } else null,
-        .stderr = if (g_hChildStd_ERR_Rd) |h| .{ .handle = h, .flags = .{ .nonblocking = true } } else null,
+        .stdin = stdin: switch (options.stdin) {
+            .pipe => {
+                windows.CloseHandle(stdin_pipe[1]);
+                break :stdin .{ .handle = stdin_pipe[0], .flags = .{ .nonblocking = false } };
+            },
+            else => null,
+        },
+        .stdout = stdout: switch (options.stdout) {
+            .pipe => {
+                windows.CloseHandle(stdout_pipe[1]);
+                break :stdout .{ .handle = stdout_pipe[0], .flags = .{ .nonblocking = true } };
+            },
+            else => null,
+        },
+        .stderr = stderr: switch (options.stderr) {
+            .pipe => {
+                windows.CloseHandle(stderr_pipe[1]);
+                break :stderr .{ .handle = stderr_pipe[0], .flags = .{ .nonblocking = true } };
+            },
+            else => null,
+        },
         .request_resource_usage_statistics = options.request_resource_usage_statistics,
     };
 }
 
-fn getCngHandle(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
+fn getCngDevice(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
     {
         mutexLock(&t.mutex);
         defer mutexUnlock(&t.mutex);
@@ -15513,12 +15515,6 @@ fn getCngHandle(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
     }
 
     const device_path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'C', 'N', 'G' };
-
-    var nt_name: windows.UNICODE_STRING = .{
-        .Length = device_path.len * 2,
-        .MaximumLength = 0,
-        .Buffer = @constCast(&device_path),
-    };
     var fresh_handle: windows.HANDLE = undefined;
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     var syscall: Syscall = try .start();
@@ -15529,12 +15525,11 @@ fn getCngHandle(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
             .SPECIFIC = .{ .FILE = .{ .READ_DATA = true } },
         },
         &.{
-            .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
-            .RootDirectory = null,
-            .ObjectName = &nt_name,
-            .Attributes = .{},
-            .SecurityDescriptor = null,
-            .SecurityQualityOfService = null,
+            .ObjectName = @constCast(&windows.UNICODE_STRING{
+                .Length = @sizeOf(@TypeOf(device_path)),
+                .MaximumLength = 0,
+                .Buffer = @constCast(&device_path),
+            }),
         },
         &io_status_block,
         .VALID_FLAGS,
@@ -15561,7 +15556,7 @@ fn getCngHandle(t: *Threaded) Io.RandomSecureError!windows.HANDLE {
     };
 }
 
-fn getNulHandle(t: *Threaded) !windows.HANDLE {
+fn getNulDevice(t: *Threaded) !windows.HANDLE {
     {
         mutexLock(&t.mutex);
         defer mutexUnlock(&t.mutex);
@@ -15569,44 +15564,26 @@ fn getNulHandle(t: *Threaded) !windows.HANDLE {
     }
 
     const device_path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'u', 'l', 'l' };
-    var nt_name: windows.UNICODE_STRING = .{
-        .Length = device_path.len * 2,
-        .MaximumLength = 0,
-        .Buffer = @constCast(&device_path),
-    };
-    const attr: windows.OBJECT_ATTRIBUTES = .{
-        .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
-        .RootDirectory = null,
-        .Attributes = .{
-            .INHERIT = true,
-        },
-        .ObjectName = &nt_name,
-        .SecurityDescriptor = null,
-        .SecurityQualityOfService = null,
-    };
-    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     var fresh_handle: windows.HANDLE = undefined;
+    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     var syscall: Syscall = try .start();
-    while (true) switch (windows.ntdll.NtCreateFile(
+    while (true) switch (windows.ntdll.NtOpenFile(
         &fresh_handle,
         .{
             .STANDARD = .{ .SYNCHRONIZE = true },
-            .GENERIC = .{ .WRITE = true, .READ = true },
+            .SPECIFIC = .{ .FILE = .{ .READ_DATA = true, .WRITE_DATA = true } },
         },
-        &attr,
+        &.{
+            .Attributes = .{ .INHERIT = true },
+            .ObjectName = @constCast(&windows.UNICODE_STRING{
+                .Length = @sizeOf(@TypeOf(device_path)),
+                .MaximumLength = 0,
+                .Buffer = @constCast(&device_path),
+            }),
+        },
         &io_status_block,
-        null,
-        .{ .NORMAL = true },
         .VALID_FLAGS,
-        .OPEN,
-        .{
-            .DIRECTORY_FILE = false,
-            .NON_DIRECTORY_FILE = true,
-            .IO = .SYNCHRONOUS_NONALERT,
-            .OPEN_REPARSE_POINT = false,
-        },
-        null,
-        0,
+        .{ .IO = .SYNCHRONOUS_NONALERT },
     )) {
         .SUCCESS => {
             syscall.finish();
@@ -15617,6 +15594,64 @@ fn getNulHandle(t: *Threaded) !windows.HANDLE {
                 return prev_handle;
             } else {
                 t.null_file.handle = fresh_handle;
+                return fresh_handle;
+            }
+        },
+        .CANCELLED => {
+            try syscall.checkCancel();
+            continue;
+        },
+        .INVALID_PARAMETER => |status| return syscall.ntstatusBug(status),
+        .OBJECT_PATH_SYNTAX_BAD => |status| return syscall.ntstatusBug(status),
+        .INVALID_HANDLE => |status| return syscall.ntstatusBug(status),
+        .OBJECT_NAME_INVALID => return syscall.fail(error.BadPathName),
+        .OBJECT_NAME_NOT_FOUND => return syscall.fail(error.FileNotFound),
+        .OBJECT_PATH_NOT_FOUND => return syscall.fail(error.FileNotFound),
+        .NO_MEDIA_IN_DEVICE => return syscall.fail(error.NoDevice),
+        .SHARING_VIOLATION => return syscall.fail(error.AccessDenied),
+        .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
+        .PIPE_NOT_AVAILABLE => return syscall.fail(error.NoDevice),
+        .FILE_IS_A_DIRECTORY => return syscall.fail(error.IsDir),
+        .NOT_A_DIRECTORY => return syscall.fail(error.NotDir),
+        .USER_MAPPED_FILE => return syscall.fail(error.AccessDenied),
+        else => |status| return syscall.unexpectedNtstatus(status),
+    };
+}
+
+fn getNamedPipeDevice(t: *Threaded) !windows.HANDLE {
+    {
+        mutexLock(&t.mutex);
+        defer mutexUnlock(&t.mutex);
+        if (t.pipe_file.handle) |handle| return handle;
+    }
+
+    const device_path = [_]u16{ '\\', 'D', 'e', 'v', 'i', 'c', 'e', '\\', 'N', 'a', 'm', 'e', 'd', 'P', 'i', 'p', 'e', '\\' };
+    var fresh_handle: windows.HANDLE = undefined;
+    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+    var syscall: Syscall = try .start();
+    while (true) switch (windows.ntdll.NtOpenFile(
+        &fresh_handle,
+        .{ .STANDARD = .{ .SYNCHRONIZE = true } },
+        &.{
+            .ObjectName = @constCast(&windows.UNICODE_STRING{
+                .Length = @sizeOf(@TypeOf(device_path)),
+                .MaximumLength = 0,
+                .Buffer = @constCast(&device_path),
+            }),
+        },
+        &io_status_block,
+        .VALID_FLAGS,
+        .{ .IO = .SYNCHRONOUS_NONALERT },
+    )) {
+        .SUCCESS => {
+            syscall.finish();
+            mutexLock(&t.mutex); // Another thread might have won the race.
+            defer mutexUnlock(&t.mutex);
+            if (t.pipe_file.handle) |prev_handle| {
+                windows.CloseHandle(fresh_handle);
+                return prev_handle;
+            } else {
+                t.pipe_file.handle = fresh_handle;
                 return fresh_handle;
             }
         },
@@ -15666,7 +15701,7 @@ fn windowsCreateProcessPathExt(
     app_buf: *std.ArrayList(u16),
     pathext: [:0]const u16,
     cmd_line_cache: *WindowsCommandLineCache,
-    envp_ptr: ?[*:0]const u16,
+    env_block: ?process.Environ.WindowsBlock,
     cwd_ptr: ?[*:0]u16,
     flags: windows.CreateProcessFlags,
     lpStartupInfo: *windows.STARTUPINFOW,
@@ -15843,7 +15878,7 @@ fn windowsCreateProcessPathExt(
             if (windowsCreateProcess(
                 app_name_w.ptr,
                 cmd_line_w.ptr,
-                envp_ptr,
+                env_block,
                 cwd_ptr,
                 flags,
                 lpStartupInfo,
@@ -15903,7 +15938,7 @@ fn windowsCreateProcessPathExt(
         else
             full_app_name;
 
-        if (windowsCreateProcess(app_name_w.ptr, cmd_line_w.ptr, envp_ptr, cwd_ptr, flags, lpStartupInfo, lpProcessInformation)) |_| {
+        if (windowsCreateProcess(app_name_w.ptr, cmd_line_w.ptr, env_block, cwd_ptr, flags, lpStartupInfo, lpProcessInformation)) |_| {
             return;
         } else |err| switch (err) {
             error.FileNotFound => continue,
@@ -15927,7 +15962,7 @@ fn windowsCreateProcessPathExt(
 fn windowsCreateProcess(
     app_name: [*:0]u16,
     cmd_line: [*:0]u16,
-    env_ptr: ?[*:0]const u16,
+    env_block: ?process.Environ.WindowsBlock,
     cwd_ptr: ?[*:0]u16,
     flags: windows.CreateProcessFlags,
     lpStartupInfo: *windows.STARTUPINFOW,
@@ -15942,7 +15977,7 @@ fn windowsCreateProcess(
             null,
             windows.TRUE,
             flags,
-            env_ptr,
+            if (env_block) |block| block.slice.ptr else null,
             cwd_ptr,
             lpStartupInfo,
             lpProcessInformation,
@@ -16463,11 +16498,11 @@ fn posixExecv(
     arg0_expand: process.ArgExpansion,
     file: [*:0]const u8,
     child_argv: [*:null]?[*:0]const u8,
-    envp: [*:null]const ?[*:0]const u8,
+    env_block: process.Environ.PosixBlock,
     PATH: []const u8,
 ) process.ReplaceError {
     const file_slice = std.mem.sliceTo(file, 0);
-    if (std.mem.findScalar(u8, file_slice, '/') != null) return posixExecvPath(file, child_argv, envp);
+    if (std.mem.findScalar(u8, file_slice, '/') != null) return posixExecvPath(file, child_argv, env_block);
 
     // Use of PATH_MAX here is valid as the path_buf will be passed
     // directly to the operating system in posixExecvPath.
@@ -16495,7 +16530,7 @@ fn posixExecv(
             .expand => child_argv[0] = full_path,
             .no_expand => {},
         }
-        err = posixExecvPath(full_path, child_argv, envp);
+        err = posixExecvPath(full_path, child_argv, env_block);
         switch (err) {
             error.AccessDenied => seen_eacces = true,
             error.FileNotFound, error.NotDir => {},
@@ -16510,10 +16545,10 @@ fn posixExecv(
 pub fn posixExecvPath(
     path: [*:0]const u8,
     child_argv: [*:null]const ?[*:0]const u8,
-    envp: [*:null]const ?[*:0]const u8,
+    env_block: process.Environ.PosixBlock,
 ) process.ReplaceError {
     try Thread.checkCancel();
-    switch (posix.errno(posix.system.execve(path, child_argv, envp))) {
+    switch (posix.errno(posix.system.execve(path, child_argv, env_block.slice.ptr))) {
         .FAULT => |err| return errnoBug(err), // Bad pointer parameter.
         .@"2BIG" => return error.SystemResources,
         .MFILE => return error.ProcessFdQuotaExceeded,
@@ -16545,100 +16580,105 @@ pub fn posixExecvPath(
     }
 }
 
-fn windowsMakePipeIn(rd: *?windows.HANDLE, wr: *?windows.HANDLE, sattr: *const windows.SECURITY_ATTRIBUTES) !void {
-    var rd_h: windows.HANDLE = undefined;
-    var wr_h: windows.HANDLE = undefined;
-    try windows.CreatePipe(&rd_h, &wr_h, sattr);
-    errdefer windowsDestroyPipe(rd_h, wr_h);
-    try windows.SetHandleInformation(wr_h, windows.HANDLE_FLAG_INHERIT, 0);
-    rd.* = rd_h;
-    wr.* = wr_h;
-}
+pub const CreatePipeOptions = struct {
+    server: End,
+    client: End,
+    inbound: bool = false,
+    outbound: bool = false,
+    maximum_instances: u32 = 1,
+    quota: u32 = 4096,
+    default_timeout: windows.LARGE_INTEGER = -120 * std.time.ns_per_s / 100,
 
-fn windowsDestroyPipe(rd: ?windows.HANDLE, wr: ?windows.HANDLE) void {
-    if (rd) |h| posix.close(h);
-    if (wr) |h| posix.close(h);
-}
-
-fn windowsMakeAsyncPipe(rd: *?windows.HANDLE, wr: *?windows.HANDLE, sattr: *const windows.SECURITY_ATTRIBUTES) !void {
-    var tmp_bufw: [128]u16 = undefined;
-
-    // Anonymous pipes are built upon Named pipes.
-    // https://docs.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-createpipe
-    // Asynchronous (overlapped) read and write operations are not supported by anonymous pipes.
-    // https://docs.microsoft.com/en-us/windows/win32/ipc/anonymous-pipe-operations
-    const pipe_path = blk: {
-        var tmp_buf: [128]u8 = undefined;
-        // Forge a random path for the pipe.
-        const pipe_path = std.fmt.bufPrintSentinel(
-            &tmp_buf,
-            "\\\\.\\pipe\\zig-childprocess-{d}-{d}",
-            .{ windows.GetCurrentProcessId(), pipe_name_counter.fetchAdd(1, .monotonic) },
-            0,
-        ) catch unreachable;
-        const len = std.unicode.wtf8ToWtf16Le(&tmp_bufw, pipe_path) catch unreachable;
-        tmp_bufw[len] = 0;
-        break :blk tmp_bufw[0..len :0];
+    pub const End = struct {
+        attributes: windows.OBJECT_ATTRIBUTES.ATTRIBUTES = .{},
+        mode: windows.FILE.MODE,
     };
-
-    // Create the read handle that can be used with overlapped IO ops.
-    const read_handle = windows.kernel32.CreateNamedPipeW(
-        pipe_path.ptr,
-        windows.PIPE_ACCESS_INBOUND | windows.FILE_FLAG_OVERLAPPED,
-        windows.PIPE_TYPE_BYTE,
-        1,
-        4096,
-        4096,
-        0,
-        sattr,
-    );
-    if (read_handle == windows.INVALID_HANDLE_VALUE) {
-        switch (windows.GetLastError()) {
-            else => |err| return windows.unexpectedError(err),
-        }
-    }
-    errdefer posix.close(read_handle);
-
-    var sattr_copy = sattr.*;
-    const write_handle = windows.kernel32.CreateFileW(
-        pipe_path.ptr,
-        .{ .GENERIC = .{ .WRITE = true } },
-        0,
-        &sattr_copy,
-        windows.OPEN_EXISTING,
-        @bitCast(windows.FILE.ATTRIBUTE{ .NORMAL = true }),
-        null,
-    );
-    if (write_handle == windows.INVALID_HANDLE_VALUE) {
-        switch (windows.GetLastError()) {
-            else => |err| return windows.unexpectedError(err),
-        }
-    }
-    errdefer posix.close(write_handle);
-
-    try windows.SetHandleInformation(read_handle, windows.HANDLE_FLAG_INHERIT, 0);
-
-    rd.* = read_handle;
-    wr.* = write_handle;
+};
+pub fn windowsCreatePipe(t: *Threaded, options: CreatePipeOptions) ![2]windows.HANDLE {
+    const named_pipe_device = try t.getNamedPipeDevice();
+    const server_handle = server_handle: {
+        var handle: windows.HANDLE = undefined;
+        var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+        const syscall: Syscall = try .start();
+        while (true) switch (windows.ntdll.NtCreateNamedPipeFile(
+            &handle,
+            .{
+                .SPECIFIC = .{ .FILE_PIPE = .{
+                    .READ_DATA = options.inbound,
+                    .WRITE_DATA = options.outbound,
+                    .WRITE_ATTRIBUTES = true,
+                } },
+                .STANDARD = .{ .SYNCHRONIZE = true },
+            },
+            &.{
+                .RootDirectory = named_pipe_device,
+                .Attributes = options.server.attributes,
+            },
+            &io_status_block,
+            .{ .READ = true, .WRITE = true },
+            .CREATE,
+            options.server.mode,
+            .{ .TYPE = .BYTE_STREAM },
+            .{ .MODE = .BYTE_STREAM },
+            .{ .OPERATION = .QUEUE },
+            options.maximum_instances,
+            if (options.inbound) options.quota else 0,
+            if (options.outbound) options.quota else 0,
+            &options.default_timeout,
+        )) {
+            .SUCCESS => break syscall.finish(),
+            .CANCELLED => {
+                try syscall.checkCancel();
+                continue;
+            },
+            .INVALID_PARAMETER => |status| return syscall.ntstatusBug(status),
+            .INSUFFICIENT_RESOURCES => return syscall.fail(error.SystemResources),
+            else => |status| return syscall.unexpectedNtstatus(status),
+        };
+        break :server_handle handle;
+    };
+    errdefer windows.CloseHandle(server_handle);
+    const client_handle = client_handle: {
+        var handle: windows.HANDLE = undefined;
+        var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+        const syscall: Syscall = try .start();
+        while (true) switch (windows.ntdll.NtOpenFile(
+            &handle,
+            .{
+                .SPECIFIC = .{ .FILE_PIPE = .{
+                    .READ_DATA = options.outbound,
+                    .WRITE_DATA = options.inbound,
+                    .WRITE_ATTRIBUTES = true,
+                } },
+                .STANDARD = .{ .SYNCHRONIZE = true },
+            },
+            &.{
+                .RootDirectory = server_handle,
+                .Attributes = options.client.attributes,
+            },
+            &io_status_block,
+            .{ .READ = true, .WRITE = true },
+            options.client.mode,
+        )) {
+            .SUCCESS => break syscall.finish(),
+            .CANCELLED => {
+                try syscall.checkCancel();
+                continue;
+            },
+            .INVALID_PARAMETER => |status| return syscall.ntstatusBug(status),
+            .INSUFFICIENT_RESOURCES => return syscall.fail(error.SystemResources),
+            else => |status| return syscall.unexpectedNtstatus(status),
+        };
+        break :client_handle handle;
+    };
+    errdefer windows.CloseHandle(client_handle);
+    return .{ server_handle, client_handle };
 }
-
-var pipe_name_counter = std.atomic.Value(u32).init(1);
 
 fn progressParentFile(userdata: ?*anyopaque) std.Progress.ParentFileError!File {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-
     t.scanEnviron();
-
-    const int = try t.environ.zig_progress_handle;
-
-    return .{
-        .handle = switch (@typeInfo(Io.File.Handle)) {
-            .int => int,
-            .pointer => @ptrFromInt(int),
-            else => return error.UnsupportedOperation,
-        },
-        .flags = .{ .nonblocking = false },
-    };
+    return t.environ.zig_progress_file;
 }
 
 pub fn environString(t: *Threaded, comptime name: []const u8) ?[:0]const u8 {
@@ -16734,7 +16774,7 @@ fn randomSecure(userdata: ?*anyopaque, buffer: []u8) Io.RandomSecureError!void {
         //   despite the function being documented to always return TRUE
         // * reads from "\\Device\\CNG" which then seeds a per-CPU AES CSPRNG
         // Therefore, that function is avoided in favor of using the device directly.
-        const cng_device = try getCngHandle(t);
+        const cng_device = try getCngDevice(t);
         var io_status_block: windows.IO_STATUS_BLOCK = undefined;
         var i: usize = 0;
         const syscall: Syscall = try .start();

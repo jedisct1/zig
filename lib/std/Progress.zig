@@ -139,7 +139,7 @@ pub const Node = struct {
         fn setIpcFd(s: *Storage, fd: Io.File.Handle) void {
             const integer: u32 = switch (@typeInfo(Io.File.Handle)) {
                 .int => @bitCast(fd),
-                .pointer => @intFromPtr(fd),
+                .pointer => @intCast(@intFromPtr(fd)),
                 else => @compileError("unsupported fd_t of " ++ @typeName(Io.File.Handle)),
             };
             // `estimated_total_count` max int indicates the special state that
@@ -342,10 +342,18 @@ pub const Node = struct {
     /// Posix-only. Used by `std.process.Child`. Thread-safe.
     pub fn setIpcFd(node: Node, fd: Io.File.Handle) void {
         const index = node.index.unwrap() orelse return;
-        assert(fd >= 0);
-        assert(fd != posix.STDOUT_FILENO);
-        assert(fd != posix.STDIN_FILENO);
-        assert(fd != posix.STDERR_FILENO);
+        switch (@typeInfo(Io.File.Handle)) {
+            .int => {
+                assert(fd >= 0);
+                assert(fd != posix.STDOUT_FILENO);
+                assert(fd != posix.STDIN_FILENO);
+                assert(fd != posix.STDERR_FILENO);
+            },
+            .pointer => {
+                assert(fd != windows.INVALID_HANDLE_VALUE);
+            },
+            else => @compileError("unsupported fd_t of " ++ @typeName(Io.File.Handle)),
+        }
         storageByIndex(index).setIpcFd(fd);
     }
 
@@ -477,21 +485,18 @@ pub fn start(io: Io, options: Options) Node {
     global_progress.refresh_rate_ns = @intCast(options.refresh_rate_ns.toNanoseconds());
     global_progress.initial_delay_ns = @intCast(options.initial_delay_ns.toNanoseconds());
 
-    if (noop_impl)
-        return Node.none;
+    if (noop_impl) return .none;
 
     global_progress.io = io;
 
     if (io.vtable.progressParentFile(io.userdata)) |ipc_file| {
         global_progress.update_worker = io.concurrent(ipcThreadRun, .{ io, ipc_file }) catch |err| {
             global_progress.start_failure = .{ .spawn_ipc_worker = err };
-            return Node.none;
+            return .none;
         };
     } else |env_err| switch (env_err) {
         error.EnvironmentVariableMissing => {
-            if (options.disable_printing) {
-                return Node.none;
-            }
+            if (options.disable_printing) return .none;
             const stderr: Io.File = .stderr();
             global_progress.terminal = stderr;
             if (stderr.enableAnsiEscapeCodes(io)) |_| {
@@ -504,14 +509,12 @@ pub fn start(io: Io, options: Options) Node {
                 } else |err| switch (err) {
                     error.Canceled => {
                         io.recancel();
-                        return Node.none;
+                        return .none;
                     },
                 }
             }
 
-            if (global_progress.terminal_mode == .off) {
-                return Node.none;
-            }
+            if (global_progress.terminal_mode == .off) return .none;
 
             if (have_sigwinch) {
                 const act: posix.Sigaction = .{
@@ -530,12 +533,12 @@ pub fn start(io: Io, options: Options) Node {
                 global_progress.update_worker = future;
             } else |err| {
                 global_progress.start_failure = .{ .spawn_update_worker = err };
-                return Node.none;
+                return .none;
             }
         },
         else => |e| {
             global_progress.start_failure = .{ .parent_ipc = e };
-            return Node.none;
+            return .none;
         },
     }
 
