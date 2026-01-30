@@ -2719,7 +2719,13 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
         }
     }
 
-    var delay_interval: windows.LARGE_INTEGER = timeoutToWindowsInterval(timeout);
+    const deadline: ?Io.Clock.Timestamp = timeout.toDeadline(ioBasic(t)) catch |err| switch (err) {
+        error.Unexpected => deadline: {
+            recoverableOsBugDetected();
+            break :deadline .{ .raw = .{ .nanoseconds = 0 }, .clock = .awake };
+        },
+        error.UnsupportedClock => |e| return e,
+    };
 
     while (true) {
         var any_pending = false;
@@ -2741,6 +2747,16 @@ fn batchWaitWindows(t: *Threaded, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.Wa
         }
         if (b.user.complete_head != complete_tail) return;
         if (!any_pending) return;
+        var delay_interval: windows.LARGE_INTEGER = interval: {
+            const d = deadline orelse break :interval std.math.minInt(windows.LARGE_INTEGER);
+            break :interval t.deadlineToWindowsInterval(d) catch |err| switch (err) {
+                error.UnsupportedClock => |e| return e,
+                error.Unexpected => {
+                    recoverableOsBugDetected();
+                    break :interval -1;
+                },
+            };
+        };
         const alertable_syscall = try AlertableSyscall.start();
         const delay_rc = windows.ntdll.NtDelayExecution(windows.TRUE, &delay_interval);
         alertable_syscall.finish();
@@ -16784,19 +16800,18 @@ fn park(opt_deadline: ?Io.Clock.Timestamp, addr_hint: ?*const anyopaque) error{T
     }
 }
 
-fn timeoutToWindowsInterval(timeout: Io.Timeout) windows.LARGE_INTEGER {
-    switch (timeout) {
-        .none => {
-            return std.math.minInt(windows.LARGE_INTEGER); // infinite timeout
+fn deadlineToWindowsInterval(t: *Io.Threaded, deadline: Io.Clock.Timestamp) Io.Clock.Error!windows.LARGE_INTEGER {
+    // ntdll only supports two combinations:
+    // * real-time (`.real`) sleeps with absolute deadlines
+    // * monotonic (`.awake`/`.boot`) sleeps with relative durations
+    switch (deadline.clock) {
+        .cpu_process, .cpu_thread => unreachable, // cannot sleep for CPU time
+        .real => {
+            return @intCast(@max(@divTrunc(deadline.raw.nanoseconds, 100), 0));
         },
-        .deadline => |deadline| {
-            const nanoseconds = deadline.raw.nanoseconds;
-            return @intCast(@divTrunc(nanoseconds, 100));
-        },
-        .duration => |duration| {
-            const now_timestamp = nowWindows(duration.clock) catch unreachable;
-            const deadline_ns = now_timestamp.nanoseconds + duration.raw.nanoseconds;
-            return @intCast(@divTrunc(deadline_ns, 100));
+        .awake, .boot => {
+            const duration = try deadline.durationFromNow(ioBasic(t));
+            return @intCast(@min(@divTrunc(-duration.raw.nanoseconds, 100), -1));
         },
     }
 }
