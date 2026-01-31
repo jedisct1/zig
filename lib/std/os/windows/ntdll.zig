@@ -614,5 +614,5 @@ pub extern "ntdll" fn NtCancelIoFileEx(
 
 pub extern "ntdll" fn NtCancelIoFile(
     FileHandle: HANDLE,
-    IoRequestToCancel: ?*IO_STATUS_BLOCK,
+    IoStatusBlock: *IO_STATUS_BLOCK,
 ) callconv(.winapi) NTSTATUS;
