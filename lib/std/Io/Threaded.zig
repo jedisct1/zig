@@ -3215,8 +3215,10 @@ fn dirCreateDirPathOpenWasi(
 
 fn dirStat(userdata: ?*anyopaque, dir: Dir) Dir.StatError!Dir.Stat {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    const file: File = .{ .handle = dir.handle };
-    return fileStat(t, file);
+    return fileStat(t, .{
+        .handle = dir.handle,
+        .flags = .{ .nonblocking = false },
+    });
 }
 
 const dirStatFile = switch (native_os) {
@@ -4008,7 +4010,10 @@ fn dirCreateFilePosix(
         }
     }
 
-    return .{ .handle = fd };
+    return .{
+        .handle = fd,
+        .flags = .{ .nonblocking = false },
+    };
 }
 
 fn dirCreateFileWindows(
@@ -4138,7 +4143,10 @@ fn dirCreateFileWindows(
     errdefer windows.CloseHandle(handle);
 
     const exclusive = switch (flags.lock) {
-        .none => return .{ .handle = handle },
+        .none => return .{
+            .handle = handle,
+            .flags = .{ .nonblocking = false },
+        },
         .shared => false,
         .exclusive => true,
     };
@@ -4158,7 +4166,10 @@ fn dirCreateFileWindows(
     )) {
         .SUCCESS => {
             syscall.finish();
-            return .{ .handle = handle };
+            return .{
+                .handle = handle,
+                .flags = .{ .nonblocking = false },
+            };
         },
         .INSUFFICIENT_RESOURCES => return syscall.fail(error.SystemResources),
         .LOCK_NOT_GRANTED => return syscall.fail(error.WouldBlock),
@@ -4207,7 +4218,10 @@ fn dirCreateFileWasi(
         switch (wasi.path_open(dir.handle, lookup_flags, sub_path.ptr, sub_path.len, oflags, base, inheriting, fdflags, &fd)) {
             .SUCCESS => {
                 syscall.finish();
-                return .{ .handle = fd };
+                return .{
+                    .handle = fd,
+                    .flags = .{ .nonblocking = false },
+                };
             },
             .INTR => {
                 try syscall.checkCancel();
@@ -4302,7 +4316,10 @@ fn dirCreateFileAtomic(
                 .SUCCESS => {
                     syscall.finish();
                     return .{
-                        .file = .{ .handle = @intCast(rc) },
+                        .file = .{
+                            .handle = @intCast(rc),
+                            .flags = .{ .nonblocking = false },
+                        },
                         .file_basename_hex = 0,
                         .dest_sub_path = dest_path,
                         .file_open = true,
@@ -4510,7 +4527,10 @@ fn dirOpenFilePosix(
 
     if (!flags.allow_directory) {
         const is_dir = is_dir: {
-            const stat = fileStat(t, .{ .handle = fd }) catch |err| switch (err) {
+            const stat = fileStat(t, .{
+                .handle = fd,
+                .flags = .{ .nonblocking = false },
+            }) catch |err| switch (err) {
                 // The directory-ness is either unknown or unknowable
                 error.Streaming => break :is_dir false,
                 else => |e| return e,
@@ -4596,7 +4616,10 @@ fn dirOpenFilePosix(
         }
     }
 
-    return .{ .handle = fd };
+    return .{
+        .handle = fd,
+        .flags = .{ .nonblocking = false },
+    };
 }
 
 fn dirOpenFileWindows(
@@ -4729,7 +4752,10 @@ pub fn dirOpenFileWtf16(
     errdefer w.CloseHandle(handle);
 
     const exclusive = switch (flags.lock) {
-        .none => return .{ .handle = handle },
+        .none => return .{
+            .handle = handle,
+            .flags = .{ .nonblocking = false },
+        },
         .shared => false,
         .exclusive => true,
     };
@@ -4752,7 +4778,10 @@ pub fn dirOpenFileWtf16(
         .ACCESS_VIOLATION => |err| return syscall.ntstatusBug(err), // bad io_status_block pointer
         else => |status| return syscall.unexpectedNtstatus(status),
     };
-    return .{ .handle = handle };
+    return .{
+        .handle = handle,
+        .flags = .{ .nonblocking = false },
+    };
 }
 
 fn dirOpenFileWasi(
@@ -4834,7 +4863,7 @@ fn dirOpenFileWasi(
 
     if (!flags.allow_directory) {
         const is_dir = is_dir: {
-            const stat = fileStat(t, .{ .handle = fd }) catch |err| switch (err) {
+            const stat = fileStat(t, .{ .handle = fd, .flags = .{ .nonblocking = false } }) catch |err| switch (err) {
                 // The directory-ness is either unknown or unknowable
                 error.Streaming => break :is_dir false,
                 else => |e| return e,
@@ -4844,7 +4873,10 @@ fn dirOpenFileWasi(
         if (is_dir) return error.IsDir;
     }
 
-    return .{ .handle = fd };
+    return .{
+        .handle = fd,
+        .flags = .{ .nonblocking = false },
+    };
 }
 
 const dirOpenDir = switch (native_os) {
@@ -14390,15 +14422,15 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
         .pid = pid,
         .err_fd = err_pipe[0],
         .stdin = switch (options.stdin) {
-            .pipe => .{ .handle = stdin_pipe[1] },
+            .pipe => .{ .handle = stdin_pipe[1], .flags = .{ .nonblocking = false } },
             else => null,
         },
         .stdout = switch (options.stdout) {
-            .pipe => .{ .handle = stdout_pipe[0] },
+            .pipe => .{ .handle = stdout_pipe[0], .flags = .{ .nonblocking = false } },
             else => null,
         },
         .stderr = switch (options.stderr) {
-            .pipe => .{ .handle = stderr_pipe[0] },
+            .pipe => .{ .handle = stderr_pipe[0], .flags = .{ .nonblocking = false } },
             else => null,
         },
     };
@@ -15052,9 +15084,9 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
     return .{
         .id = piProcInfo.hProcess,
         .thread_handle = piProcInfo.hThread,
-        .stdin = if (g_hChildStd_IN_Wr) |h| .{ .handle = h } else null,
-        .stdout = if (g_hChildStd_OUT_Rd) |h| .{ .handle = h } else null,
-        .stderr = if (g_hChildStd_ERR_Rd) |h| .{ .handle = h } else null,
+        .stdin = if (g_hChildStd_IN_Wr) |h| .{ .handle = h, .flags = .{ .nonblocking = false } } else null,
+        .stdout = if (g_hChildStd_OUT_Rd) |h| .{ .handle = h, .flags = .{ .nonblocking = true } } else null,
+        .stderr = if (g_hChildStd_ERR_Rd) |h| .{ .handle = h, .flags = .{ .nonblocking = true } } else null,
         .request_resource_usage_statistics = options.request_resource_usage_statistics,
     };
 }
@@ -16188,6 +16220,7 @@ fn progressParentFile(userdata: ?*anyopaque) std.Progress.ParentFileError!File {
             .pointer => @ptrFromInt(int),
             else => return error.UnsupportedOperation,
         },
+        .flags = .{ .nonblocking = false },
     };
 }
 

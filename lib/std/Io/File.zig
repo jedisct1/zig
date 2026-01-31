@@ -10,6 +10,18 @@ const assert = std.debug.assert;
 const Dir = std.Io.Dir;
 
 handle: Handle,
+flags: Flags,
+
+pub const Flags = struct {
+    /// * true:
+    ///   - windows: opened with MODE.IO.ASYNCHRONOUS
+    ///   - POSIX: O_NONBLOCK is set
+    /// * false:
+    ///   - windows: opened with SYNCHRONOUS_ALERT or SYNCHRONOUS_NONALERT, or
+    ///     not a file.
+    ///   - POSIX: O_NONBLOCK is unset
+    nonblocking: bool,
+};
 
 pub const Handle = std.posix.fd_t;
 
@@ -80,9 +92,11 @@ pub fn stdout() File {
     return switch (native_os) {
         .windows => .{
             .handle = std.os.windows.peb().ProcessParameters.hStdOutput,
+            .flags = .{ .nonblocking = false },
         },
         else => .{
             .handle = std.posix.STDOUT_FILENO,
+            .flags = .{ .nonblocking = false },
         },
     };
 }
@@ -91,9 +105,11 @@ pub fn stderr() File {
     return switch (native_os) {
         .windows => .{
             .handle = std.os.windows.peb().ProcessParameters.hStdError,
+            .flags = .{ .nonblocking = false },
         },
         else => .{
             .handle = std.posix.STDERR_FILENO,
+            .flags = .{ .nonblocking = false },
         },
     };
 }
@@ -102,9 +118,11 @@ pub fn stdin() File {
     return switch (native_os) {
         .windows => .{
             .handle = std.os.windows.peb().ProcessParameters.hStdInput,
+            .flags = .{ .nonblocking = false },
         },
         else => .{
             .handle = std.posix.STDIN_FILENO,
+            .flags = .{ .nonblocking = false },
         },
     };
 }
