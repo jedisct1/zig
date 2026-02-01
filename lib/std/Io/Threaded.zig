@@ -19,7 +19,7 @@ const Alignment = std.mem.Alignment;
 const assert = std.debug.assert;
 const posix = std.posix;
 const windows = std.os.windows;
-const ws2_32 = std.os.windows.ws2_32;
+const ws2_32 = windows.ws2_32;
 
 /// Thread-safe.
 ///
@@ -2609,8 +2609,7 @@ fn batchAwaitAsync(userdata: ?*anyopaque, b: *Io.Batch) Io.Cancelable!void {
                         // opportunity to find additional ready operations.
                         break :t 0;
                     }
-                    const max_poll_ms = std.math.maxInt(i32);
-                    break :t max_poll_ms;
+                    break :t std.math.maxInt(i32);
                 };
                 const syscall = try Syscall.start();
                 const rc = posix.system.poll(&poll_buffer, poll_len, timeout_ms);
@@ -2730,6 +2729,7 @@ fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout
                     break :allocation allocation;
                 };
                 @memcpy(slice[0..poll_buffer_len], storage.slice);
+                storage.slice = slice;
             }
             storage.slice[len] = .{
                 .fd = file.handle,
@@ -2783,9 +2783,7 @@ fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout
             }
             const d = deadline orelse break :t -1;
             const duration = d.durationFromNow(t_io);
-            if (duration.raw.nanoseconds <= 0) return error.Timeout;
-            const max_poll_ms = std.math.maxInt(i32);
-            break :t @intCast(@min(max_poll_ms, duration.raw.toMilliseconds()));
+            break :t @min(@max(0, duration.raw.toMilliseconds()), std.math.maxInt(i32));
         };
         const syscall = try Syscall.start();
         const rc = posix.system.poll(&poll_buffer, poll_storage.len, timeout_ms);
@@ -14420,7 +14418,10 @@ const WindowsEnvironStrings = struct {
     PATHEXT: ?[:0]const u16 = null,
 
     fn scan() WindowsEnvironStrings {
-        const ptr = windows.peb().ProcessParameters.Environment;
+        const peb = windows.peb();
+        assert(windows.ntdll.RtlEnterCriticalSection(peb.FastPebLock) == .SUCCESS);
+        defer assert(windows.ntdll.RtlLeaveCriticalSection(peb.FastPebLock) == .SUCCESS);
+        const ptr = peb.ProcessParameters.Environment;
 
         var result: WindowsEnvironStrings = .{};
         var i: usize = 0;
@@ -14446,7 +14447,7 @@ const WindowsEnvironStrings = struct {
 
             inline for (@typeInfo(WindowsEnvironStrings).@"struct".fields) |field| {
                 const field_name_w = comptime std.unicode.wtf8ToWtf16LeStringLiteral(field.name);
-                if (std.os.windows.eqlIgnoreCaseWtf16(key_w, field_name_w)) @field(result, field.name) = value_w;
+                if (windows.eqlIgnoreCaseWtf16(key_w, field_name_w)) @field(result, field.name) = value_w;
             }
         }
 
@@ -14465,29 +14466,46 @@ fn scanEnviron(t: *Threaded) void {
         // This value expires with any call that modifies the environment,
         // which is outside of this Io implementation's control, so references
         // must be short-lived.
-        const ptr = windows.peb().ProcessParameters.Environment;
+        const peb = windows.peb();
+        assert(windows.ntdll.RtlEnterCriticalSection(peb.FastPebLock) == .SUCCESS);
+        defer assert(windows.ntdll.RtlLeaveCriticalSection(peb.FastPebLock) == .SUCCESS);
+        const ptr = peb.ProcessParameters.Environment;
 
         var i: usize = 0;
         while (ptr[i] != 0) {
-            const key_start = i;
 
             // There are some special environment variables that start with =,
             // so we need a special case to not treat = as a key/value separator
             // if it's the first character.
             // https://devblogs.microsoft.com/oldnewthing/20100506-00/?p=14133
-            if (ptr[key_start] == '=') i += 1;
-
+            const key_start = i;
+            if (ptr[i] == '=') i += 1;
             while (ptr[i] != 0 and ptr[i] != '=') : (i += 1) {}
             const key_w = ptr[key_start..i];
-            if (std.mem.eql(u16, key_w, &.{ 'N', 'O', '_', 'C', 'O', 'L', 'O', 'R' })) {
+
+            const value_start = i + 1;
+            while (ptr[i] != 0) : (i += 1) {} // skip over '=' and value
+            const value_w = ptr[value_start..i];
+            i += 1; // skip over null byte
+
+            if (windows.eqlIgnoreCaseWtf16(key_w, &.{ 'N', 'O', '_', 'C', 'O', 'L', 'O', 'R' })) {
                 t.environ.exist.NO_COLOR = true;
-            } else if (std.mem.eql(u16, key_w, &.{ 'C', 'L', 'I', 'C', 'O', 'L', 'O', 'R', '_', 'F', 'O', 'R', 'C', 'E' })) {
+            } else if (windows.eqlIgnoreCaseWtf16(key_w, &.{ 'C', 'L', 'I', 'C', 'O', 'L', 'O', 'R', '_', 'F', 'O', 'R', 'C', 'E' })) {
                 t.environ.exist.CLICOLOR_FORCE = true;
+            } else if (windows.eqlIgnoreCaseWtf16(key_w, &.{ 'Z', 'I', 'G', '_', 'P', 'R', 'O', 'G', 'R', 'E', 'S', 'S' })) {
+                t.environ.zig_progress_file = file: {
+                    var value_buf: [std.fmt.count("{d}", .{std.math.maxInt(usize)})]u8 = undefined;
+                    const len = std.unicode.calcWtf8Len(value_w);
+                    if (len > value_buf.len) break :file error.UnrecognizedFormat;
+                    assert(std.unicode.wtf16LeToWtf8(&value_buf, value_w) == len);
+                    break :file .{
+                        .handle = @ptrFromInt(std.fmt.parseInt(usize, value_buf[0..len], 10) catch
+                            break :file error.UnrecognizedFormat),
+                        .flags = .{ .nonblocking = true },
+                    };
+                };
             }
             comptime assert(@sizeOf(Environ.String) == 0);
-
-            while (ptr[i] != 0) : (i += 1) {} // skip over '=' and value
-            i += 1; // skip over null byte
         }
     } else if (native_os == .wasi and !builtin.link_libc) {
         var environ_count: usize = undefined;
@@ -14549,20 +14567,9 @@ fn scanEnviron(t: *Threaded) void {
                 t.environ.exist.CLICOLOR_FORCE = true;
             } else if (std.mem.eql(u8, key, "ZIG_PROGRESS")) {
                 t.environ.zig_progress_file = file: {
-                    const int = std.fmt.parseInt(switch (@typeInfo(File.Handle)) {
-                        .int => |int_info| @Int(
-                            .unsigned,
-                            int_info.bits - @intFromBool(int_info.signedness == .signed),
-                        ),
-                        .pointer => usize,
-                        else => break :file error.UnsupportedOperation,
-                    }, value, 10) catch break :file error.UnrecognizedFormat;
                     break :file .{
-                        .handle = switch (@typeInfo(File.Handle)) {
-                            .int => int,
-                            .pointer => @ptrFromInt(int),
-                            else => comptime unreachable,
-                        },
+                        .handle = std.fmt.parseInt(u31, value, 10) catch
+                            break :file error.UnrecognizedFormat,
                         .flags = .{ .nonblocking = true },
                     };
                 };
@@ -14668,15 +14675,16 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
     const any_ignore = (options.stdin == .ignore or options.stdout == .ignore or options.stderr == .ignore);
     const dev_null_fd = if (any_ignore) try getDevNullFd(t) else undefined;
 
-    const prog_pipe: [2]posix.fd_t = p: {
-        if (options.progress_node.index == .none) {
-            break :p .{ -1, -1 };
-        } else {
-            // We use CLOEXEC for the same reason as in `pipe_flags`.
-            break :p try pipe2(.{ .NONBLOCK = true, .CLOEXEC = true });
-        }
-    };
+    const prog_pipe: [2]posix.fd_t = if (options.progress_node.index != .none)
+        // We use CLOEXEC for the same reason as in `pipe_flags`.
+        try pipe2(.{ .NONBLOCK = true, .CLOEXEC = true })
+    else
+        .{ -1, -1 };
     errdefer destroyPipe(prog_pipe);
+
+    if (native_os == .linux and prog_pipe[0] != -1) {
+        _ = posix.system.fcntl(prog_pipe[0], posix.F.SETPIPE_SZ, @as(u32, std.Progress.max_packet_len * 2));
+    }
 
     var arena_allocator = std.heap.ArenaAllocator.init(t.allocator);
     defer arena_allocator.deinit();
@@ -14801,7 +14809,7 @@ fn spawnPosix(t: *Threaded, options: process.SpawnOptions) process.SpawnError!Sp
     if (options.stderr == .pipe) posix.close(stderr_pipe[1]);
 
     if (prog_pipe[1] != -1) posix.close(prog_pipe[1]);
-    options.progress_node.setIpcFd(prog_pipe[0]);
+    options.progress_node.setIpcFile(t, .{ .handle = prog_pipe[0], .flags = .{ .nonblocking = true } });
 
     return .{
         .pid = pid,
@@ -15259,8 +15267,9 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
 
     const prog_pipe = if (options.progress_node.index != .none) try t.windowsCreatePipe(.{
         .server = .{ .attributes = .{ .INHERIT = false }, .mode = .{ .IO = .ASYNCHRONOUS } },
-        .client = .{ .attributes = .{ .INHERIT = true }, .mode = .{ .IO = .SYNCHRONOUS_NONALERT } },
+        .client = .{ .attributes = .{ .INHERIT = true }, .mode = .{ .IO = .ASYNCHRONOUS } },
         .inbound = true,
+        .quota = std.Progress.max_packet_len * 2,
     }) else undefined;
     errdefer if (options.progress_node.index != .none) for (prog_pipe) |handle| windows.CloseHandle(handle);
 
@@ -15476,7 +15485,7 @@ fn processSpawnWindows(userdata: ?*anyopaque, options: process.SpawnOptions) pro
 
     if (options.progress_node.index != .none) {
         windows.CloseHandle(prog_pipe[1]);
-        options.progress_node.setIpcFd(prog_pipe[0]);
+        options.progress_node.setIpcFile(t, .{ .handle = prog_pipe[0], .flags = .{ .nonblocking = true } });
     }
 
     return .{
