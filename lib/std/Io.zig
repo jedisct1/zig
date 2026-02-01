@@ -1467,7 +1467,7 @@ pub const Event = enum(u32) {
     pub fn waitTimeout(event: *Event, io: Io, timeout: Timeout) WaitTimeoutError!void {
         if (@cmpxchgStrong(Event, event, .unset, .waiting, .acquire, .acquire)) |prev| switch (prev) {
             .unset => unreachable,
-            .waiting => assert(!builtin.single_threaded), // invalid state
+            .waiting => {},
             .is_set => return,
         };
         errdefer {

@@ -2461,7 +2461,10 @@ fn cancel(
 }
 
 fn futexWait(userdata: ?*anyopaque, ptr: *const u32, expected: u32, timeout: Io.Timeout) Io.Cancelable!void {
-    if (builtin.single_threaded) unreachable; // Deadlock.
+    if (builtin.single_threaded) {
+        assert(timeout != .none); // Deadlock.
+        return;
+    }
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     const t_io = ioBasic(t);
     const timeout_ns: ?u64 = ns: {
@@ -2479,7 +2482,7 @@ fn futexWaitUncancelable(userdata: ?*anyopaque, ptr: *const u32, expected: u32) 
 }
 
 fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
-    if (builtin.single_threaded) unreachable; // Nothing to wake up.
+    if (builtin.single_threaded) return; // Nothing to wake up.
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
     Thread.futexWake(ptr, max_waiters);
