@@ -40,6 +40,7 @@ comptime {
         @export(&atan, .{ .name = "atan", .linkage = common.linkage, .visibility = common.visibility });
         @export(&atanl, .{ .name = "atanl", .linkage = common.linkage, .visibility = common.visibility });
         @export(&cbrt, .{ .name = "cbrt", .linkage = common.linkage, .visibility = common.visibility });
+        @export(&cbrtf, .{ .name = "cbrtf", .linkage = common.linkage, .visibility = common.visibility });
     }
 
     if (builtin.target.isMuslLibC()) {
@@ -109,5 +110,9 @@ fn copysignl(x: c_longdouble, y: c_longdouble) callconv(.c) c_longdouble {
 }
 
 fn cbrt(x: f64) callconv(.c) f64 {
+    return math.cbrt(x);
+}
+
+fn cbrtf(x: f32) callconv(.c) f32 {
     return math.cbrt(x);
 }
