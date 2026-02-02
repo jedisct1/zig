@@ -263,7 +263,7 @@ pub fn updateFile(
         var timer = comp.startTimer();
         // Any potential AST errors are converted to ZIR errors when we run AstGen/ZonGen.
         file.tree = try Ast.parse(gpa, source, file.getMode());
-        if (timer.finish()) |ns_parse| {
+        if (timer.finish(io)) |ns_parse| {
             comp.mutex.lockUncancelable(io);
             defer comp.mutex.unlock(io);
             comp.time_report.?.stats.cpu_ns_parse += ns_parse;
@@ -295,7 +295,7 @@ pub fn updateFile(
             else => |e| return e,
         };
 
-        if (timer.finish()) |ns_astgen| {
+        if (timer.finish(io)) |ns_astgen| {
             comp.mutex.lockUncancelable(io);
             defer comp.mutex.unlock(io);
             comp.time_report.?.stats.cpu_ns_astgen += ns_astgen;
@@ -4485,7 +4485,7 @@ pub fn runCodegen(pt: Zcu.PerThread, func_index: InternPool.Index, air: *Air) Ru
 
     const codegen_result = runCodegenInner(pt, func_index, air);
 
-    if (timer.finish()) |ns_codegen| report_time: {
+    if (timer.finish(io)) |ns_codegen| report_time: {
         const ip = &zcu.intern_pool;
         const nav = ip.indexToKey(func_index).func.owner_nav;
         const zir_decl = ip.getNav(nav).srcInst(ip);
