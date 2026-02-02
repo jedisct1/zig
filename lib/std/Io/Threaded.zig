@@ -29,8 +29,8 @@ const ws2_32 = std.os.windows.ws2_32;
 /// * scanning environment variables on some targets
 /// * memory-mapping when mmap or equivalent is not available
 allocator: Allocator,
-mutex: Io.Mutex = .init,
-cond: Io.Condition = .init,
+mutex: Mutex = .init,
+cond: Condition = .init,
 run_queue: std.SinglyLinkedList = .{},
 join_requested: bool = false,
 stack_size: usize,
@@ -14299,9 +14299,10 @@ const Wsa = struct {
 };
 
 fn initializeWsa(t: *Threaded) error{ NetworkDown, Canceled }!void {
+    const t_io = io(t);
     const wsa = &t.wsa;
-    try mutexLock(&wsa.mutex);
-    defer mutexUnlock(&wsa.mutex);
+    try wsa.mutex.lock(t_io);
+    defer wsa.mutex.unlock(t_io);
     switch (wsa.status) {
         .uninitialized => {
             var wsa_data: ws2_32.WSADATA = undefined;
@@ -16877,7 +16878,7 @@ const parking_futex = struct {
         /// avoid a race.
         num_waiters: std.atomic.Value(u32),
         /// Protects `waiters`.
-        mutex: Io.Mutex,
+        mutex: Mutex,
         waiters: std.DoublyLinkedList,
 
         /// Prevent false sharing between buckets.
@@ -18102,8 +18103,14 @@ fn eventSet(event: *Io.Event) void {
     }
 }
 
+const Condition = if (!is_windows) Io.Condition else struct {
+    condition: windows.CONDITION_VARIABLE,
+    const init: @This() = .{ .condition = .{} };
+};
+
 /// Same as `Io.Condition.broadcast` but avoids the VTable.
-fn condBroadcast(cond: *Io.Condition) void {
+fn condBroadcast(cond: *Condition) void {
+    if (is_windows) return windows.ntdll.RtlWakeAllConditionVariable(&cond.condition);
     var prev_state = cond.state.load(.monotonic);
     while (prev_state.waiters > prev_state.signals) {
         @branchHint(.unlikely);
@@ -18123,7 +18130,8 @@ fn condBroadcast(cond: *Io.Condition) void {
 }
 
 /// Same as `Io.Condition.signal` but avoids the VTable.
-fn condSignal(cond: *Io.Condition) void {
+fn condSignal(cond: *Condition) void {
+    if (is_windows) return windows.ntdll.RtlWakeConditionVariable(&cond.condition);
     var prev_state = cond.state.load(.monotonic);
     while (prev_state.waiters > prev_state.signals) {
         @branchHint(.unlikely);
@@ -18143,7 +18151,11 @@ fn condSignal(cond: *Io.Condition) void {
 }
 
 /// Same as `Io.Condition.waitUncancelable` but avoids the VTable.
-fn condWait(cond: *Io.Condition, mutex: *Io.Mutex) void {
+fn condWait(cond: *Condition, mutex: *Mutex) void {
+    if (is_windows) {
+        _ = windows.kernel32.SleepConditionVariableSRW(&cond.condition, &mutex.srwlock, windows.INFINITE, 0);
+        return;
+    }
     var epoch = cond.epoch.load(.acquire); // `.acquire` to ensure ordered before state load
 
     {
@@ -18172,6 +18184,11 @@ fn condWait(cond: *Io.Condition, mutex: *Io.Mutex) void {
     }
 }
 
+const Mutex = if (!is_windows) Io.Mutex else struct {
+    srwlock: windows.SRWLOCK,
+    const init: @This() = .{ .srwlock = .{} };
+};
+
 /// Same as `Io.Mutex.lockUncancelable` but avoids the VTable.
 fn mutexLock(m: *Io.Mutex) Io.Cancelable!void {
     const initial_state = m.state.cmpxchgWeak(
@@ -18192,7 +18209,8 @@ fn mutexLock(m: *Io.Mutex) Io.Cancelable!void {
 }
 
 /// Same as `Io.Mutex.lockUncancelable` but avoids the VTable.
-fn mutexLockUncancelable(m: *Io.Mutex) void {
+fn mutexLockUncancelable(m: *Mutex) void {
+    if (is_windows) return windows.ntdll.RtlAcquireSRWLockExclusive(&m.srwlock);
     const initial_state = m.state.cmpxchgWeak(
         .unlocked,
         .locked_once,
@@ -18211,7 +18229,8 @@ fn mutexLockUncancelable(m: *Io.Mutex) void {
 }
 
 /// Same as `Io.Mutex.unlock` but avoids the VTable.
-fn mutexUnlock(m: *Io.Mutex) void {
+fn mutexUnlock(m: *Mutex) void {
+    if (is_windows) return windows.ntdll.RtlReleaseSRWLockExclusive(&m.srwlock);
     switch (m.state.swap(.unlocked, .release)) {
         .unlocked => unreachable,
         .locked_once => {},
