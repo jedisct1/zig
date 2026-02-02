@@ -1,4 +1,4 @@
-rwlock: std.Thread.RwLock,
+mutex: Io.Mutex,
 
 modules: std.ArrayList(Module),
 ranges: std.ArrayList(Module.Range),
@@ -6,7 +6,7 @@ ranges: std.ArrayList(Module.Range),
 unwind_cache: if (can_unwind) ?[]Dwarf.SelfUnwinder.CacheEntry else ?noreturn,
 
 pub const init: SelfInfo = .{
-    .rwlock = .{},
+    .mutex = .init,
     .modules = .empty,
     .ranges = .empty,
     .unwind_cache = null,
@@ -29,8 +29,8 @@ pub fn deinit(si: *SelfInfo, gpa: Allocator) void {
 }
 
 pub fn getSymbol(si: *SelfInfo, gpa: Allocator, io: Io, address: usize) Error!std.debug.Symbol {
-    const module = try si.findModule(gpa, address, .exclusive);
-    defer si.rwlock.unlock();
+    const module = try si.findModule(gpa, io, address, .exclusive);
+    defer si.mutex.unlock(io);
 
     const vaddr = address - module.load_offset;
 
@@ -73,15 +73,15 @@ pub fn getSymbol(si: *SelfInfo, gpa: Allocator, io: Io, address: usize) Error!st
         error.OutOfMemory => |e| return e,
     };
 }
-pub fn getModuleName(si: *SelfInfo, gpa: Allocator, address: usize) Error![]const u8 {
-    const module = try si.findModule(gpa, address, .shared);
-    defer si.rwlock.unlockShared();
+pub fn getModuleName(si: *SelfInfo, gpa: Allocator, io: Io, address: usize) Error![]const u8 {
+    const module = try si.findModule(gpa, io, address, .shared);
+    defer si.mutex.unlock(io);
     if (module.name.len == 0) return error.MissingDebugInfo;
     return module.name;
 }
-pub fn getModuleSlide(si: *SelfInfo, gpa: Allocator, address: usize) Error!usize {
-    const module = try si.findModule(gpa, address, .shared);
-    defer si.rwlock.unlockShared();
+pub fn getModuleSlide(si: *SelfInfo, gpa: Allocator, io: Io, address: usize) Error!usize {
+    const module = try si.findModule(gpa, io, address, .shared);
+    defer si.mutex.unlock(io);
     return module.load_offset;
 }
 
@@ -183,8 +183,8 @@ pub fn unwindFrame(si: *SelfInfo, gpa: Allocator, io: Io, context: *UnwindContex
     comptime assert(can_unwind);
 
     {
-        si.rwlock.lockShared();
-        defer si.rwlock.unlockShared();
+        try si.mutex.lock(io);
+        defer si.mutex.unlock(io);
         if (si.unwind_cache) |cache| {
             if (Dwarf.SelfUnwinder.CacheEntry.find(cache, context.pc)) |entry| {
                 return context.next(gpa, entry);
@@ -192,8 +192,8 @@ pub fn unwindFrame(si: *SelfInfo, gpa: Allocator, io: Io, context: *UnwindContex
         }
     }
 
-    const module = try si.findModule(gpa, context.pc, .exclusive);
-    defer si.rwlock.unlock();
+    const module = try si.findModule(gpa, io, context.pc, .exclusive);
+    defer si.mutex.unlock(io);
 
     if (si.unwind_cache == null) {
         si.unwind_cache = try gpa.alloc(Dwarf.SelfUnwinder.CacheEntry, 2048);
@@ -375,11 +375,11 @@ const Module = struct {
     }
 };
 
-fn findModule(si: *SelfInfo, gpa: Allocator, address: usize, lock: enum { shared, exclusive }) Error!*Module {
+fn findModule(si: *SelfInfo, gpa: Allocator, io: Io, address: usize, lock: enum { shared, exclusive }) Error!*Module {
     // With the requested lock, scan the module ranges looking for `address`.
     switch (lock) {
-        .shared => si.rwlock.lockShared(),
-        .exclusive => si.rwlock.lock(),
+        .shared => try si.mutex.lock(io),
+        .exclusive => try si.mutex.lock(io),
     }
     for (si.ranges.items) |*range| {
         if (address >= range.start and address < range.start + range.len) {
@@ -389,15 +389,12 @@ fn findModule(si: *SelfInfo, gpa: Allocator, address: usize, lock: enum { shared
     // The address wasn't in a known range. We will rebuild the module/range lists, since it's possible
     // a new module was loaded. Upgrade to an exclusive lock if necessary.
     switch (lock) {
-        .shared => {
-            si.rwlock.unlockShared();
-            si.rwlock.lock();
-        },
+        .shared => {},
         .exclusive => {},
     }
     // Rebuild module list with the exclusive lock.
     {
-        errdefer si.rwlock.unlock();
+        errdefer si.mutex.unlock(io);
         for (si.modules.items) |*mod| {
             unwind: {
                 const u = &(mod.unwind orelse break :unwind catch break :unwind);
@@ -415,10 +412,7 @@ fn findModule(si: *SelfInfo, gpa: Allocator, address: usize, lock: enum { shared
     }
     // Downgrade the lock back to shared if necessary.
     switch (lock) {
-        .shared => {
-            si.rwlock.unlock();
-            si.rwlock.lockShared();
-        },
+        .shared => {},
         .exclusive => {},
     }
     // Scan the newly rebuilt module ranges.
@@ -429,8 +423,8 @@ fn findModule(si: *SelfInfo, gpa: Allocator, address: usize, lock: enum { shared
     }
     // Still nothing; unlock and error.
     switch (lock) {
-        .shared => si.rwlock.unlockShared(),
-        .exclusive => si.rwlock.unlock(),
+        .shared => si.mutex.unlock(io),
+        .exclusive => si.mutex.unlock(io),
     }
     return error.MissingDebugInfo;
 }
