@@ -1236,15 +1236,7 @@ pub const Mutex = extern struct {
     };
 
     pub fn tryLock(m: *Mutex) bool {
-        switch (m.state.cmpxchgWeak(
-            .unlocked,
-            .locked_once,
-            .acquire,
-            .monotonic,
-        ) orelse return true) {
-            .unlocked => unreachable,
-            .locked_once, .contended => return false,
-        }
+        return m.state.cmpxchgWeak(.unlocked, .locked_once, .acquire, .monotonic) == null;
     }
 
     pub fn lock(m: *Mutex, io: Io) Cancelable!void {
