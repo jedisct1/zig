@@ -10833,7 +10833,7 @@ fn nowInner(clock: Io.Clock) Io.Timestamp {
     };
 }
 
-fn clockResolution(userdata: ?*anyopaque, clock: Io.Clock) Io.Duration {
+fn clockResolution(userdata: ?*anyopaque, clock: Io.Clock) Io.Clock.ResolutionError!Io.Duration {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
     return switch (native_os) {
@@ -10872,7 +10872,7 @@ fn clockResolution(userdata: ?*anyopaque, clock: Io.Clock) Io.Duration {
     };
 }
 
-fn clockResolutionPosix(clock: Io.Clock) Io.Duration {
+fn clockResolutionPosix(clock: Io.Clock) Io.Clock.ResolutionError!Io.Duration {
     const clock_id: posix.clockid_t = clockToPosix(clock);
     var timespec: posix.timespec = undefined;
     return switch (posix.errno(posix.system.clock_getres(clock_id, &timespec))) {

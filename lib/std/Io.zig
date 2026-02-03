@@ -232,7 +232,7 @@ pub const VTable = struct {
     progressParentFile: *const fn (?*anyopaque) std.Progress.ParentFileError!File,
 
     now: *const fn (?*anyopaque, Clock) Timestamp,
-    clockResolution: *const fn (?*anyopaque, Clock) Duration,
+    clockResolution: *const fn (?*anyopaque, Clock) Clock.ResolutionError!Duration,
     sleep: *const fn (?*anyopaque, Timeout) Cancelable!void,
 
     random: *const fn (?*anyopaque, buffer: []u8) void,
@@ -713,9 +713,14 @@ pub const Clock = enum {
         return io.vtable.now(io.userdata, clock);
     }
 
+    pub const ResolutionError = error{
+        ClockUnavailable,
+        Unexpected,
+    };
+
     /// Reveals the granularity of `clock`. May be zero, indicating
     /// unsupported clock.
-    pub fn resolution(clock: Clock, io: Io) Io.Duration {
+    pub fn resolution(clock: Clock, io: Io) ResolutionError!Io.Duration {
         return io.vtable.clockResolution(io.userdata, clock);
     }
 
