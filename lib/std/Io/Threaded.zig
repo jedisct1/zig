@@ -2655,7 +2655,7 @@ fn batchAwaitAsync(userdata: ?*anyopaque, b: *Io.Batch) Io.Cancelable!void {
 fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.AwaitConcurrentError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     if (is_windows) {
-        const deadline: ?Io.Clock.Timestamp = timeout.toDeadline(ioBasic(t)) catch |err| switch (err) {
+        const deadline: ?Io.Clock.Timestamp = timeout.toTimestamp(ioBasic(t)) catch |err| switch (err) {
             error.Unexpected => deadline: {
                 recoverableOsBugDetected();
                 break :deadline .{ .raw = .{ .nanoseconds = 0 }, .clock = .awake };
@@ -2754,7 +2754,7 @@ fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout
         else => {},
     }
     const t_io = ioBasic(t);
-    const deadline = timeout.toDeadline(t_io) catch return error.UnsupportedClock;
+    const deadline = timeout.toTimestamp(t_io) catch return error.UnsupportedClock;
     while (true) {
         const timeout_ms: i32 = t: {
             if (b.completions.head != .none) {
@@ -10918,7 +10918,7 @@ fn nowWasi(clock: Io.Clock) Io.Clock.Error!Io.Timestamp {
 fn sleep(userdata: ?*anyopaque, timeout: Io.Timeout) Io.SleepError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     if (timeout == .none) return;
-    if (use_parking_sleep) return parking_sleep.sleep(try timeout.toDeadline(ioBasic(t)));
+    if (use_parking_sleep) return parking_sleep.sleep(try timeout.toTimestamp(ioBasic(t)));
     if (native_os == .wasi) return sleepWasi(t, timeout);
     if (@TypeOf(posix.system.clock_nanosleep) != void) return sleepPosix(timeout);
     return sleepNanosleep(t, timeout);
@@ -12630,7 +12630,7 @@ fn netReceivePosix(
     var message_i: usize = 0;
     var data_i: usize = 0;
 
-    const deadline = timeout.toDeadline(t_io) catch |err| return .{ err, message_i };
+    const deadline = timeout.toTimestamp(t_io) catch |err| return .{ err, message_i };
 
     recv: while (true) {
         if (message_buffer.len - message_i == 0) return .{ null, message_i };
