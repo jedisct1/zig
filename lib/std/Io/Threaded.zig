@@ -3260,30 +3260,23 @@ fn dirCreateDirWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, pe
     const sub_path_w = try sliceToPrefixedFileW(dir.handle, sub_path);
     _ = permissions; // TODO use this value
 
-    const syscall: Syscall = try .start();
-    const sub_dir_handle = while (true) {
-        break windows.OpenFile(sub_path_w.span(), .{
-            .dir = dir.handle,
-            .access_mask = .{
-                .GENERIC = .{ .READ = true },
-                .STANDARD = .{ .SYNCHRONIZE = true },
-            },
-            .creation = .CREATE,
-            .filter = .dir_only,
-        }) catch |err| switch (err) {
-            error.IsDir => return syscall.fail(error.Unexpected),
-            error.PipeBusy => return syscall.fail(error.Unexpected),
-            error.NoDevice => return syscall.fail(error.Unexpected),
-            error.WouldBlock => return syscall.fail(error.Unexpected),
-            error.AntivirusInterference => return syscall.fail(error.Unexpected),
-            error.OperationCanceled => {
-                try syscall.checkCancel();
-                continue;
-            },
-            else => |e| return syscall.fail(e),
-        };
+    const sub_dir_handle = OpenFile(sub_path_w.span(), .{
+        .dir = dir.handle,
+        .access_mask = .{
+            .GENERIC = .{ .READ = true },
+            .STANDARD = .{ .SYNCHRONIZE = true },
+        },
+        .creation = .CREATE,
+        .filter = .dir_only,
+    }) catch |err| switch (err) {
+        error.IsDir => return error.Unexpected,
+        error.PipeBusy => return error.Unexpected,
+        error.FileBusy => return error.Unexpected,
+        error.NoDevice => return error.Unexpected,
+        error.WouldBlock => return error.Unexpected,
+        error.AntivirusInterference => return error.Unexpected,
+        else => |e| return e,
     };
-    syscall.finish();
     windows.CloseHandle(sub_dir_handle);
 }
 
@@ -5987,27 +5980,19 @@ fn dirRealPathFileWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8,
     var path_name_w = try sliceToPrefixedFileW(dir.handle, sub_path);
 
     const h_file = handle: {
-        const syscall: Syscall = try .start();
-        while (true) {
-            if (windows.OpenFile(path_name_w.span(), .{
-                .dir = dir.handle,
-                .access_mask = .{
-                    .GENERIC = .{ .READ = true },
-                    .STANDARD = .{ .SYNCHRONIZE = true },
-                },
-                .creation = .OPEN,
-                .filter = .any,
-            })) |handle| {
-                syscall.finish();
-                break :handle handle;
-            } else |err| switch (err) {
-                error.WouldBlock => unreachable,
-                error.OperationCanceled => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                else => |e| return syscall.fail(e),
-            }
+        if (OpenFile(path_name_w.span(), .{
+            .dir = dir.handle,
+            .access_mask = .{
+                .GENERIC = .{ .READ = true },
+                .STANDARD = .{ .SYNCHRONIZE = true },
+            },
+            .creation = .OPEN,
+            .filter = .any,
+        })) |handle| {
+            break :handle handle;
+        } else |err| switch (err) {
+            error.WouldBlock => unreachable,
+            else => |e| return e,
         }
     };
     defer windows.CloseHandle(h_file);
@@ -6116,7 +6101,7 @@ pub fn GetFinalPathNameByHandle(
             // Source: https://stackoverflow.com/questions/3012828/using-ioctl-mountmgr-query-points
             // This is the NT namespaced version of \\.\MountPointManager
             const mgmt_path_u16 = std.unicode.utf8ToUtf16LeStringLiteral("\\??\\MountPointManager");
-            const mgmt_handle = windows.OpenFile(mgmt_path_u16, .{
+            const mgmt_handle = OpenFile(mgmt_path_u16, .{
                 .access_mask = .{ .STANDARD = .{ .SYNCHRONIZE = true } },
                 .creation = .OPEN,
             }) catch |err| switch (err) {
@@ -6125,12 +6110,12 @@ pub fn GetFinalPathNameByHandle(
                 error.NoDevice => return error.Unexpected,
                 error.AccessDenied => return error.Unexpected,
                 error.PipeBusy => return error.Unexpected,
+                error.FileBusy => return error.Unexpected,
                 error.PathAlreadyExists => return error.Unexpected,
                 error.WouldBlock => return error.Unexpected,
                 error.NetworkNotFound => return error.Unexpected,
                 error.AntivirusInterference => return error.Unexpected,
                 error.BadPathName => return error.Unexpected,
-                error.OperationCanceled => @panic("TODO: better integrate cancelation"),
                 else => |e| return e,
             };
             defer windows.CloseHandle(mgmt_handle);
@@ -7309,31 +7294,23 @@ fn dirRenameWindowsInner(
     const new_path_w = new_path_w_buf.span();
 
     const src_fd = src_fd: {
-        const syscall: Syscall = try .start();
-        while (true) {
-            if (w.OpenFile(old_path_w, .{
-                .dir = old_dir.handle,
-                .access_mask = .{
-                    .GENERIC = .{ .WRITE = true },
-                    .STANDARD = .{
-                        .RIGHTS = .{ .DELETE = true },
-                        .SYNCHRONIZE = true,
-                    },
+        if (OpenFile(old_path_w, .{
+            .dir = old_dir.handle,
+            .access_mask = .{
+                .GENERIC = .{ .WRITE = true },
+                .STANDARD = .{
+                    .RIGHTS = .{ .DELETE = true },
+                    .SYNCHRONIZE = true,
                 },
-                .creation = .OPEN,
-                .filter = .any, // This function is supposed to rename both files and directories.
-                .follow_symlinks = false,
-            })) |handle| {
-                syscall.finish();
-                break :src_fd handle;
-            } else |err| switch (err) {
-                error.WouldBlock => unreachable, // Not possible without `.share_access_nonblocking = true`.
-                error.OperationCanceled => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                else => |e| return e,
-            }
+            },
+            .creation = .OPEN,
+            .filter = .any, // This function is supposed to rename both files and directories.
+            .follow_symlinks = false,
+        })) |handle| {
+            break :src_fd handle;
+        } else |err| switch (err) {
+            error.WouldBlock => unreachable, // Not possible without `.share_access_nonblocking = true`.
+            else => |e| return e,
         }
     };
     defer w.CloseHandle(src_fd);
@@ -7662,32 +7639,25 @@ fn dirSymLinkWindows(
     };
 
     const symlink_handle = handle: {
-        const syscall: Syscall = try .start();
-        while (true) {
-            if (w.OpenFile(sym_link_path_w.span(), .{
-                .access_mask = .{
-                    .GENERIC = .{ .READ = true, .WRITE = true },
-                    .STANDARD = .{ .SYNCHRONIZE = true },
-                },
-                .dir = dir.handle,
-                .creation = .CREATE,
-                .filter = if (flags.is_directory) .dir_only else .non_directory_only,
-            })) |handle| {
-                syscall.finish();
-                break :handle handle;
-            } else |err| switch (err) {
-                error.IsDir => return syscall.fail(error.PathAlreadyExists),
-                error.NotDir => return syscall.fail(error.Unexpected),
-                error.WouldBlock => return syscall.fail(error.Unexpected),
-                error.PipeBusy => return syscall.fail(error.Unexpected),
-                error.NoDevice => return syscall.fail(error.Unexpected),
-                error.AntivirusInterference => return syscall.fail(error.Unexpected),
-                error.OperationCanceled => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                else => |e| return e,
-            }
+        if (OpenFile(sym_link_path_w.span(), .{
+            .access_mask = .{
+                .GENERIC = .{ .READ = true, .WRITE = true },
+                .STANDARD = .{ .SYNCHRONIZE = true },
+            },
+            .dir = dir.handle,
+            .creation = .CREATE,
+            .filter = if (flags.is_directory) .dir_only else .non_directory_only,
+        })) |handle| {
+            break :handle handle;
+        } else |err| switch (err) {
+            error.IsDir => return error.PathAlreadyExists,
+            error.NotDir => return error.Unexpected,
+            error.WouldBlock => return error.Unexpected,
+            error.PipeBusy => return error.Unexpected,
+            error.FileBusy => return error.Unexpected,
+            error.NoDevice => return error.Unexpected,
+            error.AntivirusInterference => return error.Unexpected,
+            else => |e| return e,
         }
     };
     defer w.CloseHandle(symlink_handle);
@@ -10341,27 +10311,20 @@ fn processExecutablePath(userdata: ?*anyopaque, out_buffer: []u8) process.Execut
             var path_name_w_buf = try wToPrefixedFileW(null, image_path_name);
 
             const h_file = handle: {
-                const syscall: Syscall = try .start();
-                while (true) {
-                    if (w.OpenFile(path_name_w_buf.span(), .{
-                        .dir = null,
-                        .access_mask = .{
-                            .GENERIC = .{ .READ = true },
-                            .STANDARD = .{ .SYNCHRONIZE = true },
-                        },
-                        .creation = .OPEN,
-                        .filter = .any,
-                    })) |handle| {
-                        syscall.finish();
-                        break :handle handle;
-                    } else |err| switch (err) {
-                        error.WouldBlock => unreachable,
-                        error.OperationCanceled => {
-                            try syscall.checkCancel();
-                            continue;
-                        },
-                        else => |e| return e,
-                    }
+                if (OpenFile(path_name_w_buf.span(), .{
+                    .dir = null,
+                    .access_mask = .{
+                        .GENERIC = .{ .READ = true },
+                        .STANDARD = .{ .SYNCHRONIZE = true },
+                    },
+                    .creation = .OPEN,
+                    .filter = .any,
+                })) |handle| {
+                    break :handle handle;
+                } else |err| switch (err) {
+                    error.WouldBlock => unreachable,
+                    error.FileBusy => unreachable,
+                    else => |e| return e,
                 }
             };
             defer w.CloseHandle(h_file);
@@ -19053,5 +19016,153 @@ pub fn mutexUnlock(m: *Io.Mutex) void {
             @branchHint(.unlikely);
             Thread.futexWake(@ptrCast(&m.state.raw), 1);
         },
+    }
+}
+
+const OpenError = error{
+    IsDir,
+    NotDir,
+    FileNotFound,
+    NoDevice,
+    AccessDenied,
+    PipeBusy,
+    PathAlreadyExists,
+    WouldBlock,
+    NetworkNotFound,
+    AntivirusInterference,
+    FileBusy,
+} || Dir.PathNameError || Io.Cancelable || Io.UnexpectedError;
+
+const OpenFileOptions = struct {
+    access_mask: windows.ACCESS_MASK,
+    dir: ?windows.HANDLE = null,
+    sa: ?*windows.SECURITY_ATTRIBUTES = null,
+    share_access: windows.FILE.SHARE = .VALID_FLAGS,
+    creation: windows.FILE.CREATE_DISPOSITION,
+    filter: Filter = .non_directory_only,
+    /// If false, tries to open path as a reparse point without dereferencing it.
+    /// Defaults to true.
+    follow_symlinks: bool = true,
+
+    pub const Filter = enum {
+        /// Causes `OpenFile` to return `error.IsDir` if the opened handle would be a directory.
+        non_directory_only,
+        /// Causes `OpenFile` to return `error.NotDir` if the opened handle is not a directory.
+        dir_only,
+        /// `OpenFile` does not discriminate between opening files and directories.
+        any,
+    };
+};
+
+/// TODO: inline this logic everywhere and delete this function
+fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!windows.HANDLE {
+    if (std.mem.eql(u16, sub_path_w, &[_]u16{'.'}) and options.filter == .non_directory_only) {
+        return error.IsDir;
+    }
+    if (std.mem.eql(u16, sub_path_w, &[_]u16{ '.', '.' }) and options.filter == .non_directory_only) {
+        return error.IsDir;
+    }
+
+    var result: windows.HANDLE = undefined;
+
+    const path_len_bytes = std.math.cast(u16, sub_path_w.len * 2) orelse return error.NameTooLong;
+    var nt_name: windows.UNICODE_STRING = .{
+        .Length = path_len_bytes,
+        .MaximumLength = path_len_bytes,
+        .Buffer = @constCast(sub_path_w.ptr),
+    };
+    const attr: windows.OBJECT_ATTRIBUTES = .{
+        .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else options.dir,
+        .Attributes = .{ .INHERIT = if (options.sa) |sa| sa.bInheritHandle != windows.FALSE else false },
+        .ObjectName = &nt_name,
+        .SecurityDescriptor = if (options.sa) |ptr| ptr.lpSecurityDescriptor else null,
+    };
+
+    var iosb: windows.IO_STATUS_BLOCK = undefined;
+
+    // There are multiple kernel bugs being worked around with retries.
+    const max_attempts = 13;
+    var attempt: u5 = 0;
+
+    var syscall: Syscall = try .start();
+    while (true) {
+        switch (windows.ntdll.NtCreateFile(
+            &result,
+            options.access_mask,
+            &attr,
+            &iosb,
+            null,
+            .{ .NORMAL = true },
+            options.share_access,
+            options.creation,
+            .{
+                .DIRECTORY_FILE = options.filter == .dir_only,
+                .NON_DIRECTORY_FILE = options.filter == .non_directory_only,
+                .IO = if (options.follow_symlinks) .SYNCHRONOUS_NONALERT else .ASYNCHRONOUS,
+                .OPEN_REPARSE_POINT = !options.follow_symlinks,
+            },
+            null,
+            0,
+        )) {
+            .SUCCESS => {
+                syscall.finish();
+                return result;
+            },
+            .CANCELLED => {
+                try syscall.checkCancel();
+                continue;
+            },
+            .SHARING_VIOLATION => {
+                // This occurs if the file attempting to be opened is a running
+                // executable. However, there's a kernel bug: the error may be
+                // incorrectly returned for an indeterminate amount of time
+                // after an executable file is closed. Here we work around the
+                // kernel bug with retry attempts.
+                syscall.finish();
+                if (max_attempts - attempt == 0) return error.FileBusy;
+                try parking_sleep.sleep(.{ .duration = .{
+                    .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
+                    .clock = .awake,
+                } });
+                attempt += 1;
+                syscall = try .start();
+                continue;
+            },
+            .DELETE_PENDING => {
+                // This error means that there *was* a file in this location on
+                // the file system, but it was deleted. However, the OS is not
+                // finished with the deletion operation, and so this CreateFile
+                // call has failed. There is not really a sane way to handle
+                // this other than retrying the creation after the OS finishes
+                // the deletion.
+                syscall.finish();
+                if (max_attempts - attempt == 0) return error.FileBusy;
+                try parking_sleep.sleep(.{ .duration = .{
+                    .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
+                    .clock = .awake,
+                } });
+                attempt += 1;
+                syscall = try .start();
+                continue;
+            },
+            .OBJECT_NAME_INVALID => return syscall.fail(error.BadPathName),
+            .OBJECT_NAME_NOT_FOUND => return syscall.fail(error.FileNotFound),
+            .OBJECT_PATH_NOT_FOUND => return syscall.fail(error.FileNotFound),
+            .BAD_NETWORK_PATH => return syscall.fail(error.NetworkNotFound), // \\server was not found
+            .BAD_NETWORK_NAME => return syscall.fail(error.NetworkNotFound), // \\server was found but \\server\share wasn't
+            .NO_MEDIA_IN_DEVICE => return syscall.fail(error.NoDevice),
+            .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
+            .PIPE_BUSY => return syscall.fail(error.PipeBusy),
+            .PIPE_NOT_AVAILABLE => return syscall.fail(error.NoDevice),
+            .OBJECT_NAME_COLLISION => return syscall.fail(error.PathAlreadyExists),
+            .FILE_IS_A_DIRECTORY => return syscall.fail(error.IsDir),
+            .NOT_A_DIRECTORY => return syscall.fail(error.NotDir),
+            .USER_MAPPED_FILE => return syscall.fail(error.AccessDenied),
+            .VIRUS_INFECTED, .VIRUS_DELETED => return syscall.fail(error.AntivirusInterference),
+            .INVALID_PARAMETER => |status| return syscall.ntstatusBug(status),
+            .OBJECT_PATH_SYNTAX_BAD => |status| return syscall.ntstatusBug(status),
+            .INVALID_HANDLE => |status| return syscall.ntstatusBug(status),
+            else => |status| return syscall.unexpectedNtstatus(status),
+        }
     }
 }
