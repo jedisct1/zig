@@ -197,26 +197,26 @@ jobs:
         run: sh ci/x86_64-linux-release.sh
         timeout-minutes: 360
 
-  #x86_64-netbsd-debug:
-  #  runs-on: [self-hosted, x86_64-netbsd]
-  #  steps:
-  #    - name: Checkout
-  #      uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
-  #      with:
-  #        fetch-depth: 0
-  #    - name: Build and Test
-  #      run: sh ci/x86_64-netbsd-debug.sh
-  #      timeout-minutes: 120
-  #x86_64-netbsd-release:
-  #  runs-on: [self-hosted, x86_64-netbsd]
-  #  steps:
-  #    - name: Checkout
-  #      uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
-  #      with:
-  #        fetch-depth: 0
-  #    - name: Build and Test
-  #      run: sh ci/x86_64-netbsd-release.sh
-  #      timeout-minutes: 120
+  x86_64-netbsd-debug:
+    runs-on: [self-hosted, x86_64-netbsd]
+    steps:
+      - name: Checkout
+        uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
+        with:
+          fetch-depth: 0
+      - name: Build and Test
+        run: sh ci/x86_64-netbsd-debug.sh
+        timeout-minutes: 120
+  x86_64-netbsd-release:
+    runs-on: [self-hosted, x86_64-netbsd]
+    steps:
+      - name: Checkout
+        uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
+        with:
+          fetch-depth: 0
+      - name: Build and Test
+        run: sh ci/x86_64-netbsd-release.sh
+        timeout-minutes: 120
 
   x86_64-openbsd-debug:
     runs-on: [self-hosted, x86_64-openbsd]
