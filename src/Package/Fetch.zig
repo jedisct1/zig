@@ -68,8 +68,7 @@ use_latest_commit: bool,
 // Above this are fields provided as inputs to `run`.
 // Below this are fields populated by `run`.
 
-/// This will either be relative to `global_cache`, or to the build root of
-/// the root package.
+/// Relative to the build root of the root package.
 package_root: Cache.Path,
 error_bundle: ErrorBundle.Wip,
 manifest: ?Manifest,
@@ -115,6 +114,9 @@ pub const JobQueue = struct {
     http_client: *std.http.Client,
     group: Io.Group = .init,
     global_cache: Cache.Directory,
+    local_cache: Cache.Path,
+    /// Path to "zig-pkg" inside the package in which the user ran `zig build`.
+    root_pkg_path: Cache.Path,
     /// If true then, no fetching occurs, and:
     /// * The `global_cache` directory is assumed to be the direct parent
     ///   directory of on-disk packages rather than having the "p/" directory
@@ -325,11 +327,12 @@ pub const RunError = error{
 };
 
 pub fn run(f: *Fetch) RunError!void {
-    const io = f.job_queue.io;
+    const job_queue = f.job_queue;
+    const io = job_queue.io;
     const eb = &f.error_bundle;
     const arena = f.arena.allocator();
     const gpa = f.arena.child_allocator;
-    const cache_root = f.job_queue.global_cache;
+    const local_cache_root = job_queue.local_cache;
 
     try eb.init(gpa);
 
@@ -350,13 +353,13 @@ pub fn run(f: *Fetch) RunError!void {
             );
             // Packages fetched by URL may not use relative paths to escape outside the
             // fetched package directory from within the package cache.
-            if (pkg_root.root_dir.eql(cache_root)) {
+            if (pkg_root.root_dir.eql(local_cache_root.root_dir)) {
                 // `parent_package_root.sub_path` contains a path like this:
                 // "p/$hash", or
                 // "p/$hash/foo", with possibly more directories after "foo".
                 // We want to fail unless the resolved relative path has a
                 // prefix of "p/$hash/".
-                const prefix_len: usize = if (f.job_queue.read_only) 0 else "p/".len;
+                const prefix_len: usize = if (job_queue.read_only) 0 else "p/".len;
                 const parent_sub_path = f.parent_package_root.sub_path;
                 const end = find_end: {
                     if (parent_sub_path.len > prefix_len) {
@@ -379,7 +382,7 @@ pub fn run(f: *Fetch) RunError!void {
             f.package_root = pkg_root;
             try loadManifest(f, pkg_root);
             if (!f.has_build_zig) try checkBuildFileExistence(f);
-            if (!f.job_queue.recursive) return;
+            if (!job_queue.recursive) return;
             return queueJobsForDeps(f);
         },
         .remote => |remote| remote,
@@ -411,51 +414,39 @@ pub fn run(f: *Fetch) RunError!void {
     };
 
     if (remote.hash) |expected_hash| {
-        var prefixed_pkg_sub_path_buffer: [Package.Hash.max_len + 2]u8 = undefined;
-        prefixed_pkg_sub_path_buffer[0] = 'p';
-        prefixed_pkg_sub_path_buffer[1] = fs.path.sep;
-        const hash_slice = expected_hash.toSlice();
-        @memcpy(prefixed_pkg_sub_path_buffer[2..][0..hash_slice.len], hash_slice);
-        const prefixed_pkg_sub_path = prefixed_pkg_sub_path_buffer[0 .. 2 + hash_slice.len];
-        const prefix_len: usize = if (f.job_queue.read_only) "p/".len else 0;
-        const pkg_sub_path = prefixed_pkg_sub_path[prefix_len..];
-        if (cache_root.handle.access(io, pkg_sub_path, .{})) |_| {
+        const package_root = try job_queue.root_pkg_path.join(arena, expected_hash.toSlice());
+        if (package_root.root_dir.handle.access(io, package_root.sub_path, .{})) |_| {
             assert(f.lazy_status != .unavailable);
-            f.package_root = .{
-                .root_dir = cache_root,
-                .sub_path = try arena.dupe(u8, pkg_sub_path),
-            };
+            f.package_root = package_root;
             try loadManifest(f, f.package_root);
             try checkBuildFileExistence(f);
-            if (!f.job_queue.recursive) return;
+            if (!job_queue.recursive) return;
             return queueJobsForDeps(f);
         } else |err| switch (err) {
             error.FileNotFound => {
                 switch (f.lazy_status) {
                     .eager => {},
-                    .available => if (!f.job_queue.unlazy_set.contains(expected_hash)) {
+                    .available => if (!job_queue.unlazy_set.contains(expected_hash)) {
                         f.lazy_status = .unavailable;
                         return;
                     },
                     .unavailable => unreachable,
                 }
-                if (f.job_queue.read_only) return f.fail(
+                if (job_queue.read_only) return f.fail(
                     f.name_tok,
-                    try eb.printString("package not found at '{f}{s}'", .{
-                        cache_root, pkg_sub_path,
-                    }),
+                    try eb.printString("package not found at '{f}'", .{package_root}),
                 );
             },
             else => |e| {
                 try eb.addRootErrorMessage(.{
-                    .msg = try eb.printString("unable to open global package cache directory '{f}{s}': {s}", .{
-                        cache_root, pkg_sub_path, @errorName(e),
+                    .msg = try eb.printString("unable to open package cache directory {f}: {t}", .{
+                        package_root, e,
                     }),
                 });
                 return error.FetchFailed;
             },
         }
-    } else if (f.job_queue.read_only) {
+    } else if (job_queue.read_only) {
         try eb.addRootErrorMessage(.{
             .msg = try eb.addString("dependency is missing hash field"),
             .src_loc = try f.srcLoc(f.location_tok),
@@ -467,7 +458,7 @@ pub fn run(f: *Fetch) RunError!void {
 
     const uri = std.Uri.parse(remote.url) catch |err| return f.fail(
         f.location_tok,
-        try eb.printString("invalid URI: {s}", .{@errorName(err)}),
+        try eb.printString("invalid URI: {t}", .{err}),
     );
     var buffer: [init_resource_buffer_size]u8 = undefined;
     var resource: Resource = undefined;
@@ -487,29 +478,30 @@ fn runResource(
     resource: *Resource,
     remote_hash: ?Package.Hash,
 ) RunError!void {
-    const io = f.job_queue.io;
+    const job_queue = f.job_queue;
+    const io = job_queue.io;
     defer resource.deinit(io);
     const arena = f.arena.allocator();
     const eb = &f.error_bundle;
     const s = fs.path.sep_str;
-    const cache_root = f.job_queue.global_cache;
+    const local_cache_root = job_queue.local_cache;
     const rand_int = r: {
         var x: u64 = undefined;
         io.random(@ptrCast(&x));
         break :r x;
     };
     const tmp_dir_sub_path = "tmp" ++ s ++ std.fmt.hex(rand_int);
+    const tmp_directory_path = try local_cache_root.join(arena, tmp_dir_sub_path);
 
     const package_sub_path = blk: {
-        const tmp_directory_path = try cache_root.join(arena, &.{tmp_dir_sub_path});
         var tmp_directory: Cache.Directory = .{
-            .path = tmp_directory_path,
+            .path = tmp_directory_path.sub_path,
             .handle = handle: {
-                const dir = cache_root.handle.createDirPathOpen(io, tmp_dir_sub_path, .{
+                const dir = tmp_directory_path.root_dir.handle.createDirPathOpen(io, tmp_directory_path.sub_path, .{
                     .open_options = .{ .iterate = true },
                 }) catch |err| {
                     try eb.addRootErrorMessage(.{
-                        .msg = try eb.printString("unable to create temporary directory '{s}': {t}", .{
+                        .msg = try eb.printString("unable to create temporary directory '{f}': {t}", .{
                             tmp_directory_path, err,
                         }),
                     });
@@ -545,36 +537,33 @@ fn runResource(
         // directory.
         f.computed_hash = try computeHash(f, pkg_path, filter);
 
-        break :blk if (unpack_result.root_dir.len > 0)
-            try fs.path.join(arena, &.{ tmp_dir_sub_path, unpack_result.root_dir })
-        else
-            tmp_dir_sub_path;
+        if (unpack_result.root_dir.len > 0)
+            break :blk try tmp_directory_path.join(arena, unpack_result.root_dir);
+
+        break :blk tmp_directory_path;
     };
 
     const computed_package_hash = computedPackageHash(f);
 
-    // Rename the temporary directory into the global zig package cache
-    // directory. If the hash already exists, delete the temporary directory
-    // and leave the zig package cache directory untouched as it may be in use
-    // by the system. This is done even if the hash is invalid, in case the
-    // package with the different hash is used in the future.
-
-    f.package_root = .{
-        .root_dir = cache_root,
-        .sub_path = try std.fmt.allocPrint(arena, "p" ++ s ++ "{s}", .{computed_package_hash.toSlice()}),
-    };
-    renameTmpIntoCache(io, cache_root.handle, package_sub_path, f.package_root.sub_path) catch |err| {
-        const src = try cache_root.join(arena, &.{tmp_dir_sub_path});
-        const dest = try cache_root.join(arena, &.{f.package_root.sub_path});
+    // Rename the temporary directory into the local zig package directory. If
+    // the hash already exists, delete the temporary directory and leave the
+    // zig package directory untouched as it may be in use. This is done even
+    // if the hash is invalid, in case the package with the different hash is
+    // used in the future.
+    f.package_root = try job_queue.root_pkg_path.join(arena, computed_package_hash.toSlice());
+    renameTmpIntoCache(io, package_sub_path, f.package_root) catch |err| {
         try eb.addRootErrorMessage(.{ .msg = try eb.printString(
-            "unable to rename temporary directory '{s}' into package cache directory '{s}': {s}",
-            .{ src, dest, @errorName(err) },
+            "unable to rename temporary directory {f} into package cache directory {f}: {t}",
+            .{ package_sub_path, f.package_root, err },
         ) });
         return error.FetchFailed;
     };
     // Remove temporary directory root if not already renamed to global cache.
-    if (!std.mem.eql(u8, package_sub_path, tmp_dir_sub_path)) {
-        cache_root.handle.deleteDir(io, tmp_dir_sub_path) catch {};
+    if (!package_sub_path.eql(tmp_directory_path)) {
+        tmp_directory_path.root_dir.handle.deleteDir(io, tmp_directory_path.sub_path) catch |err| switch (err) {
+            error.Canceled => |e| return e,
+            else => |e| std.log.warn("failed to delete temporary directory {f}: {t}", .{ tmp_directory_path, e }),
+        };
     }
 
     // Validate the computed hash against the expected hash. If invalid, this
@@ -614,7 +603,7 @@ fn runResource(
 
     // Spawn a new fetch job for each dependency in the manifest file. Use
     // a mutex and a hash map so that redundant jobs do not get queued up.
-    if (!f.job_queue.recursive) return;
+    if (!job_queue.recursive) return;
     return queueJobsForDeps(f);
 }
 
@@ -641,8 +630,8 @@ fn checkBuildFileExistence(f: *Fetch) RunError!void {
         error.FileNotFound => {},
         else => |e| {
             try eb.addRootErrorMessage(.{
-                .msg = try eb.printString("unable to access '{f}{s}': {s}", .{
-                    f.package_root, Package.build_zig_basename, @errorName(e),
+                .msg = try eb.printString("unable to access '{f}{s}': {t}", .{
+                    f.package_root, Package.build_zig_basename, e,
                 }),
             });
             return error.FetchFailed;
@@ -667,9 +656,7 @@ fn loadManifest(f: *Fetch, pkg_root: Cache.Path) RunError!void {
         else => |e| {
             const file_path = try pkg_root.join(arena, Manifest.basename);
             try eb.addRootErrorMessage(.{
-                .msg = try eb.printString("unable to load package manifest '{f}': {s}", .{
-                    file_path, @errorName(e),
-                }),
+                .msg = try eb.printString("unable to load package manifest '{f}': {t}", .{ file_path, e }),
             });
             return error.FetchFailed;
         },
@@ -1453,14 +1440,20 @@ fn recursiveDirectoryCopy(f: *Fetch, dir: Io.Dir, tmp_dir: Io.Dir) anyerror!void
     }
 }
 
-pub fn renameTmpIntoCache(io: Io, cache_dir: Io.Dir, tmp_dir_sub_path: []const u8, dest_dir_sub_path: []const u8) !void {
-    assert(dest_dir_sub_path[1] == fs.path.sep);
+pub fn renameTmpIntoCache(io: Io, tmp_path: Cache.Path, dest_path: Cache.Path) !void {
     var handled_missing_dir = false;
     while (true) {
-        cache_dir.rename(tmp_dir_sub_path, cache_dir, dest_dir_sub_path, io) catch |err| switch (err) {
+        Io.Dir.rename(
+            tmp_path.root_dir.handle,
+            tmp_path.sub_path,
+            dest_path.root_dir.handle,
+            dest_path.sub_path,
+            io,
+        ) catch |err| switch (err) {
             error.FileNotFound => {
                 if (handled_missing_dir) return err;
-                cache_dir.createDir(io, dest_dir_sub_path[0..1], .default_dir) catch |mkd_err| switch (mkd_err) {
+                const parent_sub_path = Io.Dir.path.dirname(dest_path.sub_path).?;
+                dest_path.root_dir.handle.createDir(io, parent_sub_path, .default_dir) catch |er| switch (er) {
                     error.PathAlreadyExists => handled_missing_dir = true,
                     else => |e| return e,
                 };
@@ -1468,9 +1461,11 @@ pub fn renameTmpIntoCache(io: Io, cache_dir: Io.Dir, tmp_dir_sub_path: []const u
             },
             error.DirNotEmpty, error.AccessDenied => {
                 // Package has been already downloaded and may already be in use on the system.
-                cache_dir.deleteTree(io, tmp_dir_sub_path) catch {
+                tmp_path.root_dir.handle.deleteTree(io, tmp_path.sub_path) catch |er| switch (er) {
+                    error.Canceled => |e| return e,
                     // Garbage files leftover in zig-cache/tmp/ is, as they say
                     // on Star Trek, "operating within normal parameters".
+                    else => |e| std.log.warn("failed to delete temporary directory {f}: {t}", .{ tmp_path, e }),
                 };
             },
             else => |e| return e,
@@ -2244,6 +2239,7 @@ fn saveEmbedFile(io: Io, comptime tarball_name: []const u8, dir: Io.Dir) !void {
 const TestFetchBuilder = struct {
     http_client: std.http.Client,
     global_cache_directory: Cache.Directory,
+    local_cache_path: Cache.Path,
     job_queue: Fetch.JobQueue,
     fetch: Fetch,
 
@@ -2254,15 +2250,25 @@ const TestFetchBuilder = struct {
         cache_parent_dir: std.Io.Dir,
         path_or_url: []const u8,
     ) !*Fetch {
-        const cache_dir = try cache_parent_dir.createDirPathOpen(io, "zig-global-cache", .{});
+        const global_cache_dir = try cache_parent_dir.createDirPathOpen(io, "zig-global-cache", .{});
+        const package_root_dir = try cache_parent_dir.createDirPathOpen(io, "local-project-root", .{});
 
         self.http_client = .{ .allocator = allocator, .io = io };
-        self.global_cache_directory = .{ .handle = cache_dir, .path = null };
+        self.global_cache_directory = .{ .handle = global_cache_dir, .path = "zig-global-cache" };
+        self.local_cache_path = .{
+            .root_dir = .{ .handle = package_root_dir, .path = "local-project-root" },
+            .sub_path = ".zig-cache",
+        };
 
         self.job_queue = .{
             .io = io,
             .http_client = &self.http_client,
             .global_cache = self.global_cache_directory,
+            .local_cache = self.local_cache_path,
+            .root_pkg_path = .{
+                .root_dir = .{ .handle = package_root_dir, .path = "local-project-root" },
+                .sub_path = "zig-pkg",
+            },
             .recursive = false,
             .read_only = false,
             .debug_hash = false,
@@ -2276,7 +2282,7 @@ const TestFetchBuilder = struct {
             .hash_tok = .none,
             .name_tok = 0,
             .lazy_status = .eager,
-            .parent_package_root = Cache.Path{ .root_dir = Cache.Directory{ .handle = cache_dir, .path = null } },
+            .parent_package_root = .{ .root_dir = .{ .handle = package_root_dir, .path = null } },
             .parent_manifest_ast = null,
             .prog_node = std.Progress.Node.none,
             .job_queue = &self.job_queue,
