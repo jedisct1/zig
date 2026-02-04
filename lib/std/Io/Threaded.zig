@@ -1404,6 +1404,8 @@ const splat_buffer_size = 64;
 /// posix systems.
 const poll_buffer_len = 64;
 const default_PATH = "/usr/local/bin:/bin/:/usr/bin";
+/// There are multiple kernel bugs being worked around with retries.
+const max_windows_kernel_bug_retries = 13;
 
 comptime {
     if (@TypeOf(posix.IOV_MAX) != void) assert(max_iovecs_len <= posix.IOV_MAX);
@@ -3256,28 +3258,114 @@ fn dirCreateDirWasi(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, permi
 fn dirCreateDirWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, permissions: Dir.Permissions) Dir.CreateDirError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
     _ = t;
-
-    const sub_path_w = try sliceToPrefixedFileW(dir.handle, sub_path);
     _ = permissions; // TODO use this value
 
-    const sub_dir_handle = OpenFile(sub_path_w.span(), .{
-        .dir = dir.handle,
-        .access_mask = .{
+    const sub_path_w_array = try sliceToPrefixedFileW(dir.handle, sub_path);
+    const sub_path_w = sub_path_w_array.span();
+    const path_len_bytes = std.math.cast(u16, sub_path_w.len * 2) orelse return error.NameTooLong;
+
+    var nt_name: windows.UNICODE_STRING = .{
+        .Length = path_len_bytes,
+        .MaximumLength = path_len_bytes,
+        .Buffer = @constCast(sub_path_w.ptr),
+    };
+    const attr: windows.OBJECT_ATTRIBUTES = .{
+        .Length = @sizeOf(windows.OBJECT_ATTRIBUTES),
+        .RootDirectory = if (Dir.path.isAbsoluteWindowsWtf16(sub_path_w)) null else dir.handle,
+        .Attributes = .{
+            .INHERIT = false,
+        },
+        .ObjectName = &nt_name,
+        .SecurityDescriptor = null,
+        .SecurityQualityOfService = null,
+    };
+
+    var sub_dir_handle: windows.HANDLE = undefined;
+    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+    var attempt: u5 = 0;
+    var syscall: Syscall = try .start();
+    while (true) switch (windows.ntdll.NtCreateFile(
+        &sub_dir_handle,
+        .{
             .GENERIC = .{ .READ = true },
             .STANDARD = .{ .SYNCHRONIZE = true },
         },
-        .creation = .CREATE,
-        .filter = .dir_only,
-    }) catch |err| switch (err) {
-        error.IsDir => return error.Unexpected,
-        error.PipeBusy => return error.Unexpected,
-        error.FileBusy => return error.Unexpected,
-        error.NoDevice => return error.Unexpected,
-        error.WouldBlock => return error.Unexpected,
-        error.AntivirusInterference => return error.Unexpected,
-        else => |e| return e,
+        &attr,
+        &io_status_block,
+        null,
+        .{ .NORMAL = true },
+        .VALID_FLAGS,
+        .CREATE,
+        .{
+            .DIRECTORY_FILE = true,
+            .NON_DIRECTORY_FILE = false,
+            .IO = .SYNCHRONOUS_NONALERT,
+            .OPEN_REPARSE_POINT = false,
+        },
+        null,
+        0,
+    )) {
+        .SUCCESS => {
+            syscall.finish();
+            windows.CloseHandle(sub_dir_handle);
+            return;
+        },
+        .CANCELLED => {
+            try syscall.checkCancel();
+            continue;
+        },
+        .SHARING_VIOLATION => {
+            // This occurs if the file attempting to be opened is a running
+            // executable. However, there's a kernel bug: the error may be
+            // incorrectly returned for an indeterminate amount of time
+            // after an executable file is closed. Here we work around the
+            // kernel bug with retry attempts.
+            syscall.finish();
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
+            try parking_sleep.sleep(.{ .duration = .{
+                .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
+                .clock = .awake,
+            } });
+            attempt += 1;
+            syscall = try .start();
+            continue;
+        },
+        .DELETE_PENDING => {
+            // This error means that there *was* a file in this location on
+            // the file system, but it was deleted. However, the OS is not
+            // finished with the deletion operation, and so this CreateFile
+            // call has failed. There is not really a sane way to handle
+            // this other than retrying the creation after the OS finishes
+            // the deletion.
+            syscall.finish();
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
+            try parking_sleep.sleep(.{ .duration = .{
+                .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
+                .clock = .awake,
+            } });
+            attempt += 1;
+            syscall = try .start();
+            continue;
+        },
+        .OBJECT_NAME_INVALID => return syscall.fail(error.BadPathName),
+        .OBJECT_NAME_NOT_FOUND => return syscall.fail(error.FileNotFound),
+        .OBJECT_PATH_NOT_FOUND => return syscall.fail(error.FileNotFound),
+        .BAD_NETWORK_PATH => return syscall.fail(error.NetworkNotFound), // \\server was not found
+        .BAD_NETWORK_NAME => return syscall.fail(error.NetworkNotFound), // \\server was found but \\server\share wasn't
+        .NO_MEDIA_IN_DEVICE => return syscall.fail(error.NoDevice),
+        .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
+        .PIPE_BUSY => return syscall.fail(error.PipeBusy),
+        .PIPE_NOT_AVAILABLE => return syscall.fail(error.NoDevice),
+        .OBJECT_NAME_COLLISION => return syscall.fail(error.PathAlreadyExists),
+        .FILE_IS_A_DIRECTORY => return syscall.fail(error.IsDir),
+        .NOT_A_DIRECTORY => return syscall.fail(error.NotDir),
+        .USER_MAPPED_FILE => return syscall.fail(error.AccessDenied),
+        .VIRUS_INFECTED, .VIRUS_DELETED => return syscall.fail(error.AntivirusInterference),
+        .INVALID_PARAMETER => |status| return syscall.ntstatusBug(status),
+        .OBJECT_PATH_SYNTAX_BAD => |status| return syscall.ntstatusBug(status),
+        .INVALID_HANDLE => |status| return syscall.ntstatusBug(status),
+        else => |status| return syscall.unexpectedNtstatus(status),
     };
-    windows.CloseHandle(sub_dir_handle);
 }
 
 fn dirCreateDirPath(
@@ -4307,11 +4395,7 @@ fn dirCreateFileWindows(
     };
 
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
-
-    // There are multiple kernel bugs being worked around with retries.
-    const max_attempts = 13;
     var attempt: u5 = 0;
-
     var handle: windows.HANDLE = undefined;
     var syscall: Syscall = try .start();
     while (true) switch (windows.ntdll.NtCreateFile(
@@ -4345,7 +4429,7 @@ fn dirCreateFileWindows(
             // after an executable file is closed. Here we work around the
             // kernel bug with retry attempts.
             syscall.finish();
-            if (max_attempts - attempt == 0) return error.FileBusy;
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
             try parking_sleep.sleep(.{ .duration = .{
                 .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                 .clock = .awake,
@@ -4361,7 +4445,7 @@ fn dirCreateFileWindows(
             // call has failed. Here, we simulate the kernel bug being
             // fixed by sleeping and retrying until the error goes away.
             syscall.finish();
-            if (max_attempts - attempt == 0) return error.FileBusy;
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
             try parking_sleep.sleep(.{ .duration = .{
                 .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                 .clock = .awake,
@@ -4903,11 +4987,7 @@ pub fn dirOpenFileWtf16(
         .Buffer = @constCast(sub_path_w.ptr),
     };
     var io_status_block: w.IO_STATUS_BLOCK = undefined;
-
-    // There are multiple kernel bugs being worked around with retries.
-    const max_attempts = 13;
     var attempt: u5 = 0;
-
     var syscall: Syscall = try .start();
     const handle = while (true) {
         var result: w.HANDLE = undefined;
@@ -4959,7 +5039,7 @@ pub fn dirOpenFileWtf16(
                 // after an executable file is closed. Here we work around the
                 // kernel bug with retry attempts.
                 syscall.finish();
-                if (max_attempts - attempt == 0) return error.FileBusy;
+                if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
                 try parking_sleep.sleep(.{ .duration = .{
                     .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                     .clock = .awake,
@@ -4984,7 +5064,7 @@ pub fn dirOpenFileWtf16(
                 // call has failed. Here, we simulate the kernel bug being
                 // fixed by sleeping and retrying until the error goes away.
                 syscall.finish();
-                if (max_attempts - attempt == 0) return error.FileBusy;
+                if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
                 try parking_sleep.sleep(.{ .duration = .{
                     .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                     .clock = .awake,
@@ -7850,11 +7930,7 @@ fn dirReadLinkWindows(dir: Dir, sub_path: []const u8, buffer: []u8) Dir.ReadLink
     };
     var io_status_block: windows.IO_STATUS_BLOCK = undefined;
     var result_handle: windows.HANDLE = undefined;
-
-    // There are multiple kernel bugs being worked around with retries.
-    const max_attempts = 13;
     var attempt: u5 = 0;
-
     var syscall: Syscall = try .start();
     while (true) switch (windows.ntdll.NtCreateFile(
         &result_handle,
@@ -7894,7 +7970,7 @@ fn dirReadLinkWindows(dir: Dir, sub_path: []const u8, buffer: []u8) Dir.ReadLink
             // after an executable file is closed. Here we work around the
             // kernel bug with retry attempts.
             syscall.finish();
-            if (max_attempts - attempt == 0) return error.FileBusy;
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
             try parking_sleep.sleep(.{ .duration = .{
                 .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                 .clock = .awake,
@@ -7910,7 +7986,7 @@ fn dirReadLinkWindows(dir: Dir, sub_path: []const u8, buffer: []u8) Dir.ReadLink
             // call has failed. Here, we simulate the kernel bug being
             // fixed by sleeping and retrying until the error goes away.
             syscall.finish();
-            if (max_attempts - attempt == 0) return error.FileBusy;
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
             try parking_sleep.sleep(.{ .duration = .{
                 .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                 .clock = .awake,
@@ -19079,11 +19155,7 @@ fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!windows
     };
 
     var iosb: windows.IO_STATUS_BLOCK = undefined;
-
-    // There are multiple kernel bugs being worked around with retries.
-    const max_attempts = 13;
     var attempt: u5 = 0;
-
     var syscall: Syscall = try .start();
     while (true) {
         switch (windows.ntdll.NtCreateFile(
@@ -19119,7 +19191,7 @@ fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!windows
                 // after an executable file is closed. Here we work around the
                 // kernel bug with retry attempts.
                 syscall.finish();
-                if (max_attempts - attempt == 0) return error.FileBusy;
+                if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
                 try parking_sleep.sleep(.{ .duration = .{
                     .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                     .clock = .awake,
@@ -19136,7 +19208,7 @@ fn OpenFile(sub_path_w: []const u16, options: OpenFileOptions) OpenError!windows
                 // this other than retrying the creation after the OS finishes
                 // the deletion.
                 syscall.finish();
-                if (max_attempts - attempt == 0) return error.FileBusy;
+                if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
                 try parking_sleep.sleep(.{ .duration = .{
                     .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                     .clock = .awake,
