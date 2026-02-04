@@ -3321,7 +3321,7 @@ fn dirCreateDirWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, pe
             // after an executable file is closed. Here we work around the
             // kernel bug with retry attempts.
             syscall.finish();
-            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.Unexpected;
             try parking_sleep.sleep(.{ .duration = .{
                 .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                 .clock = .awake,
@@ -3338,7 +3338,7 @@ fn dirCreateDirWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, pe
             // this other than retrying the creation after the OS finishes
             // the deletion.
             syscall.finish();
-            if (max_windows_kernel_bug_retries - attempt == 0) return error.FileBusy;
+            if (max_windows_kernel_bug_retries - attempt == 0) return error.Unexpected;
             try parking_sleep.sleep(.{ .duration = .{
                 .raw = .fromMilliseconds((@as(u32, 1) << attempt) >> 1),
                 .clock = .awake,
@@ -3352,15 +3352,10 @@ fn dirCreateDirWindows(userdata: ?*anyopaque, dir: Dir, sub_path: []const u8, pe
         .OBJECT_PATH_NOT_FOUND => return syscall.fail(error.FileNotFound),
         .BAD_NETWORK_PATH => return syscall.fail(error.NetworkNotFound), // \\server was not found
         .BAD_NETWORK_NAME => return syscall.fail(error.NetworkNotFound), // \\server was found but \\server\share wasn't
-        .NO_MEDIA_IN_DEVICE => return syscall.fail(error.NoDevice),
         .ACCESS_DENIED => return syscall.fail(error.AccessDenied),
-        .PIPE_BUSY => return syscall.fail(error.PipeBusy),
-        .PIPE_NOT_AVAILABLE => return syscall.fail(error.NoDevice),
         .OBJECT_NAME_COLLISION => return syscall.fail(error.PathAlreadyExists),
-        .FILE_IS_A_DIRECTORY => return syscall.fail(error.IsDir),
         .NOT_A_DIRECTORY => return syscall.fail(error.NotDir),
         .USER_MAPPED_FILE => return syscall.fail(error.AccessDenied),
-        .VIRUS_INFECTED, .VIRUS_DELETED => return syscall.fail(error.AntivirusInterference),
         .INVALID_PARAMETER => |status| return syscall.ntstatusBug(status),
         .OBJECT_PATH_SYNTAX_BAD => |status| return syscall.ntstatusBug(status),
         .INVALID_HANDLE => |status| return syscall.ntstatusBug(status),
