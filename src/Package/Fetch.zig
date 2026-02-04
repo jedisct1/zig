@@ -129,7 +129,6 @@ pub const JobQueue = struct {
     /// two hashes of the same package do not match.
     /// If this is true, `recursive` must be false.
     debug_hash: bool,
-    work_around_btrfs_bug: bool,
     mode: Mode,
     /// Set of hashes that will be additionally fetched even if they are marked
     /// as lazy.
@@ -524,16 +523,7 @@ fn runResource(
         // Fetch and unpack a resource into a temporary directory.
         var unpack_result = try unpackResource(f, resource, uri_path, tmp_directory);
 
-        var pkg_path: Cache.Path = .{ .root_dir = tmp_directory, .sub_path = unpack_result.root_dir };
-
-        // Apply btrfs workaround if needed. Reopen tmp_directory.
-        if (native_os == .linux and f.job_queue.work_around_btrfs_bug) {
-            // https://github.com/ziglang/zig/issues/17095
-            pkg_path.root_dir.handle.close(io);
-            pkg_path.root_dir.handle = cache_root.handle.createDirPathOpen(io, tmp_dir_sub_path, .{
-                .open_options = .{ .iterate = true },
-            }) catch @panic("btrfs workaround failed");
-        }
+        const pkg_path: Cache.Path = .{ .root_dir = tmp_directory, .sub_path = unpack_result.root_dir };
 
         // Load, parse, and validate the unpacked build.zig.zon file. It is allowed
         // for the file to be missing, in which case this fetched package is
@@ -2276,7 +2266,6 @@ const TestFetchBuilder = struct {
             .recursive = false,
             .read_only = false,
             .debug_hash = false,
-            .work_around_btrfs_bug = false,
             .mode = .needed,
         };
 

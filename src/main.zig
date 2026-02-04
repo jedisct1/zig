@@ -5098,8 +5098,6 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
         }
     }
 
-    const work_around_btrfs_bug = native_os == .linux and
-        EnvVar.ZIG_BTRFS_WORKAROUND.isSet(environ_map);
     const root_prog_node = std.Progress.start(io, .{
         .disable_printing = (color == .off),
         .root_name = "Compile Build Script",
@@ -5244,7 +5242,6 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                     .read_only = false,
                     .recursive = true,
                     .debug_hash = false,
-                    .work_around_btrfs_bug = work_around_btrfs_bug,
                     .unlazy_set = unlazy_set,
                     .mode = fetch_mode,
                 };
@@ -5254,9 +5251,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                     job_queue.global_cache = .{
                         .path = p,
                         .handle = Io.Dir.cwd().openDir(io, p, .{}) catch |err| {
-                            fatal("unable to open system package directory '{s}': {s}", .{
-                                p, @errorName(err),
-                            });
+                            fatal("unable to open system package directory '{s}': {t}", .{ p, err });
                         },
                     };
                     job_queue.read_only = true;
@@ -6938,8 +6933,6 @@ fn cmdFetch(
     dev.check(.fetch_command);
 
     const color: Color = .auto;
-    const work_around_btrfs_bug = native_os == .linux and
-        EnvVar.ZIG_BTRFS_WORKAROUND.isSet(environ_map);
     var opt_path_or_url: ?[]const u8 = null;
     var override_global_cache_dir: ?[]const u8 = EnvVar.ZIG_GLOBAL_CACHE_DIR.get(environ_map);
     var debug_hash: bool = false;
@@ -7010,7 +7003,6 @@ fn cmdFetch(
         .recursive = false,
         .read_only = false,
         .debug_hash = debug_hash,
-        .work_around_btrfs_bug = work_around_btrfs_bug,
         .mode = .all,
     };
     defer job_queue.deinit();
