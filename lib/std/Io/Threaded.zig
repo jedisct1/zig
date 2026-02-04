@@ -3083,19 +3083,23 @@ fn batchAwaitWindows(b: *Io.Batch, concurrency: bool) error{ Canceled, Concurren
                 }
             },
             .device_io_control => |o| {
+                const NtControlFile = switch (o.code.DeviceType) {
+                    .FILE_SYSTEM, .NAMED_PIPE => &windows.ntdll.NtFsControlFile,
+                    else => &windows.ntdll.NtDeviceIoControlFile,
+                };
                 if (o.file.flags.nonblocking) {
                     context.file = o.file.handle;
-                    switch (windows.ntdll.NtDeviceIoControlFile(
+                    switch (NtControlFile(
                         o.file.handle,
                         null, // event
                         &batchApc,
                         b,
                         &context.iosb,
-                        o.IoControlCode,
-                        o.InputBuffer,
-                        o.InputBufferLength,
-                        o.OutputBuffer,
-                        o.OutputBufferLength,
+                        o.code,
+                        if (o.in.len > 0) o.in.ptr else null,
+                        @intCast(o.in.len),
+                        if (o.out.len > 0) o.out.ptr else null,
+                        @intCast(o.out.len),
                     )) {
                         .PENDING, .SUCCESS => {},
                         .CANCELLED => unreachable,
@@ -3108,17 +3112,17 @@ fn batchAwaitWindows(b: *Io.Batch, concurrency: bool) error{ Canceled, Concurren
                     if (concurrency) return error.ConcurrencyUnavailable;
 
                     const syscall: Syscall = try .start();
-                    while (true) switch (windows.ntdll.NtDeviceIoControlFile(
+                    while (true) switch (NtControlFile(
                         o.file.handle,
                         null, // event
                         null, // APC routine
                         null, // APC context
                         &context.iosb,
-                        o.IoControlCode,
-                        o.InputBuffer,
-                        o.InputBufferLength,
-                        o.OutputBuffer,
-                        o.OutputBufferLength,
+                        o.code,
+                        if (o.in.len > 0) o.in.ptr else null,
+                        @intCast(o.in.len),
+                        if (o.out.len > 0) o.out.ptr else null,
+                        @intCast(o.out.len),
                     )) {
                         .PENDING => unreachable, // unrecoverable: wrong File nonblocking flag
                         .CANCELLED => {
@@ -8547,29 +8551,24 @@ fn fileSyncWasi(userdata: ?*anyopaque, file: File) File.SyncError!void {
 
 fn fileIsTty(userdata: ?*anyopaque, file: File) Io.Cancelable!bool {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    _ = t;
-    return isTty(file);
+    return t.isTty(file);
 }
 
-fn isTty(file: File) Io.Cancelable!bool {
+fn isTty(t: *Threaded, file: File) Io.Cancelable!bool {
     if (is_windows) {
-        if (try isCygwinPty(file)) return true;
-        var out: windows.DWORD = undefined;
-        const syscall: Syscall = try .start();
-        while (windows.kernel32.GetConsoleMode(file.handle, &out) == 0) {
-            switch (windows.GetLastError()) {
-                .OPERATION_ABORTED => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                else => {
-                    syscall.finish();
-                    return false;
-                },
-            }
+        var get_console_mode = windows.CONSOLE.USER_IO.GET_MODE;
+        switch ((try t.deviceIoControl(&.{
+            .file = .{
+                .handle = windows.peb().ProcessParameters.ConsoleHandle,
+                .flags = .{ .nonblocking = false },
+            },
+            .code = windows.IOCTL.CONDRV.ISSUE_USER_IO,
+            .in = @ptrCast(&get_console_mode.request(file, 0, .{}, 0, .{})),
+        })).u.Status) {
+            .SUCCESS => return true,
+            .INVALID_HANDLE => return isCygwinPty(file),
+            else => return false,
         }
-        syscall.finish();
-        return true;
     }
 
     if (builtin.link_libc) {
@@ -8637,35 +8636,26 @@ fn isTty(file: File) Io.Cancelable!bool {
 
 fn fileEnableAnsiEscapeCodes(userdata: ?*anyopaque, file: File) File.EnableAnsiEscapeCodesError!void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    _ = t;
 
-    if (!is_windows) {
-        if (try supportsAnsiEscapeCodes(file)) return;
-        return error.NotTerminalDevice;
-    }
+    if (!is_windows) return if (!try t.supportsAnsiEscapeCodes(file)) error.NotTerminalDevice;
 
     // For Windows Terminal, VT Sequences processing is enabled by default.
-    var original_console_mode: windows.DWORD = 0;
-
-    {
-        const syscall: Syscall = try .start();
-        while (windows.kernel32.GetConsoleMode(file.handle, &original_console_mode) == 0) {
-            switch (windows.GetLastError()) {
-                .OPERATION_ABORTED => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                else => {
-                    syscall.finish();
-                    if (try isCygwinPty(file)) return;
-                    return error.NotTerminalDevice;
-                },
-            }
-        }
-        syscall.finish();
+    const console: File = .{
+        .handle = windows.peb().ProcessParameters.ConsoleHandle,
+        .flags = .{ .nonblocking = false },
+    };
+    var get_console_mode = windows.CONSOLE.USER_IO.GET_MODE;
+    switch ((try t.deviceIoControl(&.{
+        .file = console,
+        .code = windows.IOCTL.CONDRV.ISSUE_USER_IO,
+        .in = @ptrCast(&get_console_mode.request(file, 0, .{}, 0, .{})),
+    })).u.Status) {
+        .SUCCESS => {},
+        .INVALID_HANDLE => return if (!try isCygwinPty(file)) error.NotTerminalDevice,
+        else => return error.NotTerminalDevice,
     }
 
-    if (original_console_mode & windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0) return;
+    if (get_console_mode.Data & windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0) return;
 
     // For Windows Console, VT Sequences processing support was added in Windows 10 build 14361, but disabled by default.
     // https://devblogs.microsoft.com/commandline/tmux-support-arrives-for-bash-on-ubuntu-on-windows/
@@ -8678,58 +8668,40 @@ fn fileEnableAnsiEscapeCodes(userdata: ?*anyopaque, file: File) File.EnableAnsiE
     // Additionally, the default console mode in Windows Terminal does not have
     // `DISABLE_NEWLINE_AUTO_RETURN` set, so by only enabling `ENABLE_VIRTUAL_TERMINAL_PROCESSING`
     // we end up matching the mode of Windows Terminal.
-    const requested_console_modes = windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    const console_mode = original_console_mode | requested_console_modes;
-
-    {
-        const syscall: Syscall = try .start();
-        while (windows.kernel32.SetConsoleMode(file.handle, console_mode) == 0) {
-            switch (windows.GetLastError()) {
-                .OPERATION_ABORTED => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                else => {
-                    syscall.finish();
-                    if (try isCygwinPty(file)) return;
-                    return error.NotTerminalDevice;
-                },
-            }
-        }
-        syscall.finish();
+    var set_console_mode = windows.CONSOLE.USER_IO.SET_MODE(
+        get_console_mode.Data | windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING,
+    );
+    switch ((try t.deviceIoControl(&.{
+        .file = console,
+        .code = windows.IOCTL.CONDRV.ISSUE_USER_IO,
+        .in = @ptrCast(&set_console_mode.request(file, 0, .{}, 0, .{})),
+    })).u.Status) {
+        .SUCCESS => {},
+        else => |status| return windows.unexpectedStatus(status),
     }
 }
 
 fn fileSupportsAnsiEscapeCodes(userdata: ?*anyopaque, file: File) Io.Cancelable!bool {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    _ = t;
-    return supportsAnsiEscapeCodes(file);
+    return t.supportsAnsiEscapeCodes(file);
 }
 
-fn supportsAnsiEscapeCodes(file: File) Io.Cancelable!bool {
+fn supportsAnsiEscapeCodes(t: *Threaded, file: File) Io.Cancelable!bool {
     if (is_windows) {
-        var console_mode: windows.DWORD = 0;
-
-        const syscall: Syscall = try .start();
-        while (windows.kernel32.GetConsoleMode(file.handle, &console_mode) == 0) {
-            switch (windows.GetLastError()) {
-                .OPERATION_ABORTED => {
-                    try syscall.checkCancel();
-                    continue;
-                },
-                else => {
-                    syscall.finish();
-                    break;
-                },
-            }
-        } else {
-            syscall.finish();
-            if (console_mode & windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0) {
-                return true;
-            }
+        var get_console_mode = windows.CONSOLE.USER_IO.GET_MODE;
+        switch ((try t.deviceIoControl(&.{
+            .file = .{
+                .handle = windows.peb().ProcessParameters.ConsoleHandle,
+                .flags = .{ .nonblocking = false },
+            },
+            .code = windows.IOCTL.CONDRV.ISSUE_USER_IO,
+            .in = @ptrCast(&get_console_mode.request(file, 0, .{}, 0, .{})),
+        })).u.Status) {
+            .SUCCESS => if (get_console_mode.Data & windows.ENABLE_VIRTUAL_TERMINAL_PROCESSING != 0)
+                return true,
+            .INVALID_HANDLE => return isCygwinPty(file),
+            else => return false,
         }
-
-        return isCygwinPty(file);
     }
 
     if (native_os == .wasi) {
@@ -8739,7 +8711,7 @@ fn supportsAnsiEscapeCodes(file: File) Io.Cancelable!bool {
         return false;
     }
 
-    if (try isTty(file)) return true;
+    if (try t.isTty(file)) return true;
 
     return false;
 }
@@ -14111,12 +14083,14 @@ fn initLockedStderr(t: *Threaded, terminal_mode: ?Io.Terminal.Mode) Io.Cancelabl
 
 fn unlockStderr(userdata: ?*anyopaque) void {
     const t: *Threaded = @ptrCast(@alignCast(userdata));
-    t.stderr_writer.interface.flush() catch |err| switch (err) {
-        error.WriteFailed => switch (t.stderr_writer.err.?) {
+    if (t.stderr_writer.err == null) t.stderr_writer.interface.flush() catch {};
+    if (t.stderr_writer.err) |err| {
+        switch (err) {
             error.Canceled => recancelInner(),
             else => {},
-        },
-    };
+        }
+        t.stderr_writer.err = null;
+    }
     t.stderr_writer.interface.end = 0;
     t.stderr_writer.interface.buffer = &.{};
 
@@ -18848,20 +18822,24 @@ fn mmSyncWrite(file: File, memory: []u8, offset: u64) File.WritePositionalError!
 fn deviceIoControl(t: *Threaded, o: *const Io.Operation.DeviceIoControl) Io.Cancelable!Io.Operation.DeviceIoControl.Result {
     _ = t;
     if (is_windows) {
+        const NtControlFile = switch (o.code.DeviceType) {
+            .FILE_SYSTEM, .NAMED_PIPE => &windows.ntdll.NtFsControlFile,
+            else => &windows.ntdll.NtDeviceIoControlFile,
+        };
         var iosb: windows.IO_STATUS_BLOCK = undefined;
         if (o.file.flags.nonblocking) {
             var done: bool = false;
-            switch (windows.ntdll.NtDeviceIoControlFile(
+            switch (NtControlFile(
                 o.file.handle,
                 null, // event
                 flagApc,
                 &done, // APC context
                 &iosb,
-                o.IoControlCode,
-                o.InputBuffer,
-                o.InputBufferLength,
-                o.OutputBuffer,
-                o.OutputBufferLength,
+                o.code,
+                if (o.in.len > 0) o.in.ptr else null,
+                @intCast(o.in.len),
+                if (o.out.len > 0) o.out.ptr else null,
+                @intCast(o.out.len),
             )) {
                 // We must wait for the APC routine.
                 .PENDING, .SUCCESS => while (!done) {
@@ -18882,17 +18860,17 @@ fn deviceIoControl(t: *Threaded, o: *const Io.Operation.DeviceIoControl) Io.Canc
             }
         } else {
             const syscall: Syscall = try .start();
-            while (true) switch (windows.ntdll.NtDeviceIoControlFile(
+            while (true) switch (NtControlFile(
                 o.file.handle,
                 null, // event
                 null, // APC routine
                 null, // APC context
                 &iosb,
-                o.IoControlCode,
-                o.InputBuffer,
-                o.InputBufferLength,
-                o.OutputBuffer,
-                o.OutputBufferLength,
+                o.code,
+                if (o.in.len > 0) o.in.ptr else null,
+                @intCast(o.in.len),
+                if (o.out.len > 0) o.out.ptr else null,
+                @intCast(o.out.len),
             )) {
                 .PENDING => unreachable, // unrecoverable: wrong asynchronous flag
                 .CANCELLED => {

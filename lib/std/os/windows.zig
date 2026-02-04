@@ -649,6 +649,235 @@ pub const FILE = struct {
     };
 };
 
+pub const CONSOLE = struct {
+    pub const USER_IO = struct {
+        pub const INFO = struct {
+            pub const CP = extern struct {
+                /// GetCP: output
+                /// SetCP: input
+                CodePage: UINT,
+                /// input
+                Mode: MODE,
+
+                pub const MODE = enum(BOOLEAN) {
+                    Input = FALSE,
+                    Output = TRUE,
+                };
+            };
+
+            pub const WRITE = extern struct {
+                /// output, in bytes
+                Size: DWORD,
+                /// input
+                Mode: MODE,
+
+                pub const MODE = enum(BOOLEAN) {
+                    Character = FALSE,
+                    WideCharacter = TRUE,
+                };
+            };
+
+            pub const FILL = extern struct {
+                /// input
+                dwWriteCoord: COORD,
+                /// input
+                Tag: WITH.Tag,
+                /// input
+                With: WITH.Payload,
+                /// input/output, in characters
+                nLength: DWORD,
+
+                pub const WITH = union(enum(DWORD)) {
+                    Character: CHAR = 1,
+                    WideCharacter: WCHAR = 2,
+                    Attribute: WORD = 3,
+
+                    pub const Tag = @typeInfo(WITH).@"union".tag_type.?;
+                    pub const Payload = PAYLOAD: {
+                        const with_fields = @typeInfo(WITH).@"union".fields;
+                        var field_names: [with_fields.len][]const u8 = undefined;
+                        var field_types: [with_fields.len]type = undefined;
+                        for (with_fields, &field_names, &field_types) |field, *field_name, *field_type| {
+                            field_name.* = field.name;
+                            field_type.* = field.type;
+                        }
+                        break :PAYLOAD @Union(.@"extern", null, &field_names, &field_types, &@splat(.{}));
+                    };
+                };
+            };
+
+            /// all output
+            pub const SCREEN_BUFFER = extern struct {
+                dwSize: COORD,
+                dwCursorPosition: COORD,
+                dwWindowPosition: COORD,
+                wAttributes: WORD,
+                dwWindowSize: COORD,
+                dwMaximumWindowSize: COORD,
+                wPopupAttributes: WORD,
+                bFullscreenSupported: BOOL,
+                ColorTable: [16]COLORREF,
+            };
+
+            pub const READ_OUTPUT_CHARACTER = extern struct {
+                /// input
+                dwReadCoord: COORD,
+                Mode: MODE,
+                /// output, in characters
+                nLength: DWORD,
+
+                pub const MODE = enum(DWORD) {
+                    Character = 1,
+                    WideCharacter = 2,
+                };
+            };
+        };
+
+        pub fn GET_CP(mode: INFO.CP.MODE) Header.With(INFO.CP) {
+            return .init(.GetCP, .{ .CodePage = undefined, .Mode = mode });
+        }
+        pub const GET_MODE: Header.With(DWORD) = .init(.GetMode, undefined);
+        pub fn SET_MODE(mode: DWORD) Header.With(DWORD) {
+            return .init(.SetMode, mode);
+        }
+        pub fn WRITE(mode: INFO.WRITE.MODE) Header.With(INFO.WRITE) {
+            return .init(.Write, .{ .Size = undefined, .Mode = mode });
+        }
+        pub fn FILL(with: INFO.FILL.WITH, len: DWORD, coord: COORD) Header.With(INFO.FILL) {
+            return .init(.Fill, .{
+                .dwWriteCoord = coord,
+                .Tag = with,
+                .With = switch (with) {
+                    inline else => |payload, tag| @unionInit(
+                        INFO.FILL.WITH.Payload,
+                        @tagName(tag),
+                        payload,
+                    ),
+                },
+                .nLength = len,
+            });
+        }
+        pub fn SET_CP(mode: INFO.CP.MODE, cp: UINT) Header.With(INFO.CP) {
+            return .init(.SetCP, .{ .CodePage = cp, .Mode = mode });
+        }
+        pub const GET_SCREEN_BUFFER_INFO: Header.With(INFO.SCREEN_BUFFER) =
+            .init(.GetScreenBufferInfo, undefined);
+        pub fn SET_CURSOR_POSITION(coord: COORD) Header.With(COORD) {
+            return .init(.SetCursorPosition, coord);
+        }
+        pub fn SET_TEXT_ATTRIBUTE(attribute: WORD) Header.With(WORD) {
+            return .init(.SetTextAttribute, attribute);
+        }
+        pub fn READ_OUTPUT_CHARACTER(
+            coord: COORD,
+            mode: INFO.READ_OUTPUT_CHARACTER.MODE,
+        ) Header.With(INFO.READ_OUTPUT_CHARACTER) {
+            return .init(.ReadOutputCharacter, .{
+                .dwReadCoord = coord,
+                .Mode = mode,
+                .nLength = undefined,
+            });
+        }
+
+        pub const InputBuffer = extern struct {
+            Size: u32,
+            Pointer: *const anyopaque,
+        };
+
+        pub const OutputBuffer = extern struct {
+            Size: u32,
+            Pointer: *anyopaque,
+        };
+
+        pub fn Request(comptime in_len: u32, comptime out_len: u32) type {
+            return extern struct {
+                Handle: ?HANDLE,
+                InputBuffersLength: u32,
+                OutputBuffersLength: u32,
+                InputBuffers: [in_len]InputBuffer,
+                OutputBuffers: [out_len]OutputBuffer,
+
+                pub fn init(
+                    handle: ?HANDLE,
+                    in: [in_len]InputBuffer,
+                    out: [out_len]OutputBuffer,
+                ) @This() {
+                    return .{
+                        .Handle = handle,
+                        .InputBuffersLength = in_len,
+                        .OutputBuffersLength = out_len,
+                        .InputBuffers = in,
+                        .OutputBuffers = out,
+                    };
+                }
+            };
+        }
+
+        pub const Header = extern struct {
+            Operation: Operation,
+            Size: u32,
+
+            pub fn With(comptime Data: type) type {
+                return extern struct {
+                    Header: Header,
+                    Data: Data,
+
+                    pub fn init(operation: Operation, data: Data) @This() {
+                        return .{
+                            .Header = .{ .Operation = operation, .Size = @sizeOf(Data) },
+                            .Data = data,
+                        };
+                    }
+
+                    pub fn request(
+                        with: *@This(),
+                        file: ?Io.File,
+                        comptime in_len: u32,
+                        in: [in_len]InputBuffer,
+                        comptime out_len: u32,
+                        out: [out_len]OutputBuffer,
+                    ) Request(1 + in_len, 1 + out_len) {
+                        return .init(
+                            if (file) |f| f.handle else null,
+                            [1]InputBuffer{.{
+                                .Size = @offsetOf(@This(), "Data") + @sizeOf(Data),
+                                .Pointer = with,
+                            }} ++ in,
+                            [1]OutputBuffer{.{ .Size = @sizeOf(Data), .Pointer = &with.Data }} ++ out,
+                        );
+                    }
+
+                    pub fn operate(with: *@This(), io: Io, file: ?Io.File) Io.Cancelable!NTSTATUS {
+                        return (try io.operate(.{ .device_io_control = .{
+                            .file = .{
+                                .handle = peb().ProcessParameters.ConsoleHandle,
+                                .flags = .{ .nonblocking = false },
+                            },
+                            .code = IOCTL.CONDRV.ISSUE_USER_IO,
+                            .in = @ptrCast(&with.request(file, 0, .{}, 0, .{})),
+                        } })).device_io_control.u.Status;
+                    }
+                };
+            }
+        };
+
+        pub const Operation = enum(u32) {
+            GetCP = 0x1000000,
+            GetMode = 0x1000001,
+            SetMode = 0x1000002,
+            Read = 0x1000005,
+            Write = 0x1000006,
+            Fill = 0x2000000,
+            SetCP = 0x2000004,
+            GetScreenBufferInfo = 0x2000007,
+            SetCursorPosition = 0x200000a,
+            SetTextAttribute = 0x200000d,
+            ReadOutputCharacter = 0x200000f,
+            _,
+        };
+    };
+};
+
 // ref: km/ntddk.h
 
 pub const PROCESSINFOCLASS = enum(c_int) {
@@ -1160,6 +1389,22 @@ pub const CTL_CODE = packed struct(ULONG) {
 };
 
 pub const IOCTL = struct {
+    pub const CONDRV = struct {
+        pub const READ_IO: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 1, .Method = .OUT_DIRECT, .Access = .ANY };
+        pub const COMPLETE_IO: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 2, .Method = .NEITHER, .Access = .ANY };
+        pub const READ_INPUT: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 3, .Method = .NEITHER, .Access = .ANY };
+        pub const WRITE_OUTPUT: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 4, .Method = .NEITHER, .Access = .ANY };
+        pub const ISSUE_USER_IO: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 5, .Method = .OUT_DIRECT, .Access = .ANY };
+        pub const DISCONNECT_PIPE: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 6, .Method = .NEITHER, .Access = .ANY };
+        pub const SET_SERVER_INFORMATION: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 7, .Method = .NEITHER, .Access = .ANY };
+        pub const GET_SERVER_PID: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 8, .Method = .NEITHER, .Access = .ANY };
+        pub const GET_DISPLAY_SIZE: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 9, .Method = .NEITHER, .Access = .ANY };
+        pub const UPDATE_DISPLAY: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 10, .Method = .NEITHER, .Access = .ANY };
+        pub const SET_CURSOR: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 11, .Method = .NEITHER, .Access = .ANY };
+        pub const ALLOW_VIA_UIACCESS: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 12, .Method = .NEITHER, .Access = .ANY };
+        pub const LAUNCH_SERVER: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 13, .Method = .NEITHER, .Access = .ANY };
+        pub const GET_FONT_SIZE: CTL_CODE = .{ .DeviceType = .CONSOLE, .Function = 14, .Method = .NEITHER, .Access = .ANY };
+    };
     pub const KSEC = struct {
         pub const GEN_RANDOM: CTL_CODE = .{ .DeviceType = .KSEC, .Function = 2, .Method = .BUFFERED, .Access = .ANY };
     };
@@ -2663,29 +2908,6 @@ pub fn NtFreeVirtualMemory(hProcess: HANDLE, addr: ?*PVOID, size: *SIZE_T, free_
     };
 }
 
-pub const SetConsoleTextAttributeError = error{Unexpected};
-
-pub fn SetConsoleTextAttribute(hConsoleOutput: HANDLE, wAttributes: WORD) SetConsoleTextAttributeError!void {
-    if (kernel32.SetConsoleTextAttribute(hConsoleOutput, wAttributes) == 0) {
-        switch (GetLastError()) {
-            else => |err| return unexpectedError(err),
-        }
-    }
-}
-
-pub fn SetConsoleCtrlHandler(handler_routine: ?HANDLER_ROUTINE, add: bool) !void {
-    const success = kernel32.SetConsoleCtrlHandler(
-        handler_routine,
-        if (add) TRUE else FALSE,
-    );
-
-    if (success == FALSE) {
-        return switch (GetLastError()) {
-            else => |err| unexpectedError(err),
-        };
-    }
-}
-
 pub fn SetFileCompletionNotificationModes(handle: HANDLE, flags: UCHAR) !void {
     const success = kernel32.SetFileCompletionNotificationModes(handle, flags);
     if (success == FALSE) {
@@ -3244,6 +3466,7 @@ pub const ULONGLONG = u64;
 pub const LONGLONG = i64;
 pub const HLOCAL = HANDLE;
 pub const LANGID = c_ushort;
+pub const COLORREF = DWORD;
 
 pub const WPARAM = usize;
 pub const LPARAM = LONG_PTR;
@@ -3784,21 +4007,17 @@ pub const FileNotifyChangeFilter = packed struct(DWORD) {
     _pad: u20 = 0,
 };
 
-pub const CONSOLE_SCREEN_BUFFER_INFO = extern struct {
-    dwSize: COORD,
-    dwCursorPosition: COORD,
-    wAttributes: WORD,
-    srWindow: SMALL_RECT,
-    dwMaximumWindowSize: COORD,
-};
-
 pub const ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x4;
 pub const DISABLE_NEWLINE_AUTO_RETURN = 0x8;
 
-pub const FOREGROUND_BLUE = 1;
-pub const FOREGROUND_GREEN = 2;
-pub const FOREGROUND_RED = 4;
-pub const FOREGROUND_INTENSITY = 8;
+pub const FOREGROUND_BLUE = 0x0001;
+pub const FOREGROUND_GREEN = 0x0002;
+pub const FOREGROUND_RED = 0x0004;
+pub const FOREGROUND_INTENSITY = 0x0008;
+pub const BACKGROUND_BLUE = 0x0010;
+pub const BACKGROUND_GREEN = 0x0020;
+pub const BACKGROUND_RED = 0x0040;
+pub const BACKGROUND_INTENSITY = 0x0080;
 
 pub const LIST_ENTRY = extern struct {
     Flink: *LIST_ENTRY,

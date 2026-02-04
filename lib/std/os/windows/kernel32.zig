@@ -4,7 +4,6 @@ const windows = std.os.windows;
 const ACCESS_MASK = windows.ACCESS_MASK;
 const BOOL = windows.BOOL;
 const CONDITION_VARIABLE = windows.CONDITION_VARIABLE;
-const CONSOLE_SCREEN_BUFFER_INFO = windows.CONSOLE_SCREEN_BUFFER_INFO;
 const COORD = windows.COORD;
 const DWORD = windows.DWORD;
 const FARPROC = windows.FARPROC;
@@ -190,89 +189,6 @@ pub extern "kernel32" fn CreateThread(
     dwCreationFlags: DWORD,
     lpThreadId: ?*DWORD,
 ) callconv(.winapi) ?HANDLE;
-
-// Locks, critical sections, initializers
-
-// TODO:
-//  - dwMilliseconds -> LARGE_INTEGER.
-//  - RtlSleepConditionVariableSRW
-//  - return rc != .TIMEOUT
-pub extern "kernel32" fn SleepConditionVariableSRW(
-    ConditionVariable: *CONDITION_VARIABLE,
-    SRWLock: *SRWLOCK,
-    dwMilliseconds: DWORD,
-    Flags: ULONG,
-) callconv(.winapi) BOOL;
-
-// Console management
-
-pub extern "kernel32" fn GetConsoleMode(
-    hConsoleHandle: HANDLE,
-    lpMode: *DWORD,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn SetConsoleMode(
-    hConsoleHandle: HANDLE,
-    dwMode: DWORD,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn GetConsoleScreenBufferInfo(
-    hConsoleOutput: HANDLE,
-    lpConsoleScreenBufferInfo: *CONSOLE_SCREEN_BUFFER_INFO,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn SetConsoleTextAttribute(
-    hConsoleOutput: HANDLE,
-    wAttributes: WORD,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn SetConsoleCtrlHandler(
-    HandlerRoutine: ?HANDLER_ROUTINE,
-    Add: BOOL,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn SetConsoleOutputCP(
-    wCodePageID: UINT,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) UINT;
-
-pub extern "kernel32" fn FillConsoleOutputAttribute(
-    hConsoleOutput: HANDLE,
-    wAttribute: WORD,
-    nLength: DWORD,
-    dwWriteCoord: COORD,
-    lpNumberOfAttrsWritten: *DWORD,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn FillConsoleOutputCharacterW(
-    hConsoleOutput: HANDLE,
-    cCharacter: WCHAR,
-    nLength: DWORD,
-    dwWriteCoord: COORD,
-    lpNumberOfCharsWritten: *DWORD,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn SetConsoleCursorPosition(
-    hConsoleOutput: HANDLE,
-    dwCursorPosition: COORD,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn WriteConsoleW(
-    hConsoleOutput: HANDLE,
-    lpBuffer: [*]const u16,
-    nNumberOfCharsToWrite: DWORD,
-    lpNumberOfCharsWritten: ?*DWORD,
-    lpReserved: ?LPVOID,
-) callconv(.winapi) BOOL;
-
-pub extern "kernel32" fn ReadConsoleOutputCharacterW(
-    hConsoleOutput: HANDLE,
-    lpCharacter: [*]u16,
-    nLength: DWORD,
-    dwReadCoord: COORD,
-    lpNumberOfCharsRead: *DWORD,
-) callconv(.winapi) BOOL;
 
 // Code Libraries/Modules
 
