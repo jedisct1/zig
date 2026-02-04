@@ -17548,8 +17548,8 @@ fn unpark(tids: []const UnparkTid, addr_hint: ?*const anyopaque) void {
             switch (posix.errno(std.c._lwp_unpark_all(@ptrCast(tids.ptr), tids.len, addr_hint))) {
                 .SUCCESS => return,
                 // For errors, fall through to a loop over `tids`, though this is only expected to
-                // be possible for ENOMEM (and even that is questionable).
-                .SRCH => recoverableOsBugDetected(),
+                // be possible for ENOMEM (even that is questionable) and ESRCH (see comment below).
+                .SRCH => {},
                 .FAULT => recoverableOsBugDetected(),
                 .INVAL => recoverableOsBugDetected(),
                 .NOMEM => {},
@@ -17558,7 +17558,11 @@ fn unpark(tids: []const UnparkTid, addr_hint: ?*const anyopaque) void {
             for (tids) |tid| {
                 switch (posix.errno(std.c._lwp_unpark(@bitCast(tid), addr_hint))) {
                     .SUCCESS => {},
-                    .SRCH => recoverableOsBugDetected(),
+                    .SRCH => {
+                        // This can happen in a rare race: the thread might have been spuriously
+                        // unparked, so already observed the changing status, and from there have
+                        // exited. That's okay, because the thread has woken up like we wanted.
+                    },
                     else => recoverableOsBugDetected(),
                 }
             }
