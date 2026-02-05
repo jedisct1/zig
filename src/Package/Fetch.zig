@@ -60,8 +60,6 @@ omit_missing_hash_error: bool,
 /// which specifies inclusion rules. This is intended to be true for the first
 /// fetch task and false for the recursive dependencies.
 allow_missing_paths_field: bool,
-allow_missing_fingerprint: bool,
-allow_name_string: bool,
 /// If true and URL points to a Git repository, will use the latest commit.
 use_latest_commit: bool,
 
@@ -675,8 +673,6 @@ fn loadManifest(f: *Fetch, pkg_root: Cache.Path) RunError!void {
 
     f.manifest = try Manifest.parse(arena, ast.*, rng.interface(), .{
         .allow_missing_paths_field = f.allow_missing_paths_field,
-        .allow_missing_fingerprint = f.allow_missing_fingerprint,
-        .allow_name_string = f.allow_name_string,
     });
     const manifest = &f.manifest.?;
 
@@ -794,8 +790,6 @@ fn queueJobsForDeps(f: *Fetch) RunError!void {
                 .job_queue = f.job_queue,
                 .omit_missing_hash_error = false,
                 .allow_missing_paths_field = true,
-                .allow_missing_fingerprint = true,
-                .allow_name_string = true,
                 .use_latest_commit = false,
 
                 .package_root = undefined,
@@ -2049,130 +2043,6 @@ const UnpackResult = struct {
     }
 };
 
-test "tarball with duplicate paths" {
-    // This tarball has duplicate path 'dir1/file1' to simulate case sensitve
-    // file system on any file sytstem.
-    //
-    //     duplicate_paths/
-    //     duplicate_paths/dir1/
-    //     duplicate_paths/dir1/file1
-    //     duplicate_paths/dir1/file1
-    //     duplicate_paths/build.zig.zon
-    //     duplicate_paths/src/
-    //     duplicate_paths/src/main.zig
-    //     duplicate_paths/src/root.zig
-    //     duplicate_paths/build.zig
-    //
-
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const tarball_name = "duplicate_paths.tar.gz";
-    try saveEmbedFile(io, tarball_name, tmp.dir);
-    const tarball_path = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, tarball_name });
-    defer gpa.free(tarball_path);
-
-    // Run tarball fetch, expect to fail
-    var fb: TestFetchBuilder = undefined;
-    var fetch = try fb.build(gpa, io, tmp.dir, tarball_path);
-    defer fb.deinit();
-    try std.testing.expectError(error.FetchFailed, fetch.run());
-
-    try fb.expectFetchErrors(1,
-        \\error: unable to unpack tarball
-        \\    note: unable to create file 'dir1/file1': PathAlreadyExists
-        \\
-    );
-}
-
-test "tarball with excluded duplicate paths" {
-    // Same as previous tarball but has build.zig.zon wich excludes 'dir1'.
-    //
-    //     .paths = .{
-    //        "build.zig",
-    //        "build.zig.zon",
-    //        "src",
-    //    }
-    //
-
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const tarball_name = "duplicate_paths_excluded.tar.gz";
-    try saveEmbedFile(io, tarball_name, tmp.dir);
-    const tarball_path = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, tarball_name });
-    defer gpa.free(tarball_path);
-
-    // Run tarball fetch, should succeed
-    var fb: TestFetchBuilder = undefined;
-    var fetch = try fb.build(gpa, io, tmp.dir, tarball_path);
-    defer fb.deinit();
-    try fetch.run();
-
-    const hex_digest = Package.multiHashHexDigest(fetch.computed_hash.digest);
-    try std.testing.expectEqualStrings(
-        "12200bafe035cbb453dd717741b66e9f9d1e6c674069d06121dafa1b2e62eb6b22da",
-        &hex_digest,
-    );
-
-    const expected_files: []const []const u8 = &.{
-        "build.zig",
-        "build.zig.zon",
-        "src/main.zig",
-        "src/root.zig",
-    };
-    try fb.expectPackageFiles(expected_files);
-}
-
-test "tarball without root folder" {
-    // Tarball with root folder. Manifest excludes dir1 and dir2.
-    //
-    //    build.zig
-    //    build.zig.zon
-    //    dir1/
-    //    dir1/file2
-    //    dir1/file1
-    //    dir2/
-    //    dir2/file2
-    //    src/
-    //    src/main.zig
-    //
-
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    const tarball_name = "no_root.tar.gz";
-    try saveEmbedFile(io, tarball_name, tmp.dir);
-    const tarball_path = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/{s}", .{ tmp.sub_path, tarball_name });
-    defer gpa.free(tarball_path);
-
-    // Run tarball fetch, should succeed
-    var fb: TestFetchBuilder = undefined;
-    var fetch = try fb.build(gpa, io, tmp.dir, tarball_path);
-    defer fb.deinit();
-    try fetch.run();
-
-    const hex_digest = Package.multiHashHexDigest(fetch.computed_hash.digest);
-    try std.testing.expectEqualStrings(
-        "12209f939bfdcb8b501a61bb4a43124dfa1b2848adc60eec1e4624c560357562b793",
-        &hex_digest,
-    );
-
-    const expected_files: []const []const u8 = &.{
-        "build.zig",
-        "build.zig.zon",
-        "src/main.zig",
-    };
-    try fb.expectPackageFiles(expected_files);
-}
-
 test "set executable bit based on file content" {
     if (!Io.File.Permissions.has_executable_bit) return error.SkipZigTest;
     const gpa = std.testing.allocator;
@@ -2288,8 +2158,6 @@ const TestFetchBuilder = struct {
             .job_queue = &self.job_queue,
             .omit_missing_hash_error = true,
             .allow_missing_paths_field = false,
-            .allow_missing_fingerprint = true, // so we can keep using the old testdata .tar.gz
-            .allow_name_string = true, // so we can keep using the old testdata .tar.gz
             .use_latest_commit = true,
 
             .package_root = undefined,

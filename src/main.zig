@@ -5285,8 +5285,6 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                     .job_queue = &job_queue,
                     .omit_missing_hash_error = true,
                     .allow_missing_paths_field = false,
-                    .allow_missing_fingerprint = false,
-                    .allow_name_string = false,
                     .use_latest_commit = false,
 
                     .package_root = undefined,
@@ -7044,8 +7042,6 @@ fn cmdFetch(
         .job_queue = &job_queue,
         .omit_missing_hash_error = true,
         .allow_missing_paths_field = false,
-        .allow_missing_fingerprint = true,
-        .allow_name_string = true,
         .use_latest_commit = true,
 
         .package_root = undefined,
