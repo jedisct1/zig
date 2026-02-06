@@ -76,8 +76,9 @@ use_latest_commit: bool,
 /// Relative to the build root of the root package.
 package_root: Cache.Path,
 error_bundle: ErrorBundle.Wip,
-manifest: ?Manifest,
+manifest: Manifest,
 manifest_ast: std.zig.Ast,
+have_manifest: bool,
 computed_hash: ComputedHash,
 /// Fetch logic notices whether a package has a build.zig file and sets this flag.
 has_build_zig: bool,
@@ -282,7 +283,8 @@ pub const JobQueue = struct {
                 , .{std.zig.fmtString(hash_slice)});
             }
 
-            if (fetch.manifest) |*manifest| {
+            if (fetch.have_manifest) {
+                const manifest = &fetch.manifest;
                 try buf.appendSlice(
                     \\        pub const deps: []const struct { []const u8, []const u8 } = &.{
                     \\
@@ -317,7 +319,8 @@ pub const JobQueue = struct {
         );
 
         const root_fetch = jq.all_fetches.items[0];
-        const root_manifest = &root_fetch.manifest.?;
+        assert(root_fetch.have_manifest);
+        const root_manifest = &root_fetch.manifest;
 
         for (root_manifest.dependencies.keys(), root_manifest.dependencies.values()) |name, dep| {
             const h = depDigest(root_fetch.package_root, jq.global_cache, dep) orelse continue;
@@ -716,7 +719,7 @@ fn runResource(
         try loadManifest(f, pkg_path);
 
         const filter: Filter = .{
-            .include_paths = if (f.manifest) |m| m.paths else .{},
+            .include_paths = if (f.have_manifest) f.manifest.paths else .{},
         };
 
         // Ignore errors that were excluded by manifest, such as failure to
@@ -809,7 +812,8 @@ fn runResource(
 
 pub fn computedPackageHash(f: *const Fetch) Package.Hash {
     const saturated_size = std.math.cast(u32, f.computed_hash.total_size) orelse std.math.maxInt(u32);
-    if (f.manifest) |man| {
+    if (f.have_manifest) {
+        const man = &f.manifest;
         var version_buffer: [32]u8 = undefined;
         const version: []const u8 = std.fmt.bufPrint(&version_buffer, "{f}", .{man.version}) catch &version_buffer;
         return .init(f.computed_hash.digest, man.name, version, man.id, saturated_size);
@@ -846,15 +850,13 @@ fn loadManifest(f: *Fetch, pkg_root: Cache.Path) RunError!void {
     const arena = f.arena.allocator();
     const manifest_path = try pkg_root.join(arena, Manifest.basename);
 
-    f.manifest = @as(Manifest, undefined);
-
     Manifest.load(
         io,
         arena,
         manifest_path,
         &f.manifest_ast,
         eb,
-        &f.manifest.?,
+        &f.manifest,
         f.allow_missing_paths_field,
     ) catch |err| switch (err) {
         error.FileNotFound => return,
@@ -867,6 +869,7 @@ fn loadManifest(f: *Fetch, pkg_root: Cache.Path) RunError!void {
             return error.FetchFailed;
         },
     };
+    f.have_manifest = true;
 }
 
 fn queueJobsForDeps(f: *Fetch) RunError!void {
@@ -875,7 +878,8 @@ fn queueJobsForDeps(f: *Fetch) RunError!void {
     assert(f.job_queue.recursive);
 
     // If the package does not have a build.zig.zon file then there are no dependencies.
-    const manifest = f.manifest orelse return;
+    if (!f.have_manifest) return;
+    const manifest = &f.manifest;
 
     const new_fetches, const prog_names = nf: {
         const parent_arena = f.arena.allocator();
@@ -980,8 +984,9 @@ fn queueJobsForDeps(f: *Fetch) RunError!void {
 
                 .package_root = undefined,
                 .error_bundle = undefined,
-                .manifest = null,
+                .manifest = undefined,
                 .manifest_ast = undefined,
+                .have_manifest = false,
                 .computed_hash = undefined,
                 .has_build_zig = false,
                 .oom_flag = false,
@@ -1958,7 +1963,7 @@ const Filter = struct {
     include_paths: std.StringArrayHashMapUnmanaged(void) = .empty,
 
     /// sub_path is relative to the package root.
-    pub fn includePath(self: Filter, sub_path: []const u8) bool {
+    pub fn includePath(self: *const Filter, sub_path: []const u8) bool {
         if (self.include_paths.count() == 0) return true;
         if (self.include_paths.contains("")) return true;
         if (self.include_paths.contains(".")) return true;
@@ -2349,8 +2354,9 @@ const TestFetchBuilder = struct {
 
             .package_root = undefined,
             .error_bundle = undefined,
-            .manifest = null,
+            .manifest = undefined,
             .manifest_ast = undefined,
+            .have_manifest = false,
             .computed_hash = undefined,
             .has_build_zig = false,
             .oom_flag = false,

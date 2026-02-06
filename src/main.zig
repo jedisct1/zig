@@ -5323,8 +5323,9 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
 
                     .package_root = undefined,
                     .error_bundle = undefined,
-                    .manifest = null,
+                    .manifest = undefined,
                     .manifest_ast = undefined,
+                    .have_manifest = false,
                     .computed_hash = undefined,
                     .has_build_zig = true,
                     .oom_flag = false,
@@ -5402,7 +5403,8 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                     // dependencies' build.zig modules by name.
                     for (fetches) |f| {
                         const mod = f.module orelse continue;
-                        const man = f.manifest orelse continue;
+                        if (!f.have_manifest) continue;
+                        const man = &f.manifest;
                         const dep_names = man.dependencies.keys();
                         try mod.deps.ensureUnusedCapacity(arena, @intCast(dep_names.len));
                         for (dep_names, man.dependencies.values()) |name, dep| {
@@ -7134,8 +7136,9 @@ fn cmdFetch(
 
         .package_root = undefined,
         .error_bundle = undefined,
-        .manifest = null,
+        .manifest = undefined,
         .manifest_ast = undefined,
+        .have_manifest = false,
         .computed_hash = undefined,
         .has_build_zig = false,
         .oom_flag = false,
@@ -7171,9 +7174,9 @@ fn cmdFetch(
         },
         .yes, .exact => |name| name: {
             if (name) |n| break :name n;
-            const fetched_manifest = fetch.manifest orelse
+            if (!fetch.have_manifest)
                 fatal("unable to determine name; fetched package has no build.zig.zon file", .{});
-            break :name fetched_manifest.name;
+            break :name fetch.manifest.name;
         },
     };
 

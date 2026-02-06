@@ -645,7 +645,7 @@ test "basic" {
 
     var rng = std.Random.DefaultPrng.init(0);
 
-    var manifest = try Manifest.parse(gpa, ast, rng.random(), .{});
+    var manifest = try Manifest.parse(gpa, &ast, rng.random(), .{});
     defer manifest.deinit(gpa);
 
     try testing.expect(manifest.errors.len == 0);
@@ -691,7 +691,7 @@ test "minimum_zig_version" {
 
     var rng = std.Random.DefaultPrng.init(0);
 
-    var manifest = try Manifest.parse(gpa, ast, rng.random(), .{});
+    var manifest = try Manifest.parse(gpa, &ast, rng.random(), .{});
     defer manifest.deinit(gpa);
 
     try testing.expect(manifest.errors.len == 0);
@@ -726,7 +726,7 @@ test "minimum_zig_version - invalid version" {
 
     var rng = std.Random.DefaultPrng.init(0);
 
-    var manifest = try Manifest.parse(gpa, ast, rng.random(), .{});
+    var manifest = try Manifest.parse(gpa, &ast, rng.random(), .{});
     defer manifest.deinit(gpa);
 
     try testing.expect(manifest.errors.len == 1);
