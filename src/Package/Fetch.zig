@@ -40,6 +40,7 @@ const native_os = builtin.os.tag;
 const std = @import("std");
 const Io = std.Io;
 const fs = std.fs;
+const log = std.log.scoped(.fetch);
 const assert = std.debug.assert;
 const ascii = std.ascii;
 const Allocator = std.mem.Allocator;
@@ -324,7 +325,7 @@ pub const JobQueue = struct {
             error.Canceled => |e| return e,
             error.ReadFailed => comptime unreachable,
             error.WriteFailed => comptime unreachable,
-            else => |e| std.log.warn("failed caching recompressed tarball to {f}: {t}", .{ dest_path, e }),
+            else => |e| log.warn("failed caching recompressed tarball to {f}: {t}", .{ dest_path, e }),
         };
     }
 
@@ -508,14 +509,14 @@ pub fn run(f: *Fetch) RunError!void {
         .path_or_url => |path_or_url| {
             if (Io.Dir.cwd().openDir(io, path_or_url, .{ .iterate = true })) |dir| {
                 var resource: Resource = .{ .dir = dir };
-                return f.runResource(path_or_url, &resource, null);
+                return f.runResource(path_or_url, &resource, null, false);
             } else |dir_err| {
                 var server_header_buffer: [init_resource_buffer_size]u8 = undefined;
 
                 const file_err = if (dir_err == error.NotDir) e: {
                     if (Io.Dir.cwd().openFile(io, path_or_url, .{})) |file| {
                         var resource: Resource = .{ .file = file.reader(io, &server_header_buffer) };
-                        return f.runResource(path_or_url, &resource, null);
+                        return f.runResource(path_or_url, &resource, null, false);
                     } else |err| break :e err;
                 } else dir_err;
 
@@ -527,10 +528,12 @@ pub fn run(f: *Fetch) RunError!void {
                 };
                 var resource: Resource = undefined;
                 try f.initResource(uri, &resource, &server_header_buffer);
-                return f.runResource(try uri.path.toRawMaybeAlloc(arena), &resource, null);
+                return f.runResource(try uri.path.toRawMaybeAlloc(arena), &resource, null, false);
             }
         },
     };
+
+    var resource_buffer: [init_resource_buffer_size]u8 = undefined;
 
     if (remote.hash) |expected_hash| {
         const package_root = try job_queue.root_pkg_path.join(arena, expected_hash.toSlice());
@@ -543,19 +546,13 @@ pub fn run(f: *Fetch) RunError!void {
             return queueJobsForDeps(f);
         } else |err| switch (err) {
             error.FileNotFound => {
-                switch (f.lazy_status) {
-                    .eager => {},
-                    .available => if (!job_queue.unlazy_set.contains(expected_hash)) {
-                        f.lazy_status = .unavailable;
-                        return;
-                    },
-                    .unavailable => unreachable,
-                }
+                log.debug("FileNotFound: {f}", .{package_root});
                 if (job_queue.read_only) return f.fail(
                     f.name_tok,
                     try eb.printString("package not found at '{f}'", .{package_root}),
                 );
             },
+            error.Canceled => |e| return e,
             else => |e| {
                 try eb.addRootErrorMessage(.{
                     .msg = try eb.printString("unable to open package cache directory {f}: {t}", .{
@@ -564,6 +561,38 @@ pub fn run(f: *Fetch) RunError!void {
                 });
                 return error.FetchFailed;
             },
+        }
+
+        // Check global cache before remote fetch.
+        const cached_tarball_sub_path = try std.fmt.allocPrint(arena, "p/{s}.tar.gz", .{expected_hash.toSlice()});
+        const cached_tarball_path: Cache.Path = .{
+            .root_dir = job_queue.global_cache,
+            .sub_path = cached_tarball_sub_path,
+        };
+        if (cached_tarball_path.root_dir.handle.openFile(io, cached_tarball_path.sub_path, .{})) |file| {
+            log.debug("found global cached tarball {f}", .{cached_tarball_path});
+            var resource: Resource = .{ .file = file.reader(io, &resource_buffer) };
+            return f.runResource(cached_tarball_sub_path, &resource, remote.hash, true);
+        } else |err| switch (err) {
+            error.FileNotFound => log.debug("FileNotFound: {f}", .{cached_tarball_path}),
+            error.Canceled => |e| return e,
+            else => |e| {
+                try eb.addRootErrorMessage(.{
+                    .msg = try eb.printString("unable to open globally cached package {f}: {t}", .{
+                        cached_tarball_path, e,
+                    }),
+                });
+                return error.FetchFailed;
+            },
+        }
+
+        switch (f.lazy_status) {
+            .eager => {},
+            .available => if (!job_queue.unlazy_set.contains(expected_hash)) {
+                f.lazy_status = .unavailable;
+                return;
+            },
+            .unavailable => unreachable,
         }
     } else if (job_queue.read_only) {
         try eb.addRootErrorMessage(.{
@@ -574,15 +603,13 @@ pub fn run(f: *Fetch) RunError!void {
     }
 
     // Fetch and unpack the remote into a temporary directory.
-
     const uri = std.Uri.parse(remote.url) catch |err| return f.fail(
         f.location_tok,
         try eb.printString("invalid URI: {t}", .{err}),
     );
-    var buffer: [init_resource_buffer_size]u8 = undefined;
     var resource: Resource = undefined;
-    try f.initResource(uri, &resource, &buffer);
-    return f.runResource(try uri.path.toRawMaybeAlloc(arena), &resource, remote.hash);
+    try f.initResource(uri, &resource, &resource_buffer);
+    return f.runResource(try uri.path.toRawMaybeAlloc(arena), &resource, remote.hash, false);
 }
 
 pub fn deinit(f: *Fetch) void {
@@ -596,6 +623,7 @@ fn runResource(
     uri_path: []const u8,
     resource: *Resource,
     remote_hash: ?Package.Hash,
+    disable_recompress: bool,
 ) RunError!void {
     const job_queue = f.job_queue;
     assert(!job_queue.read_only);
@@ -681,15 +709,17 @@ fn runResource(
         return error.FetchFailed;
     };
 
-    // Spin off a task to recompress the tarball, with filtered files deleted, into
-    // the global cache.
-    job_queue.group.async(io, JobQueue.recompress, .{ job_queue, computed_package_hash });
+    if (!disable_recompress) {
+        // Spin off a task to recompress the tarball, with filtered files deleted, into
+        // the global cache.
+        job_queue.group.async(io, JobQueue.recompress, .{ job_queue, computed_package_hash });
+    }
 
     // Remove temporary directory root if not already renamed to global cache.
     if (!package_sub_path.eql(tmp_directory_path)) {
         tmp_directory_path.root_dir.handle.deleteDir(io, tmp_directory_path.sub_path) catch |err| switch (err) {
             error.Canceled => |e| return e,
-            else => |e| std.log.warn("failed to delete temporary directory {f}: {t}", .{ tmp_directory_path, e }),
+            else => |e| log.warn("failed to delete temporary directory {f}: {t}", .{ tmp_directory_path, e }),
         };
     }
 
@@ -1588,7 +1618,7 @@ pub fn renameTmpIntoCache(io: Io, tmp_path: Cache.Path, dest_path: Cache.Path) !
                     error.Canceled => |e| return e,
                     // Garbage files leftover in zig-cache/tmp/ is, as they say
                     // on Star Trek, "operating within normal parameters".
-                    else => |e| std.log.warn("failed to delete temporary directory {f}: {t}", .{ tmp_path, e }),
+                    else => |e| log.warn("failed to delete temporary directory {f}: {t}", .{ tmp_path, e }),
                 };
             },
             else => |e| return e,
