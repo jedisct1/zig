@@ -6,10 +6,6 @@ pub const Fetch = @import("Package/Fetch.zig");
 pub const build_zig_basename = "build.zig";
 pub const Manifest = @import("Package/Manifest.zig");
 
-pub const multihash_len = 1 + 1 + Hash.Algo.digest_length;
-pub const multihash_hex_digest_len = 2 * multihash_len;
-pub const MultiHashHexDigest = [multihash_hex_digest_len]u8;
-
 pub const Fingerprint = packed struct(u64) {
     id: u32,
     checksum: u32,
@@ -75,20 +71,6 @@ pub const Hash = struct {
 
     pub fn eql(a: *const Hash, b: *const Hash) bool {
         return std.mem.eql(u8, &a.bytes, &b.bytes);
-    }
-
-    /// Distinguishes whether the legacy multihash format is being stored here.
-    pub fn isOld(h: *const Hash) bool {
-        if (h.bytes.len < 2) return false;
-        const their_multihash_func = std.fmt.parseInt(u8, h.bytes[0..2], 16) catch return false;
-        if (@as(MultihashFunction, @enumFromInt(their_multihash_func)) != multihash_function) return false;
-        if (h.toSlice().len != multihash_hex_digest_len) return false;
-        return std.mem.indexOfScalar(u8, &h.bytes, '-') == null;
-    }
-
-    test isOld {
-        const h: Hash = .fromSlice("1220138f4aba0c01e66b68ed9e1e1e74614c06e4743d88bc58af4f1c3dd0aae5fea7");
-        try std.testing.expect(h.isOld());
     }
 
     /// Produces "$name-$semver-$hashplus".
@@ -196,54 +178,6 @@ pub const ProjectId = struct {
         return std.hash.int(x | a.fingerprint_id);
     }
 };
-
-pub const MultihashFunction = enum(u16) {
-    identity = 0x00,
-    sha1 = 0x11,
-    @"sha2-256" = 0x12,
-    @"sha2-512" = 0x13,
-    @"sha3-512" = 0x14,
-    @"sha3-384" = 0x15,
-    @"sha3-256" = 0x16,
-    @"sha3-224" = 0x17,
-    @"sha2-384" = 0x20,
-    @"sha2-256-trunc254-padded" = 0x1012,
-    @"sha2-224" = 0x1013,
-    @"sha2-512-224" = 0x1014,
-    @"sha2-512-256" = 0x1015,
-    @"blake2b-256" = 0xb220,
-    _,
-};
-
-pub const multihash_function: MultihashFunction = switch (Hash.Algo) {
-    std.crypto.hash.sha2.Sha256 => .@"sha2-256",
-    else => unreachable,
-};
-
-pub fn multiHashHexDigest(digest: Hash.Digest) MultiHashHexDigest {
-    const hex_charset = std.fmt.hex_charset;
-
-    var result: MultiHashHexDigest = undefined;
-
-    result[0] = hex_charset[@intFromEnum(multihash_function) >> 4];
-    result[1] = hex_charset[@intFromEnum(multihash_function) & 15];
-
-    result[2] = hex_charset[Hash.Algo.digest_length >> 4];
-    result[3] = hex_charset[Hash.Algo.digest_length & 15];
-
-    for (digest, 0..) |byte, i| {
-        result[4 + i * 2] = hex_charset[byte >> 4];
-        result[5 + i * 2] = hex_charset[byte & 15];
-    }
-    return result;
-}
-
-comptime {
-    // We avoid unnecessary uleb128 code in hexDigest by asserting here the
-    // values are small enough to be contained in the one-byte encoding.
-    assert(@intFromEnum(multihash_function) < 127);
-    assert(Hash.Algo.digest_length < 127);
-}
 
 test Hash {
     const example_digest: Hash.Digest = .{
