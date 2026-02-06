@@ -114,6 +114,7 @@ pub const JobQueue = struct {
     /// field contains references to all of them.
     /// Protected by `mutex`.
     all_fetches: std.ArrayList(*Fetch) = .empty,
+    prog_node: std.Progress.Node,
 
     http_client: *std.http.Client,
     /// This tracks `Fetch` tasks as well as recompression tasks.
@@ -302,12 +303,15 @@ pub const JobQueue = struct {
     }
 
     fn recompress(jq: *JobQueue, package_hash: Package.Hash) Io.Cancelable!void {
-        var dest_sub_path_buffer: ["p/".len + Package.Hash.max_len + ".tar.gz".len]u8 = undefined;
+        const pkg_hash_slice = package_hash.toSlice();
+
+        const prog_node = jq.prog_node.startFmt(0, "recompress {s}", .{pkg_hash_slice});
+        defer prog_node.end();
+
+        var dest_sub_path_buf: ["p/".len + Package.Hash.max_len + ".tar.gz".len]u8 = undefined;
         const dest_path: Cache.Path = .{
             .root_dir = jq.global_cache,
-            .sub_path = std.fmt.bufPrint(&dest_sub_path_buffer, "p/{s}.tar.gz", .{
-                package_hash.toSlice(),
-            }) catch unreachable,
+            .sub_path = std.fmt.bufPrint(&dest_sub_path_buf, "p/{s}.tar.gz", .{pkg_hash_slice}) catch unreachable,
         };
 
         const gpa = jq.http_client.allocator;
@@ -316,7 +320,7 @@ pub const JobQueue = struct {
         defer arena_instance.deinit();
         const arena = arena_instance.allocator();
 
-        recompressFallible(jq, arena, dest_path, package_hash.toSlice()) catch |err| switch (err) {
+        recompressFallible(jq, arena, dest_path, pkg_hash_slice, prog_node) catch |err| switch (err) {
             error.Canceled => |e| return e,
             error.ReadFailed => comptime unreachable,
             error.WriteFailed => comptime unreachable,
@@ -324,7 +328,13 @@ pub const JobQueue = struct {
         };
     }
 
-    fn recompressFallible(jq: *JobQueue, arena: Allocator, dest_path: Cache.Path, package_hash: []const u8) !void {
+    fn recompressFallible(
+        jq: *JobQueue,
+        arena: Allocator,
+        dest_path: Cache.Path,
+        pkg_hash_slice: []const u8,
+        prog_node: std.Progress.Node,
+    ) !void {
         const gpa = jq.http_client.allocator;
         const io = jq.io;
 
@@ -337,7 +347,7 @@ pub const JobQueue = struct {
         var scanned_files: std.ArrayList([]const u8) = .empty;
         defer scanned_files.deinit(gpa);
 
-        var pkg_dir = try jq.root_pkg_path.openDir(io, package_hash, .{ .iterate = true });
+        var pkg_dir = try jq.root_pkg_path.openDir(io, pkg_hash_slice, .{ .iterate = true });
         defer pkg_dir.close(io);
 
         {
@@ -359,6 +369,8 @@ pub const JobQueue = struct {
             std.mem.sortUnstable([]const u8, scanned_files.items, {}, stringCmp);
         }
 
+        prog_node.setEstimatedTotalItems(scanned_files.items.len);
+
         var atomic_file = try dest_path.root_dir.handle.createFileAtomic(io, dest_path.sub_path, .{
             .make_path = true,
             .replace = true,
@@ -374,7 +386,7 @@ pub const JobQueue = struct {
         };
 
         var archiver: std.tar.Writer = .{ .underlying_writer = &compress.writer };
-        archiver.prefix = package_hash;
+        archiver.prefix = pkg_hash_slice;
 
         var file_read_buffer: [4096]u8 = undefined;
 
@@ -387,6 +399,7 @@ pub const JobQueue = struct {
                 error.WriteFailed => return file_writer.err.?,
                 else => |e| return e,
             };
+            prog_node.completeOne();
         }
 
         // intentionally omitting the pointless trailer
@@ -2259,6 +2272,7 @@ const TestFetchBuilder = struct {
             .read_only = false,
             .debug_hash = false,
             .mode = .needed,
+            .prog_node = std.Progress.Node.none,
         };
 
         self.fetch = .{

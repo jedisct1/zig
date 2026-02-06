@@ -5246,6 +5246,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                     .debug_hash = false,
                     .unlazy_set = unlazy_set,
                     .mode = fetch_mode,
+                    .prog_node = fetch_prog_node,
                 };
                 defer job_queue.deinit();
 
@@ -7026,6 +7027,7 @@ fn cmdFetch(
         .read_only = false,
         .debug_hash = debug_hash,
         .mode = .all,
+        .prog_node = root_prog_node,
     };
     defer job_queue.deinit();
 
