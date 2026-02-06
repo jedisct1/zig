@@ -35,7 +35,7 @@ Set-Location -Path 'build-debug'
 
 # CMake gives a syntax error when file paths with backward slashes are used.
 # Here, we use forward slashes only to work around this.
-& cmake .. `
+cmake .. `
   -GNinja `
   -DCMAKE_INSTALL_PREFIX="stage3-debug" `
   -DCMAKE_PREFIX_PATH="$($PREFIX_PATH -Replace "\\", "/")" `
@@ -54,7 +54,7 @@ ninja install
 CheckLastExitCode
 
 Write-Output "Main test suite..."
-& "stage3-debug\bin\zig.exe" build test docs `
+stage3-debug\bin\zig build test docs `
   --maxrss $ZSF_MAX_RSS `
   --zig-lib-dir "$ZIG_LIB_DIR" `
   --search-prefix "$PREFIX_PATH" `
@@ -66,26 +66,25 @@ Write-Output "Main test suite..."
 CheckLastExitCode
 
 Write-Output "Build x86_64-windows-msvc behavior tests using the C backend..."
-& "stage3-debug\bin\zig.exe" test `
-  ..\test\behavior.zig `
-  --zig-lib-dir "$ZIG_LIB_DIR" `
-  -ofmt=c `
-  -femit-bin="test-x86_64-windows-msvc.c" `
-  --test-no-exec `
-  -target x86_64-windows-msvc `
-  -lc
-CheckLastExitCode
-
-& "stage3-debug\bin\zig.exe" build-obj `
+stage3-debug\bin\zig build-obj `
   --zig-lib-dir "$ZIG_LIB_DIR" `
   -ofmt=c `
   -OReleaseSmall `
   --name compiler_rt `
   -femit-bin="compiler_rt-x86_64-windows-msvc.c" `
-  --dep build_options `
   -target x86_64-windows-msvc `
-  -Mroot="..\lib\compiler_rt.zig" `
-  -Mbuild_options="config.zig"
+  -lc `
+  ..\lib\compiler_rt.zig
+CheckLastExitCode
+
+stage3-debug\bin\zig test `
+  --zig-lib-dir "$ZIG_LIB_DIR" `
+  -ofmt=c `
+  -femit-bin="behavior-x86_64-windows-msvc.c" `
+  --test-no-exec `
+  -target x86_64-windows-msvc `
+  -lc `
+  ..\test\behavior.zig
 CheckLastExitCode
 
 Import-Module "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
@@ -97,8 +96,8 @@ Enter-VsDevShell -VsInstallPath "C:\Program Files (x86)\Microsoft Visual Studio\
 CheckLastExitCode
 
 Write-Output "Build and run behavior tests with msvc..."
-& cl.exe -I..\lib test-x86_64-windows-msvc.c compiler_rt-x86_64-windows-msvc.c /W3 /Z7 -link -nologo -debug -subsystem:console kernel32.lib ntdll.lib libcmt.lib ws2_32.lib
+cl /I..\lib /W3 /Z7 behavior-x86_64-windows-msvc.c compiler_rt-x86_64-windows-msvc.c /link /nologo /debug /subsystem:console kernel32.lib ntdll.lib libcmt.lib ws2_32.lib
 CheckLastExitCode
 
-& .\test-x86_64-windows-msvc.exe
+.\behavior-x86_64-windows-msvc
 CheckLastExitCode
