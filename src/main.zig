@@ -5213,6 +5213,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                 .path = fork.path,
                 .manifest_ast = fork.manifest_ast,
                 .manifest = fork.manifest,
+                .uses = 0,
             }, {});
         }
     }
@@ -5279,6 +5280,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                     .recursive = true,
                     .debug_hash = false,
                     .unlazy_set = unlazy_set,
+                    .fork_set = fork_set,
                     .mode = fetch_mode,
                     .prog_node = fetch_prog_node,
                 };
@@ -5343,6 +5345,26 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
 
                 job_queue.group.async(io, Package.Fetch.workerRun, .{ &fetch, "root" });
                 try job_queue.group.await(io);
+
+                {
+                    // Ensure that forks were actually used. This is done
+                    // before printing manifest errors because using a fork can
+                    // prevent them.
+                    var any_unused = false;
+                    for (fork_set.keys()) |*fork| {
+                        if (fork.uses == 0) {
+                            std.log.err("fork {f} matched no {s} packages", .{
+                                fork.path, fork.manifest.name,
+                            });
+                            any_unused = true;
+                        } else {
+                            std.log.info("fork {f} matched {d} {s} packages", .{
+                                fork.path, fork.uses, fork.manifest.name,
+                            });
+                        }
+                    }
+                    if (any_unused) process.exit(1);
+                }
 
                 try job_queue.consolidateErrors();
 

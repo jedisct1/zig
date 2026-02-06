@@ -162,6 +162,7 @@ pub const JobQueue = struct {
         path: Cache.Path,
         manifest_ast: std.zig.Ast,
         manifest: Package.Manifest,
+        uses: usize,
 
         pub const Context = struct {
             pub fn hash(_: @This(), a: Fork) u32 {
@@ -575,6 +576,8 @@ pub fn run(f: *Fetch) RunError!void {
     if (remote.hash) |expected_hash| {
         const expected_project_id: Package.ProjectId = expected_hash.projectId();
         if (job_queue.fork_set.getKeyPtrAdapted(expected_project_id, @as(JobQueue.Fork.Adapter, .{}))) |fork| {
+            log.debug("using fork {f} for {s}", .{ fork.path, fork.manifest.name });
+            fork.uses += 1;
             f.package_root = fork.path;
             f.manifest_ast = fork.manifest_ast;
             f.manifest = fork.manifest;
