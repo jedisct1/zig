@@ -139,11 +139,12 @@ pub const Hash = struct {
     }
 
     pub fn projectId(hash: *const Hash) ProjectId {
-        const name = std.mem.sliceTo(&hash.bytes, '-');
-        const hashplus = hash.bytes[std.mem.findScalarLast(u8, &hash.bytes, '-').? + 1 ..];
-        var decoded: [6]u8 = undefined;
-        std.base64.url_safe_no_pad.Decoder.decode(&decoded, hashplus[0..8]) catch unreachable;
-        const fingerprint_id = std.mem.readInt(u32, decoded[0..4], .little);
+        const bytes = hash.toSlice();
+        const name = std.mem.sliceTo(bytes, '-');
+        const encoded_hashplus = bytes[bytes.len - 44 ..];
+        var hashplus: [33]u8 = undefined;
+        std.base64.url_safe_no_pad.Decoder.decode(&hashplus, encoded_hashplus) catch unreachable;
+        const fingerprint_id = std.mem.readInt(u32, hashplus[0..4], .little);
         return .init(name, fingerprint_id);
     }
 
@@ -156,6 +157,17 @@ pub const Hash = struct {
         try std.testing.expectEqualSlices(u8, &expected_name, &project_id.padded_name);
 
         try std.testing.expectEqual(0xd8fa4f9a, project_id.fingerprint_id);
+    }
+
+    test "projectId with dashes in the base64" {
+        const hash: Hash = .fromSlice("dvui-0.4.0-dev-AQFJmayi2gAKE7FeJoF61v5U1IV9-SupoEcFutIZYpkC");
+        const project_id = hash.projectId();
+
+        var expected_name: [32]u8 = @splat(0);
+        expected_name[0.."dvui".len].* = "dvui".*;
+        try std.testing.expectEqualSlices(u8, &expected_name, &project_id.padded_name);
+
+        try std.testing.expectEqual(0x99490101, project_id.fingerprint_id);
     }
 };
 
