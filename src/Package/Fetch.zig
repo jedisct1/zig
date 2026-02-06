@@ -581,6 +581,8 @@ pub fn run(f: *Fetch) RunError!void {
             f.package_root = fork.path;
             f.manifest_ast = fork.manifest_ast;
             f.manifest = fork.manifest;
+            f.have_manifest = true;
+            try checkBuildFileExistence(f);
             if (!job_queue.recursive) return;
             return queueJobsForDeps(f);
         }
