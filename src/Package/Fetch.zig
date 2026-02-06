@@ -142,6 +142,8 @@ pub const JobQueue = struct {
     /// Set of hashes that will be additionally fetched even if they are marked
     /// as lazy.
     unlazy_set: UnlazySet = .{},
+    /// Identifies paths that override all packages in the tree matching
+    fork_set: ForkSet = .{},
 
     pub const Mode = enum {
         /// Non-lazy dependencies are always fetched.
@@ -152,6 +154,7 @@ pub const JobQueue = struct {
     };
     pub const Table = std.AutoArrayHashMapUnmanaged(Package.Hash, *Fetch);
     pub const UnlazySet = std.AutoArrayHashMapUnmanaged(Package.Hash, void);
+    pub const ForkSet = std.AutoArrayHashMapUnmanaged(Package.ProjectId, Cache.Path);
 
     pub fn deinit(jq: *JobQueue) void {
         const io = jq.io;
@@ -801,45 +804,29 @@ fn loadManifest(f: *Fetch, pkg_root: Cache.Path) RunError!void {
     const io = f.job_queue.io;
     const eb = &f.error_bundle;
     const arena = f.arena.allocator();
-    const manifest_bytes = pkg_root.root_dir.handle.readFileAllocOptions(
+    const manifest_path = try pkg_root.join(arena, Manifest.basename);
+
+    f.manifest = @as(Manifest, undefined);
+
+    Manifest.load(
         io,
-        try fs.path.join(arena, &.{ pkg_root.sub_path, Manifest.basename }),
         arena,
-        .limited(Manifest.max_bytes),
-        .@"1",
-        0,
+        manifest_path,
+        &f.manifest_ast,
+        eb,
+        &f.manifest.?,
+        f.allow_missing_paths_field,
     ) catch |err| switch (err) {
         error.FileNotFound => return,
+        error.Canceled => |e| return e,
+        error.ErrorsBundled => return error.FetchFailed,
         else => |e| {
-            const file_path = try pkg_root.join(arena, Manifest.basename);
             try eb.addRootErrorMessage(.{
-                .msg = try eb.printString("unable to load package manifest '{f}': {t}", .{ file_path, e }),
+                .msg = try eb.printString("unable to load package manifest '{f}': {t}", .{ manifest_path, e }),
             });
             return error.FetchFailed;
         },
     };
-
-    const ast = &f.manifest_ast;
-    ast.* = try std.zig.Ast.parse(arena, manifest_bytes, .zon);
-
-    if (ast.errors.len > 0) {
-        const file_path = try std.fmt.allocPrint(arena, "{f}" ++ fs.path.sep_str ++ Manifest.basename, .{pkg_root});
-        try std.zig.putAstErrorsIntoBundle(arena, ast.*, file_path, eb);
-        return error.FetchFailed;
-    }
-
-    const rng: std.Random.IoSource = .{ .io = io };
-
-    f.manifest = try Manifest.parse(arena, ast.*, rng.interface(), .{
-        .allow_missing_paths_field = f.allow_missing_paths_field,
-    });
-    const manifest = &f.manifest.?;
-
-    if (manifest.errors.len > 0) {
-        const src_path = try eb.printString("{f}" ++ fs.path.sep_str ++ "{s}", .{ pkg_root, Manifest.basename });
-        try manifest.copyErrorsIntoBundle(ast.*, src_path, eb);
-        return error.FetchFailed;
-    }
 }
 
 fn queueJobsForDeps(f: *Fetch) RunError!void {

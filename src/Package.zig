@@ -137,6 +137,43 @@ pub const Hash = struct {
         _ = std.fmt.bufPrint(result.bytes[i..], "{x}", .{&bin_digest}) catch unreachable;
         return result;
     }
+
+    pub fn projectId(hash: *const Hash) ProjectId {
+        const name = std.mem.sliceTo(&hash.bytes, '-');
+        const hashplus = hash.bytes[std.mem.findScalarLast(u8, &hash.bytes, '-').? + 1 ..];
+        var decoded: [6]u8 = undefined;
+        std.base64.url_safe_no_pad.Decoder.decode(&decoded, hashplus[0..8]) catch unreachable;
+        const fingerprint_id = std.mem.readInt(u32, decoded[0..4], .little);
+        return .init(name, fingerprint_id);
+    }
+
+    test projectId {
+        const hash: Hash = .fromSlice("pulseaudio-16.1.1-9-mk_62MZkNwBaFwiZ7ZVrYRIf_3dTqqJR5PbMRCJzSuLw");
+        const project_id = hash.projectId();
+
+        var expected_name: [32]u8 = @splat(0);
+        expected_name[0.."pulseaudio".len].* = "pulseaudio".*;
+        try std.testing.expectEqualSlices(u8, &expected_name, &project_id.padded_name);
+
+        try std.testing.expectEqual(0xd8fa4f9a, project_id.fingerprint_id);
+    }
+};
+
+/// Minimum information required to identify whether a package is an artifact
+/// of a given project.
+pub const ProjectId = struct {
+    /// Bytes after name.len are set to zero.
+    padded_name: [32]u8,
+    fingerprint_id: u32,
+
+    pub fn init(name: []const u8, fingerprint_id: u32) ProjectId {
+        var padded_name: [32]u8 = @splat(0);
+        @memcpy(padded_name[0..name.len], name);
+        return .{
+            .padded_name = padded_name,
+            .fingerprint_id = fingerprint_id,
+        };
+    }
 };
 
 pub const MultihashFunction = enum(u16) {
