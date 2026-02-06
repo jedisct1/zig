@@ -5006,6 +5006,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                         .manifest_ast = undefined,
                         .manifest = undefined,
                         .error_bundle = undefined,
+                        .arena_allocator = undefined,
                         .path = .{
                             .root_dir = .cwd(),
                             .sub_path = sub_arg,
@@ -5203,7 +5204,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
         defer group.cancel(io);
 
         for (forks.items) |*fork|
-            group.async(io, loadFork, .{ io, gpa, fork, color });
+            group.async(io, Fork.load, .{ io, gpa, fork, color });
 
         try group.await(io);
 
@@ -5217,6 +5218,7 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
             }, {});
         }
     }
+    defer Fork.deinitList(forks.items);
 
     // This loop is re-evaluated when the build script exits with an indication that it
     // could not continue due to missing lazy dependencies.
@@ -5269,6 +5271,9 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
             if (dev.env.supports(.fetch_command)) {
                 const fetch_prog_node = root_prog_node.start("Fetch Packages", 0);
                 defer fetch_prog_node.end();
+
+                // Reset fork match counts.
+                for (fork_set.keys()) |*fork| fork.uses = 0;
 
                 var job_queue: Package.Fetch.JobQueue = .{
                     .io = io,
@@ -5582,52 +5587,56 @@ const Fork = struct {
     manifest: Package.Manifest,
     error_bundle: std.zig.ErrorBundle.Wip,
     failed: bool,
+    arena_allocator: std.heap.ArenaAllocator,
+
+    fn load(io: Io, gpa: Allocator, fork: *Fork, color: Color) Io.Cancelable!void {
+        loadFallible(io, gpa, fork, color) catch |err| switch (err) {
+            error.Canceled => |e| return e,
+            error.AlreadyReported => fork.failed = true,
+            else => |e| {
+                std.log.err("failed to load fork at {f}: {t}", .{ fork.path, e });
+                fork.failed = true;
+            },
+        };
+    }
+
+    fn loadFallible(io: Io, gpa: Allocator, fork: *Fork, color: Color) !void {
+        fork.arena_allocator = .init(gpa);
+        const arena = fork.arena_allocator.allocator();
+
+        var error_bundle: std.zig.ErrorBundle.Wip = undefined;
+        try error_bundle.init(gpa);
+        defer error_bundle.deinit();
+
+        const manifest_path = try fork.path.join(arena, Package.Manifest.basename);
+
+        Package.Manifest.load(
+            io,
+            arena,
+            manifest_path,
+            &fork.manifest_ast,
+            &error_bundle,
+            &fork.manifest,
+            true,
+        ) catch |err| switch (err) {
+            error.Canceled => |e| return e,
+            error.ErrorsBundled => {
+                assert(error_bundle.root_list.items.len > 0);
+                var errors = try error_bundle.toOwnedBundle("");
+                errors.renderToStderr(io, .{}, color) catch {};
+                return error.AlreadyReported;
+            },
+            else => |e| {
+                std.log.err("failed to load package manifest {f}: {t}", .{ manifest_path, e });
+                return error.AlreadyReported;
+            },
+        };
+    }
+
+    fn deinitList(forks: []Fork) void {
+        for (forks) |*fork| fork.arena_allocator.deinit();
+    }
 };
-
-fn loadFork(io: Io, gpa: Allocator, fork: *Fork, color: Color) Io.Cancelable!void {
-    loadForkFallible(io, gpa, fork, color) catch |err| switch (err) {
-        error.Canceled => |e| return e,
-        error.AlreadyReported => fork.failed = true,
-        else => |e| {
-            std.log.err("failed to load fork at {f}: {t}", .{ fork.path, e });
-            fork.failed = true;
-        },
-    };
-}
-
-fn loadForkFallible(io: Io, gpa: Allocator, fork: *Fork, color: Color) !void {
-    var arena_instance = std.heap.ArenaAllocator.init(gpa);
-    defer arena_instance.deinit();
-    const arena = arena_instance.allocator();
-
-    var error_bundle: std.zig.ErrorBundle.Wip = undefined;
-    try error_bundle.init(gpa);
-    defer error_bundle.deinit();
-
-    const manifest_path = try fork.path.join(arena, Package.Manifest.basename);
-
-    Package.Manifest.load(
-        io,
-        arena,
-        manifest_path,
-        &fork.manifest_ast,
-        &error_bundle,
-        &fork.manifest,
-        true,
-    ) catch |err| switch (err) {
-        error.Canceled => |e| return e,
-        error.ErrorsBundled => {
-            assert(error_bundle.root_list.items.len > 0);
-            var errors = try error_bundle.toOwnedBundle("");
-            errors.renderToStderr(io, .{}, color) catch {};
-            return error.AlreadyReported;
-        },
-        else => |e| {
-            std.log.err("failed to load package manifest {f}: {t}", .{ manifest_path, e });
-            return error.AlreadyReported;
-        },
-    };
-}
 
 const JitCmdOptions = struct {
     cmd_name: []const u8,
