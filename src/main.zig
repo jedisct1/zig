@@ -5003,11 +5003,14 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
                         });
                 } else if (mem.cutPrefix(u8, arg, "--fork=")) |sub_arg| {
                     try forks.append(arena, .{
-                        .project_id = undefined,
+                        .manifest_ast = undefined,
+                        .manifest = undefined,
+                        .error_bundle = undefined,
                         .path = .{
                             .root_dir = .cwd(),
                             .sub_path = sub_arg,
                         },
+                        .failed = false,
                     });
                 } else if (mem.eql(u8, arg, "--system")) {
                     if (i + 1 >= args.len) fatal("expected argument after '{s}'", .{arg});
@@ -5204,10 +5207,12 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
         try group.await(io);
 
         for (forks.items) |*fork| {
-            const project_id = fork.project_id catch |err| switch (err) {
-                error.AlreadyReported => process.exit(1),
-            };
-            try fork_set.put(arena, project_id, fork.path);
+            if (fork.failed) process.exit(1);
+            try fork_set.put(arena, .{
+                .path = fork.path,
+                .manifest_ast = fork.manifest_ast,
+                .manifest = fork.manifest,
+            }, {});
         }
     }
 
@@ -5548,21 +5553,24 @@ fn cmdBuild(gpa: Allocator, arena: Allocator, io: Io, args: []const []const u8, 
 
 const Fork = struct {
     path: Path,
-    project_id: error{AlreadyReported}!Package.ProjectId,
+    manifest_ast: std.zig.Ast,
+    manifest: Package.Manifest,
+    error_bundle: std.zig.ErrorBundle.Wip,
+    failed: bool,
 };
 
 fn loadFork(io: Io, gpa: Allocator, fork: *Fork, color: Color) Io.Cancelable!void {
-    fork.project_id = loadForkFallible(io, gpa, fork, color) catch |err| switch (err) {
+    loadForkFallible(io, gpa, fork, color) catch |err| switch (err) {
         error.Canceled => |e| return e,
-        error.AlreadyReported => |e| e,
-        else => |e| e: {
+        error.AlreadyReported => fork.failed = true,
+        else => |e| {
             std.log.err("failed to load fork at {f}: {t}", .{ fork.path, e });
-            break :e error.AlreadyReported;
+            fork.failed = true;
         },
     };
 }
 
-fn loadForkFallible(io: Io, gpa: Allocator, fork: *Fork, color: Color) !Package.ProjectId {
+fn loadForkFallible(io: Io, gpa: Allocator, fork: *Fork, color: Color) !void {
     var arena_instance = std.heap.ArenaAllocator.init(gpa);
     defer arena_instance.deinit();
     const arena = arena_instance.allocator();
@@ -5573,16 +5581,13 @@ fn loadForkFallible(io: Io, gpa: Allocator, fork: *Fork, color: Color) !Package.
 
     const manifest_path = try fork.path.join(arena, Package.Manifest.basename);
 
-    var manifest_ast: std.zig.Ast = undefined;
-    var manifest: Package.Manifest = undefined;
-
     Package.Manifest.load(
         io,
         arena,
         manifest_path,
-        &manifest_ast,
+        &fork.manifest_ast,
         &error_bundle,
-        &manifest,
+        &fork.manifest,
         true,
     ) catch |err| switch (err) {
         error.Canceled => |e| return e,
@@ -5597,8 +5602,6 @@ fn loadForkFallible(io: Io, gpa: Allocator, fork: *Fork, color: Color) !Package.
             return error.AlreadyReported;
         },
     };
-
-    return .init(manifest.name, manifest.id);
 }
 
 const JitCmdOptions = struct {

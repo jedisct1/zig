@@ -1657,7 +1657,7 @@ fn printUsage(b: *std.Build, w: *Writer) !void {
         \\  --fetch[=mode]               Fetch dependency tree (optionally choose laziness) and exit
         \\    needed                     (Default) Lazy dependencies are fetched as needed
         \\    all                        Lazy dependencies are always fetched
-        \\  --fork=[path]                Override one or more packages from dependency tree
+        \\  --fork=[path]                Override one or more projects from dependency tree
         \\
         \\Advanced Options:
         \\  -freference-trace[=num]      How many lines of reference trace should be shown per compile error

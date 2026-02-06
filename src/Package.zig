@@ -174,6 +174,15 @@ pub const ProjectId = struct {
             .fingerprint_id = fingerprint_id,
         };
     }
+
+    pub fn eql(a: *const ProjectId, b: *const ProjectId) bool {
+        return a.fingerprint_id == b.fingerprint_id and std.mem.eql(u8, &a.padded_name, &b.padded_name);
+    }
+
+    pub fn hash(a: *const ProjectId) u64 {
+        const x: u64 = @bitCast(a.padded_name[0..8].*);
+        return std.hash.int(x | a.fingerprint_id);
+    }
 };
 
 pub const MultihashFunction = enum(u16) {

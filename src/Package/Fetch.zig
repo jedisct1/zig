@@ -154,7 +154,26 @@ pub const JobQueue = struct {
     };
     pub const Table = std.AutoArrayHashMapUnmanaged(Package.Hash, *Fetch);
     pub const UnlazySet = std.AutoArrayHashMapUnmanaged(Package.Hash, void);
-    pub const ForkSet = std.AutoArrayHashMapUnmanaged(Package.ProjectId, Cache.Path);
+    pub const ForkSet = std.ArrayHashMapUnmanaged(Fork, void, Fork.Context, false);
+
+    pub const Fork = struct {
+        path: Cache.Path,
+        manifest_ast: std.zig.Ast,
+        manifest: Package.Manifest,
+
+        pub const Context = struct {
+            pub fn hash(_: @This(), a: Fork) u32 {
+                const project_id: Package.ProjectId = .init(a.manifest.name, a.manifest.id);
+                return @truncate(project_id.hash());
+            }
+
+            pub fn eql(_: @This(), a: Fork, b: Fork, _: usize) bool {
+                const a_project_id: Package.ProjectId = .init(a.manifest.name, a.manifest.id);
+                const b_project_id: Package.ProjectId = .init(b.manifest.name, b.manifest.id);
+                return a_project_id.eql(&b_project_id);
+            }
+        };
+    };
 
     pub fn deinit(jq: *JobQueue) void {
         const io = jq.io;
