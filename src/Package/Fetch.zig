@@ -142,7 +142,8 @@ pub const JobQueue = struct {
     /// Set of hashes that will be additionally fetched even if they are marked
     /// as lazy.
     unlazy_set: UnlazySet = .{},
-    /// Identifies paths that override all packages in the tree matching
+    /// Identifies paths that override all packages in the tree with matching
+    /// project ids.
     fork_set: ForkSet = .{},
 
     pub const Mode = enum {
@@ -169,6 +170,17 @@ pub const JobQueue = struct {
 
             pub fn eql(_: @This(), a: Fork, b: Fork, _: usize) bool {
                 const a_project_id: Package.ProjectId = .init(a.manifest.name, a.manifest.id);
+                const b_project_id: Package.ProjectId = .init(b.manifest.name, b.manifest.id);
+                return a_project_id.eql(&b_project_id);
+            }
+        };
+
+        pub const Adapter = struct {
+            pub fn hash(_: @This(), a: Package.ProjectId) u32 {
+                return @truncate(a.hash());
+            }
+
+            pub fn eql(_: @This(), a_project_id: Package.ProjectId, b: Fork, _: usize) bool {
                 const b_project_id: Package.ProjectId = .init(b.manifest.name, b.manifest.id);
                 return a_project_id.eql(&b_project_id);
             }
@@ -558,6 +570,15 @@ pub fn run(f: *Fetch) RunError!void {
     var resource_buffer: [init_resource_buffer_size]u8 = undefined;
 
     if (remote.hash) |expected_hash| {
+        const expected_project_id: Package.ProjectId = expected_hash.projectId();
+        if (job_queue.fork_set.getKeyPtrAdapted(expected_project_id, @as(JobQueue.Fork.Adapter, .{}))) |fork| {
+            f.package_root = fork.path;
+            f.manifest_ast = fork.manifest_ast;
+            f.manifest = fork.manifest;
+            if (!job_queue.recursive) return;
+            return queueJobsForDeps(f);
+        }
+
         const package_root = try job_queue.root_pkg_path.join(arena, expected_hash.toSlice());
         if (package_root.root_dir.handle.access(io, package_root.sub_path, .{})) |_| {
             assert(f.lazy_status != .unavailable);
