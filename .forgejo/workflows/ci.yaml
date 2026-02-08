@@ -59,26 +59,27 @@ jobs:
         run: sh ci/aarch64-macos-release.sh
         timeout-minutes: 120
 
-  loongarch64-linux-debug:
-    runs-on: [self-hosted, loongarch64-linux]
-    steps:
-      - name: Checkout
-        uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
-        with:
-          fetch-depth: 0
-      - name: Build and Test
-        run: sh ci/loongarch64-linux-debug.sh
-        timeout-minutes: 240
-  loongarch64-linux-release:
-    runs-on: [self-hosted, loongarch64-linux]
-    steps:
-      - name: Checkout
-        uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
-        with:
-          fetch-depth: 0
-      - name: Build and Test
-        run: sh ci/loongarch64-linux-release.sh
-        timeout-minutes: 180
+  # https://codeberg.org/ziglang/zig/issues/30800
+  #loongarch64-linux-debug:
+  #  runs-on: [self-hosted, loongarch64-linux]
+  #  steps:
+  #    - name: Checkout
+  #      uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
+  #      with:
+  #        fetch-depth: 0
+  #    - name: Build and Test
+  #      run: sh ci/loongarch64-linux-debug.sh
+  #      timeout-minutes: 240
+  #loongarch64-linux-release:
+  #  runs-on: [self-hosted, loongarch64-linux]
+  #  steps:
+  #    - name: Checkout
+  #      uses: https://codeberg.org/ziglang/checkout@19af6bac491e2534a4687a50ee84fa7f13258d28
+  #      with:
+  #        fetch-depth: 0
+  #    - name: Build and Test
+  #      run: sh ci/loongarch64-linux-release.sh
+  #      timeout-minutes: 180
 
   powerpc64le-linux-debug:
     runs-on: [self-hosted, powerpc64le-linux]
