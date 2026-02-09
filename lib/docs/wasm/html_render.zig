@@ -38,9 +38,8 @@ pub fn fileSourceLineNumbersHtml(
     const ast = file_index.get_ast();
     const first_token_line = ast.tokenLocation(0, ast.firstToken(root_node)).line;
     const last_token_line = ast.tokenLocation(0, ast.lastToken(root_node)).line;
-    const writer = out.writer(gpa);
     for (first_token_line..last_token_line + 1) |i| {
-        try std.fmt.format(writer, "<span>{d}</span>\n", .{i + 1});
+        try out.print(gpa, "<span>{d}</span>\n", .{i + 1});
     }
 }
 
