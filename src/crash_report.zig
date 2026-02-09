@@ -79,6 +79,8 @@ fn dumpCrashContext() Io.Writer.Error!void {
     if (S.already_dumped) return;
     S.already_dumped = true;
 
+    std.Options.debug_io.vtable.crashHandler(std.Options.debug_io.userdata);
+
     // TODO: this does mean that a different thread could grab the stderr mutex between the context
     // and the actual panic printing, which would be quite confusing.
     const stderr = std.debug.lockStderr(&.{});
