@@ -549,7 +549,7 @@ export fn decl_line_numbers_html(decl_index: Decl.Index) String {
 
     string_result.clearRetainingCapacity();
     fileSourceLineNumbersHtml(decl.file, &string_result, decl.ast_node) catch |err| {
-        fatal("unable to render source line numbers: {s}", .{@errorName(err)});
+        std.debug.panic("unable to render source line numbers: {s}", .{@errorName(err)});
     };
     return String.init(string_result.items);
 }
