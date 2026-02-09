@@ -4954,8 +4954,10 @@ pub const CodegenTaskPool = struct {
         // We own `air` now, so we are responsbile for freeing it.
         var air = orig_air;
         defer air.deinit(zcu.comp.gpa);
-        const tid = Compilation.getTid();
-        const pt: Zcu.PerThread = .activate(zcu, @enumFromInt(tid));
+        const io = zcu.comp.io;
+        const tid: Zcu.PerThread.Id = .acquire(io);
+        defer tid.release(io);
+        const pt: Zcu.PerThread = .activate(zcu, tid);
         defer pt.deactivate();
         return pt.runCodegen(func_index, &air);
     }
@@ -4964,8 +4966,10 @@ pub const CodegenTaskPool = struct {
         func_index: InternPool.Index,
         air: *Air,
     ) CodegenResult {
-        const tid = Compilation.getTid();
-        const pt: Zcu.PerThread = .activate(zcu, @enumFromInt(tid));
+        const io = zcu.comp.io;
+        const tid: Zcu.PerThread.Id = .acquire(io);
+        defer tid.release(io);
+        const pt: Zcu.PerThread = .activate(zcu, tid);
         defer pt.deactivate();
         return pt.runCodegen(func_index, air);
     }
