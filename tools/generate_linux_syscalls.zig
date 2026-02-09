@@ -159,6 +159,7 @@ const architectures: []const Arch = &.{
     .{ .@"var" = "Arm64", .table = .generic, .abi = &.{ .common, .@"64", .renameat, .rlimit, .memfd_secret } },
     .{ .@"var" = "RiscV32", .table = .generic, .abi = &.{ .common, .@"32", .riscv, .memfd_secret } },
     .{ .@"var" = "RiscV64", .table = .generic, .abi = &.{ .common, .@"64", .riscv, .rlimit, .memfd_secret } },
+    .{ .@"var" = "LoongArch32", .table = .generic, .abi = &.{ .common, .@"32" } },
     .{ .@"var" = "LoongArch64", .table = .generic, .abi = &.{ .common, .@"64" } },
     .{ .@"var" = "Arc", .table = .generic, .abi = &.{ .common, .@"32", .arc, .time32, .renameat, .stat64, .rlimit } },
     .{ .@"var" = "CSky", .table = .generic, .abi = &.{ .common, .@"32", .csky, .time32, .stat64, .rlimit } },
