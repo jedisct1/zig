@@ -174,6 +174,91 @@ pub fn Deque(comptime T: type) type {
             deque.len += 1;
         }
 
+        /// Add `items` to the front of the deque.
+        /// This is equivalent to iterating `items` in reverse and calling
+        /// `pushFront` on every single entry.
+        ///
+        /// Invalidates element pointers if additional memory is needed.
+        pub fn pushFrontSlice(deque: *Self, gpa: Allocator, items: []const T) error{OutOfMemory}!void {
+            try deque.ensureUnusedCapacity(gpa, items.len);
+            return deque.pushFrontSliceAssumeCapacity(items);
+        }
+
+        /// Add `items` to the front of the deque.
+        /// This is equivalent to iterating `items` in reverse and calling
+        /// `pushFront` on every single entry.
+        ///
+        /// Never invalidates element pointers.
+        ///
+        /// If the deque lacks unused capacity for the additional items, returns
+        /// `error.OutOfMemory`.
+        pub fn pushFrontSliceBounded(deque: *Self, items: []const T) error{OutOfMemory}!void {
+            if (deque.buffer.len - deque.len < items.len) return error.OutOfMemory;
+            return deque.pushFrontSliceAssumeCapacity(items);
+        }
+
+        /// Add `items` to the front of the deque.
+        /// This is equivalent to iterating `items` in reverse and calling
+        /// `pushFront` on every single entry.
+        ///
+        /// Never invalidates element pointers.
+        ///
+        /// Asserts that the deque can hold the additional items.
+        pub fn pushFrontSliceAssumeCapacity(deque: *Self, items: []const T) void {
+            assert(deque.buffer.len - deque.len >= items.len);
+            if (deque.head < items.len) {
+                @memcpy(deque.buffer[0..deque.head], items[items.len - deque.head ..]);
+                deque.head = deque.buffer.len - items.len + deque.head;
+                @memcpy(deque.buffer[deque.head..], items.ptr);
+            } else {
+                deque.head -= items.len;
+                @memcpy(deque.buffer[deque.head..][0..items.len], items);
+            }
+            deque.len += items.len;
+        }
+
+        /// Add `items` to the back of the deque.
+        /// This is equivalent to iterating `items` in order and calling
+        /// `pushBack` on every single entry.
+        ///
+        /// Invalidates element pointers if additional memory is needed.
+        pub fn pushBackSlice(deque: *Self, gpa: Allocator, items: []const T) error{OutOfMemory}!void {
+            try deque.ensureUnusedCapacity(gpa, items.len);
+            return deque.pushBackSliceAssumeCapacity(items);
+        }
+
+        /// Add `items` to the back of the deque.
+        /// This is equivalent to iterating `items` in order and calling
+        /// `pushBack` on every single entry.
+        ///
+        /// Never invalidates element pointers.
+        ///
+        /// If the deque lacks unused capacity for the additional items, returns
+        /// `error.OutOfMemory`.
+        pub fn pushBackSliceBounded(deque: *Self, items: []const T) error{OutOfMemory}!void {
+            if (deque.buffer.len - deque.len < items.len) return error.OutOfMemory;
+            return deque.pushBackSliceAssumeCapacity(items);
+        }
+
+        /// Add `items` to the back of the deque.
+        /// This is equivalent to iterating `items` in order and calling
+        /// `pushBack` on every single entry.
+        ///
+        /// Never invalidates element pointers.
+        ///
+        /// Asserts that the deque can hold the additional items.
+        pub fn pushBackSliceAssumeCapacity(deque: *Self, items: []const T) void {
+            assert(deque.buffer.len - deque.len >= items.len);
+            const trailing_buffer = deque.buffer[deque.bufferIndex(deque.len)..];
+            if (trailing_buffer.len < items.len) {
+                @memcpy(trailing_buffer, items[0..trailing_buffer.len]);
+                @memcpy(deque.buffer.ptr, items[trailing_buffer.len..]);
+            } else {
+                @memcpy(trailing_buffer[0..items.len], items);
+            }
+            deque.len += items.len;
+        }
+
         /// Return the first item in the deque or null if empty.
         pub fn front(deque: *const Self) ?T {
             if (deque.len == 0) return null;
@@ -350,6 +435,40 @@ test "slow growth" {
     try testing.expectEqual(null, q.popBack());
 }
 
+test "slice" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    var q: Deque(i32) = .empty;
+    defer q.deinit(gpa);
+
+    try q.pushBackSlice(gpa, &.{ 3, 4, 5 });
+    try q.pushBackSlice(gpa, &.{ 6, 7 });
+    try q.pushFrontSlice(gpa, &.{2});
+    try q.pushBackSlice(gpa, &.{});
+    try q.pushFrontSlice(gpa, &.{ 0, 1 });
+    try q.pushFrontSlice(gpa, &.{});
+
+    try testing.expectEqual(0, q.popFront());
+    try testing.expectEqual(1, q.popFront());
+    try testing.expectEqual(7, q.popBack());
+    try testing.expectEqual(6, q.popBack());
+
+    try q.pushFrontSlice(gpa, &.{ 0, 1 });
+    try q.pushBackSlice(gpa, &.{ 6, 7 });
+
+    try testing.expectEqual(0, q.popFront());
+    try testing.expectEqual(1, q.popFront());
+    try testing.expectEqual(2, q.popFront());
+    try testing.expectEqual(7, q.popBack());
+    try testing.expectEqual(6, q.popBack());
+    try testing.expectEqual(3, q.popFront());
+    try testing.expectEqual(4, q.popFront());
+    try testing.expectEqual(5, q.popBack());
+    try testing.expectEqual(null, q.popFront());
+    try testing.expectEqual(null, q.popBack());
+}
+
 test "fuzz against ArrayList oracle" {
     try std.testing.fuzz({}, fuzzAgainstArrayList, .{});
 }
@@ -384,6 +503,8 @@ fn fuzzAgainstArrayList(_: void, input: []const u8) anyerror!void {
     const Action = enum {
         push_back,
         push_front,
+        push_back_slice,
+        push_front_slice,
         pop_back,
         pop_front,
         grow,
@@ -404,6 +525,28 @@ fn fuzzAgainstArrayList(_: void, input: []const u8) anyerror!void {
                 try testing.expectEqual(
                     l.insertBounded(0, item),
                     q.pushFrontBounded(item),
+                );
+            },
+            .push_back_slice => {
+                var buffer: [std.math.maxInt(u3)]u32 = undefined;
+                const items = buffer[0..random.int(u3)];
+                for (items) |*item| {
+                    item.* = random.int(u8);
+                }
+                try testing.expectEqual(
+                    l.appendSliceBounded(items),
+                    q.pushBackSliceBounded(items),
+                );
+            },
+            .push_front_slice => {
+                var buffer: [std.math.maxInt(u3)]u32 = undefined;
+                const items = buffer[0..random.int(u3)];
+                for (items) |*item| {
+                    item.* = random.int(u8);
+                }
+                try testing.expectEqual(
+                    l.insertSliceBounded(0, items),
+                    q.pushFrontSliceBounded(items),
                 );
             },
             .pop_back => {
