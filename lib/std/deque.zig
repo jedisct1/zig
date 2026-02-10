@@ -180,10 +180,22 @@ pub fn Deque(comptime T: type) type {
             return deque.buffer[deque.head];
         }
 
+        /// Return pointer to the first item in the deque or null if empty.
+        pub fn frontPtr(deque: *const Self) ?*T {
+            if (deque.len == 0) return null;
+            return &deque.buffer[deque.head];
+        }
+
         /// Return the last item in the deque or null if empty.
         pub fn back(deque: *const Self) ?T {
             if (deque.len == 0) return null;
             return deque.buffer[deque.bufferIndex(deque.len - 1)];
+        }
+
+        /// Return the last item in the deque or null if empty.
+        pub fn backPtr(deque: *const Self) ?*T {
+            if (deque.len == 0) return null;
+            return &deque.buffer[deque.bufferIndex(deque.len - 1)];
         }
 
         /// Return the item at the given index in the deque.
@@ -194,6 +206,16 @@ pub fn Deque(comptime T: type) type {
         pub fn at(deque: *const Self, index: usize) T {
             assert(index < deque.len);
             return deque.buffer[deque.bufferIndex(index)];
+        }
+
+        /// Return pointer to the item at the given index in the deque.
+        ///
+        /// The first item in the queue is at index 0.
+        ///
+        /// Asserts that the index is in-bounds.
+        pub fn atPtr(deque: *const Self, index: usize) *T {
+            assert(index < deque.len);
+            return &deque.buffer[deque.bufferIndex(index)];
         }
 
         /// Remove and return the first item in the deque or null if empty.
