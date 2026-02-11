@@ -323,13 +323,24 @@ pub fn Deque(comptime T: type) type {
             deque: *const Self,
             index: usize,
 
+            pub fn peek(it: Iterator) ?T {
+                if (it.index >= it.deque.len) return null;
+                return it.deque.at(it.index);
+            }
             pub fn next(it: *Iterator) ?T {
-                if (it.index < it.deque.len) {
-                    defer it.index += 1;
-                    return it.deque.at(it.index);
-                } else {
-                    return null;
-                }
+                const item = it.peek() orelse return null;
+                it.index += 1;
+                return item;
+            }
+
+            pub fn peekPtr(it: Iterator) ?*T {
+                if (it.index >= it.deque.len) return null;
+                return it.deque.atPtr(it.index);
+            }
+            pub fn nextPtr(it: *Iterator) ?*T {
+                const item_ptr = it.peekPtr() orelse return null;
+                it.index += 1;
+                return item_ptr;
             }
         };
 
@@ -467,6 +478,40 @@ test "slice" {
     try testing.expectEqual(5, q.popBack());
     try testing.expectEqual(null, q.popFront());
     try testing.expectEqual(null, q.popBack());
+}
+
+test "iterator" {
+    const testing = std.testing;
+    const gpa = testing.allocator;
+
+    var q: Deque(i32) = .empty;
+    defer q.deinit(gpa);
+
+    const items: []const i32 = &.{ 0, 1, 2, 3, 4, 5 };
+    try q.pushFrontSlice(gpa, items);
+
+    {
+        var it = q.iterator();
+        for (items) |item| {
+            try testing.expectEqual(item, it.peek());
+            try testing.expectEqual(item, it.next());
+        }
+        try testing.expectEqual(null, it.peek());
+        try testing.expectEqual(null, it.next());
+    }
+    {
+        var it = q.iterator();
+        for (items) |item| {
+            if (it.peekPtr()) |ptr| {
+                try testing.expectEqual(item, ptr.*);
+            } else return error.TextExpectedNonNull;
+            if (it.nextPtr()) |ptr| {
+                try testing.expectEqual(item, ptr.*);
+            } else return error.TextExpectedNonNull;
+        }
+        try testing.expectEqual(null, it.peekPtr());
+        try testing.expectEqual(null, it.nextPtr());
+    }
 }
 
 test "fuzz against ArrayList oracle" {
