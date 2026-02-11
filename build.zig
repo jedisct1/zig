@@ -560,22 +560,7 @@ pub fn build(b: *std.Build) !void {
         .skip_linux = skip_linux,
         .skip_llvm = skip_llvm,
         .skip_libc = skip_libc,
-        .max_rss = switch (b.graph.host.result.os.tag) {
-            .freebsd => switch (b.graph.host.result.cpu.arch) {
-                .x86_64 => 3_756_422_348,
-                else => 3_800_000_000,
-            },
-            .linux => 6_800_000_000,
-            .macos => switch (b.graph.host.result.cpu.arch) {
-                .aarch64 => 8_273_795_481,
-                else => 8_300_000_000,
-            },
-            .windows => switch (b.graph.host.result.cpu.arch) {
-                .x86_64 => 3_750_236_160,
-                else => 3_800_000_000,
-            },
-            else => 8_300_000_000,
-        },
+        .max_rss = 8_500_000_000,
     }));
 
     const unit_tests_step = b.step("test-unit", "Run the compiler source unit tests");
