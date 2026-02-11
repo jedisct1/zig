@@ -1,7 +1,7 @@
-//! Based on wrapping a stateless Zig Allocator implementation, apropriate for:
+//! Based on wrapping a stateless Zig Allocator implementation, appropriate for:
 //! - ReleaseFast and ReleaseSmall optimization modes, with multi-threading
 //!   enabled.
-//! - WebAssembly in single-threaded mode.
+//! - WebAssembly or Linux in single-threaded release modes.
 //!
 //! Because the libc APIs don't have client alignment and size tracking, in
 //! order to take advantage of Zig allocator implementations, additional
@@ -40,7 +40,7 @@ const no_context: *anyopaque = undefined;
 const no_ra: usize = undefined;
 const vtable = switch (builtin.cpu.arch) {
     .wasm32, .wasm64 => std.heap.WasmAllocator.vtable,
-    else => std.heap.SmpAllocator.vtable,
+    else => if (builtin.single_threaded) std.heap.BrkAllocator.vtable else std.heap.SmpAllocator.vtable,
 };
 
 /// Needed because libc memory allocators don't provide old alignment and size
