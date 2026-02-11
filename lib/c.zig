@@ -47,19 +47,22 @@ pub fn errno(syscall_return_value: usize) c_int {
 }
 
 comptime {
-    _ = @import("c/inttypes.zig");
     _ = @import("c/ctype.zig");
-    _ = @import("c/stdlib.zig");
+    _ = @import("c/inttypes.zig");
+    if (!builtin.target.isMinGW()) {
+        _ = @import("c/malloc.zig");
+    }
     _ = @import("c/math.zig");
+    _ = @import("c/stdlib.zig");
     _ = @import("c/string.zig");
     _ = @import("c/strings.zig");
-    _ = @import("c/wchar.zig");
 
-    _ = @import("c/sys/mman.zig");
-    _ = @import("c/sys/file.zig");
-    _ = @import("c/sys/reboot.zig");
     _ = @import("c/sys/capability.zig");
+    _ = @import("c/sys/file.zig");
+    _ = @import("c/sys/mman.zig");
+    _ = @import("c/sys/reboot.zig");
     _ = @import("c/sys/utsname.zig");
 
     _ = @import("c/unistd.zig");
+    _ = @import("c/wchar.zig");
 }
