@@ -64,9 +64,9 @@ const Header = packed struct(u64) {
 };
 
 fn malloc(n: usize) callconv(.c) ?[*]align(alignment_bytes) u8 {
-    const size = std.math.cast(Header.Size, n) orelse return null;
+    const size = std.math.cast(Header.Size, n) orelse return nomem();
     const ptr: [*]align(alignment_bytes) u8 = @alignCast(
-        vtable.alloc(no_context, n + alignment_bytes, alignment, no_ra) orelse return null,
+        vtable.alloc(no_context, n + alignment_bytes, alignment, no_ra) orelse return nomem(),
     );
     const base = ptr + alignment_bytes;
     const header: *Header = .fromBase(base);
@@ -78,6 +78,11 @@ fn malloc(n: usize) callconv(.c) ?[*]align(alignment_bytes) u8 {
 }
 
 fn aligned_alloc(alloc_alignment: usize, n: usize) callconv(.c) ?[*]align(alignment_bytes) u8 {
+    return aligned_alloc_inner(alloc_alignment, n) orelse return nomem();
+}
+
+/// Avoids setting errno so it can be called by `posix_memalign`.
+fn aligned_alloc_inner(alloc_alignment: usize, n: usize) ?[*]align(alignment_bytes) u8 {
     const size = std.math.cast(Header.Size, n) orelse return null;
     const max_align = alignment.max(.fromByteUnits(alloc_alignment));
     const max_align_bytes = max_align.toByteUnits();
@@ -94,7 +99,7 @@ fn aligned_alloc(alloc_alignment: usize, n: usize) callconv(.c) ?[*]align(alignm
 }
 
 fn calloc(elems: usize, len: usize) callconv(.c) ?[*]align(alignment_bytes) u8 {
-    const n = std.math.mul(usize, elems, len) catch return null;
+    const n = std.math.mul(usize, elems, len) catch return nomem();
     const base = malloc(n) orelse return null;
     @memset(base[0..n], 0);
     return base;
@@ -106,7 +111,7 @@ fn realloc(opt_old_base: ?[*]align(alignment_bytes) u8, n: usize) callconv(.c) ?
         return null;
     }
     const old_base = opt_old_base orelse return malloc(n);
-    const new_size = std.math.cast(Header.Size, n) orelse return null;
+    const new_size = std.math.cast(Header.Size, n) orelse return nomem();
     const old_header: *Header = .fromBase(old_base);
     assert(old_header.padding == 0);
     const old_size = old_header.size;
@@ -122,7 +127,8 @@ fn realloc(opt_old_base: ?[*]align(alignment_bytes) u8, n: usize) callconv(.c) ?
         no_ra,
     )) |new_ptr| @alignCast(new_ptr + old_alignment_bytes) else b: {
         const new_ptr: [*]align(alignment_bytes) u8 = @alignCast(
-            vtable.alloc(no_context, n + old_alignment_bytes, old_alignment, no_ra) orelse return null,
+            vtable.alloc(no_context, n + old_alignment_bytes, old_alignment, no_ra) orelse
+                return nomem(),
         );
         const new_base: [*]align(alignment_bytes) u8 = @alignCast(new_ptr + old_alignment_bytes);
         const copy_len = @min(new_size, old_size);
@@ -139,7 +145,7 @@ fn realloc(opt_old_base: ?[*]align(alignment_bytes) u8, n: usize) callconv(.c) ?
 }
 
 fn reallocarray(opt_base: ?[*]align(alignment_bytes) u8, elems: usize, len: usize) callconv(.c) ?[*]align(alignment_bytes) u8 {
-    const n = std.math.mul(usize, elems, len) catch return null;
+    const n = std.math.mul(usize, elems, len) catch return nomem();
     return realloc(opt_base, n);
 }
 
@@ -173,10 +179,14 @@ fn memalign(alloc_alignment: usize, n: usize) callconv(.c) ?[*]align(alignment_b
 
 fn posix_memalign(result: *?[*]align(alignment_bytes) u8, alloc_alignment: usize, n: usize) callconv(.c) c_int {
     if (alloc_alignment < @sizeOf(*anyopaque)) return @intFromEnum(std.c.E.INVAL);
-    if (n == 0) {
-        result.* = null;
-    } else {
-        result.* = aligned_alloc(alloc_alignment, n) orelse return @intFromEnum(std.c.E.NOMEM);
-    }
+    result.* = aligned_alloc_inner(alloc_alignment, n) orelse return @intFromEnum(std.c.E.NOMEM);
     return 0;
+}
+
+/// Libc memory allocation functions must set errno in addition to returning
+/// `null`.
+fn nomem() ?[*]align(alignment_bytes) u8 {
+    @branchHint(.cold);
+    std.c._errno().* = @intFromEnum(std.c.E.NOMEM);
+    return null;
 }
