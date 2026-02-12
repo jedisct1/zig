@@ -15,17 +15,17 @@ pub const panic = if (builtin.is_test)
 else
     std.debug.no_panic;
 
-/// It is incorrect to make this conditional on `builtin.is_test`, because it is possible that
-/// libzigc is being linked into a different test compilation, as opposed to being tested itself.
-pub const linkage: std.builtin.GlobalLinkage = .strong;
-
 /// Determines the symbol's visibility to other objects.
 /// For WebAssembly this allows the symbol to be resolved to other modules, but will not
 /// export it to the host runtime.
 pub const visibility: std.builtin.SymbolVisibility = .hidden;
 
 pub inline fn symbol(comptime func: *const anyopaque, comptime name: []const u8) void {
-    @export(func, .{ .name = name, .linkage = linkage, .visibility = visibility });
+    // Normally, libc goes into a static archive, making all symbols
+    // overridable. However, Zig supports including the libc functions as part
+    // of the Zig Compilation Unit, so to support this use case we make all
+    // symbols weak.
+    @export(func, .{ .name = name, .linkage = .weak, .visibility = visibility });
 }
 
 /// Given a low-level syscall return value, sets errno and returns `-1`, or on
