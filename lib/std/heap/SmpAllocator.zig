@@ -179,7 +179,7 @@ fn resize(context: *anyopaque, memory: []u8, alignment: mem.Alignment, new_len: 
     const new_class = sizeClassIndex(new_len, alignment);
     if (class >= size_class_count) {
         if (new_class < size_class_count) return false;
-        return PageAllocator.realloc(memory, new_len, false) != null;
+        return PageAllocator.realloc(memory, alignment, new_len, false) != null;
     }
     return new_class == class;
 }
@@ -191,7 +191,7 @@ fn remap(context: *anyopaque, memory: []u8, alignment: mem.Alignment, new_len: u
     const new_class = sizeClassIndex(new_len, alignment);
     if (class >= size_class_count) {
         if (new_class < size_class_count) return null;
-        return PageAllocator.realloc(memory, new_len, true);
+        return PageAllocator.realloc(memory, alignment, new_len, true);
     }
     return if (new_class == class) memory.ptr else null;
 }
