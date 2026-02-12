@@ -10,7 +10,6 @@ const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
 const assert = std.debug.assert;
 const math = std.math;
-const page_size_max = std.heap.page_size_max;
 
 comptime {
     if (!builtin.single_threaded) @compileError("unsupported");
@@ -36,13 +35,8 @@ pub const Error = Allocator.Error;
 
 const max_usize = math.maxInt(usize);
 const ushift = math.Log2Int(usize);
-const bigpage_size = 64 * 1024;
-const pages_per_bigpage = bigpage_size / page_size_max;
+const bigpage_size: comptime_int = @max(64 * 1024, std.heap.page_size_max);
 const bigpage_count = max_usize / bigpage_size;
-
-comptime {
-    assert(bigpage_size >= page_size_max);
-}
 
 /// Because of storing free list pointers, the minimum size class is 3.
 const min_class = math.log2(math.ceilPowerOfTwoAssert(usize, 1 + @sizeOf(usize)));
@@ -70,7 +64,7 @@ fn alloc(ctx: *anyopaque, len: usize, alignment: Alignment, return_address: usiz
             }
 
             const next_addr = global.next_addrs[class];
-            if (next_addr % page_size_max == 0) {
+            if (next_addr % bigpage_size == 0) {
                 const addr = allocBigPages(1);
                 if (addr == 0) return null;
                 //std.debug.print("allocated fresh slot_size={d} class={d} addr=0x{x}\n", .{
@@ -172,15 +166,19 @@ fn allocBigPages(n: usize) usize {
     }
 
     if (builtin.cpu.arch.isWasm()) {
+        comptime assert(std.heap.page_size_max == std.heap.page_size_min);
+        const page_size = std.heap.page_size_max;
+        const pages_per_bigpage = bigpage_size / page_size;
         const page_index = @wasmMemoryGrow(0, pow2_pages * pages_per_bigpage);
         if (page_index == -1) return 0;
-        return @as(usize, @intCast(page_index)) * page_size_max;
+        return @as(usize, @intCast(page_index)) * page_size;
     } else if (builtin.os.tag == .linux) {
-        const start_brk = s: {
-            const start_brk = global.prev_brk;
-            break :s if (start_brk == 0) std.os.linux.brk(0) else start_brk;
-        };
-        const end_brk = start_brk + pow2_pages * pages_per_bigpage * page_size_max;
+        const prev_brk = global.prev_brk;
+        const start_brk = if (prev_brk == 0)
+            std.mem.alignForward(usize, std.os.linux.brk(0), bigpage_size)
+        else
+            prev_brk;
+        const end_brk = start_brk + pow2_pages * bigpage_size;
         const new_prev_brk = std.os.linux.brk(end_brk);
         global.prev_brk = new_prev_brk;
         if (new_prev_brk != end_brk) return 0;
