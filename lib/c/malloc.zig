@@ -23,17 +23,20 @@ const alignment: Alignment = .fromByteUnits(alignment_bytes);
 const symbol = @import("../c.zig").symbol;
 
 comptime {
-    symbol(&malloc, "malloc");
-    symbol(&aligned_alloc, "aligned_alloc");
-    symbol(&posix_memalign, "posix_memalign");
-    symbol(&calloc, "calloc");
-    symbol(&realloc, "realloc");
-    symbol(&reallocarray, "reallocarray");
-    symbol(&free, "free");
-    symbol(&malloc_usable_size, "malloc_usable_size");
+    // Dependency on external errno location.
+    if (builtin.link_libc) {
+        symbol(&malloc, "malloc");
+        symbol(&aligned_alloc, "aligned_alloc");
+        symbol(&posix_memalign, "posix_memalign");
+        symbol(&calloc, "calloc");
+        symbol(&realloc, "realloc");
+        symbol(&reallocarray, "reallocarray");
+        symbol(&free, "free");
+        symbol(&malloc_usable_size, "malloc_usable_size");
 
-    symbol(&valloc, "valloc");
-    symbol(&memalign, "memalign");
+        symbol(&valloc, "valloc");
+        symbol(&memalign, "memalign");
+    }
 }
 
 const no_context: *anyopaque = undefined;

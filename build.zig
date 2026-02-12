@@ -518,7 +518,7 @@ pub fn build(b: *std.Build) !void {
         .test_extra_targets = test_extra_targets,
         .root_src = "lib/c.zig",
         .name = "zigc",
-        .desc = "Run the zigc tests",
+        .desc = "Run the zig libc implementation unit tests",
         .optimize_modes = optimization_modes,
         .include_paths = &.{},
         .skip_single_threaded = true,
