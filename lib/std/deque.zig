@@ -504,10 +504,10 @@ test "iterator" {
         for (items) |item| {
             if (it.peekPtr()) |ptr| {
                 try testing.expectEqual(item, ptr.*);
-            } else return error.TextExpectedNonNull;
+            } else return error.TestExpectedNonNull;
             if (it.nextPtr()) |ptr| {
                 try testing.expectEqual(item, ptr.*);
-            } else return error.TextExpectedNonNull;
+            } else return error.TestExpectedNonNull;
         }
         try testing.expectEqual(null, it.peekPtr());
         try testing.expectEqual(null, it.nextPtr());
