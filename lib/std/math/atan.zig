@@ -23,21 +23,21 @@ const testing = std.testing;
 ///  - atan(+-inf) = +-pi/2
 pub fn atan(x: anytype) @TypeOf(x) {
     const T = @TypeOf(x);
-    switch (T) {
-        f16 => return atanBinary16(x),
-        f32 => return atanBinary32(x),
-        f64 => return atanBinary64(x),
-        f80 => return atanExtended80(x),
-        f128 => return atanBinary128(x),
-        else => {
-            const info = @typeInfo(T);
-            if (info == .vector) {
-                const vec_type = info.vector.child;
-                if (vec_type == f32) return atanBinary32Vec(x);
-                if (vec_type == f64) return atanBinary64Vec(x);
-            }
-            @compileError("atan not implemented for " ++ @typeName(T));
+    switch (@typeInfo(T)) {
+        .float => |info| switch (info.bits) {
+            16 => return atanBinary16(x),
+            32 => return atanBinary32(x),
+            64 => return atanBinary64(x),
+            80 => return atanExtended80(x),
+            128 => return atanBinary128(x),
+            else => comptime unreachable,
         },
+        .vector => |info| switch (info.child) {
+            f32 => return atanBinary32Vec(info.len, x),
+            f64 => return atanBinary64Vec(info.len, x),
+            else => @compileError("unimplemented"),
+        },
+        else => comptime unreachable,
     }
 }
 
@@ -594,10 +594,7 @@ test "atanBinary128" {
     try testing.expectApproxEqAbs(atanBinary128(-0x1.0264fb9f3d50e4f0f966f0686064p1), -0x1.1c617825f97512b7f38656ab12cdp0, math.floatEpsAt(f128, -0x1.1c617825f97512b7f38656ab12cdp0));
 }
 
-fn atanBinary32Vec(x: anytype) @TypeOf(x) {
-    const type_info = @typeInfo(@TypeOf(x));
-    comptime std.debug.assert(type_info.vector.child == f32);
-    const vec_len = type_info.vector.len;
+fn atanBinary32Vec(comptime vec_len: comptime_int, x: @Vector(vec_len, f32)) @TypeOf(x) {
     const sign_mask: @Vector(vec_len, u32) = @splat(0x80000000);
     const neg_one: @Vector(vec_len, f32) = @splat(-1.0);
     const pi_over_2: @Vector(vec_len, u32) = @splat(0x3fc90fdb);
@@ -630,10 +627,7 @@ fn atanBinary32Vec(x: anytype) @TypeOf(x) {
     return @mulAdd(@Vector(vec_len, f32), z3, p0_7, shift + z);
 }
 
-fn atanBinary64Vec(x: anytype) @TypeOf(x) {
-    const type_info = @typeInfo(@TypeOf(x));
-    comptime std.debug.assert(type_info.vector.child == f64);
-    const vec_len = type_info.vector.len;
+fn atanBinary64Vec(comptime vec_len: comptime_int, x: @Vector(vec_len, f64)) @TypeOf(x) {
     const sign_mask: @Vector(vec_len, u64) = @splat(0x8000000000000000);
     const neg_one: @Vector(vec_len, f64) = @splat(-1.0);
     const pi_over_2: @Vector(vec_len, u64) = @splat(0x3ff921fb54442d18);
@@ -701,7 +695,7 @@ test "atanBinary32Vec.special" {
         -math.inf(f32),
         math.nan(f32),
     };
-    const output = atanBinary32Vec(input);
+    const output = atanBinary32Vec(7, input);
     try testing.expectEqual(output[0], 0x0p+0);
     try testing.expectEqual(output[1], -0x0p+0);
     try testing.expectApproxEqAbs(output[2], 0x1.921fb6p-1, math.floatEpsAt(f32, 0x1.921fb6p-1));
@@ -724,7 +718,7 @@ test "atanBinary32Vec" {
         0x1.299d54p1,
         -0x1.0264fcp1,
     };
-    const output = atanBinary32Vec(input);
+    const output = atanBinary32Vec(10, input);
     try testing.expectApproxEqAbs(output[0], -0x1.74c62p-2, math.floatEpsAt(f32, -0x1.74c62p-2));
     try testing.expectApproxEqAbs(output[1], -0x1.375fd8p0, math.floatEpsAt(f32, -0x1.375fd8p0));
     try testing.expectApproxEqAbs(output[2], -0x1.11b8aep0, math.floatEpsAt(f32, -0x1.11b8aep0));
@@ -747,7 +741,7 @@ test "atanBinary64Vec.special" {
         -math.inf(f64),
         math.nan(f64),
     };
-    const output = atanBinary64Vec(input);
+    const output = atanBinary64Vec(7, input);
     try testing.expectEqual(output[0], 0x0p+0);
     try testing.expectEqual(output[1], -0x0p+0);
     try testing.expectApproxEqAbs(output[2], 0x1.921fb54442d18p-1, math.floatEpsAt(f64, 0x1.921fb54442d18p-1));
@@ -770,7 +764,7 @@ test "atanBinary64Vec" {
         0x1.299d54ac7d6bp1,
         -0x1.0264fb9f3d50ep1,
     };
-    const output = atanBinary64Vec(input);
+    const output = atanBinary64Vec(10, input);
     try testing.expectApproxEqAbs(output[0], -0x1.74c61f4377016p-2, math.floatEpsAt(f64, -0x1.74c61f4377016p-2));
     try testing.expectApproxEqAbs(output[1], -0x1.375fd7987cc2p0, math.floatEpsAt(f64, -0x1.375fd7987cc2p0));
     try testing.expectApproxEqAbs(output[2], -0x1.11b8adeba5616p0, math.floatEpsAt(f64, -0x1.11b8adeba5616p0));
