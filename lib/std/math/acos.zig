@@ -323,9 +323,9 @@ fn acosBinary128(x: f128) f128 {
 }
 
 test "acosBinary16.special" {
-    try testing.expectApproxEqAbs(acosBinary16(0x0p+0), 0x1.92p0, math.floatEpsAt(f16, 0x1.92p0));
-    try testing.expectApproxEqAbs(acosBinary16(-0x1p+0), 0x1.92p1, math.floatEpsAt(f16, 0x1.92p1));
-    try testing.expectEqual(acosBinary16(0x1p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.92p0, acosBinary16(0x0p+0), math.floatEpsAt(f16, 0x1.92p0));
+    try testing.expectApproxEqAbs(0x1.92p1, acosBinary16(-0x1p+0), math.floatEpsAt(f16, 0x1.92p1));
+    try testing.expectEqual(0x0p+0, acosBinary16(0x1p+0));
     try testing.expect(math.isNan(acosBinary16(0x1.004p0)));
     try testing.expect(math.isNan(acosBinary16(-0x1.004p0)));
     try testing.expect(math.isNan(acosBinary16(math.inf(f16))));
@@ -334,22 +334,22 @@ test "acosBinary16.special" {
 }
 
 test "acosBinary16" {
-    try testing.expectApproxEqAbs(acosBinary16(0x1.db4p-5), 0x1.834p0, math.floatEpsAt(f16, 0x1.834p0));
-    try testing.expectApproxEqAbs(acosBinary16(-0x1.068p-2), 0x1.d48p0, math.floatEpsAt(f16, 0x1.d48p0));
-    try testing.expectApproxEqAbs(acosBinary16(-0x1.2c4p-3), 0x1.b7cp0, math.floatEpsAt(f16, 0x1.b7cp0));
-    try testing.expectApproxEqAbs(acosBinary16(0x1.65p-3), 0x1.654p0, math.floatEpsAt(f16, 0x1.654p0));
-    try testing.expectApproxEqAbs(acosBinary16(0x1.dfcp-1), 0x1.6d8p-2, math.floatEpsAt(f16, 0x1.6d8p-2));
-    try testing.expectApproxEqAbs(acosBinary16(-0x1.764p-1), 0x1.32p1, math.floatEpsAt(f16, 0x1.32p1));
-    try testing.expectApproxEqAbs(acosBinary16(0x1.b18p-3), 0x1.5b8p0, math.floatEpsAt(f16, 0x1.5b8p0));
-    try testing.expectApproxEqAbs(acosBinary16(0x1.5acp-3), 0x1.668p0, math.floatEpsAt(f16, 0x1.668p0));
-    try testing.expectApproxEqAbs(acosBinary16(-0x1.18cp-1), 0x1.134p1, math.floatEpsAt(f16, 0x1.134p1));
-    try testing.expectApproxEqAbs(acosBinary16(-0x1.03p-1), 0x1.0dp1, math.floatEpsAt(f16, 0x1.0dp1));
+    try testing.expectApproxEqAbs(0x1.834p0, acosBinary16(0x1.db4p-5), math.floatEpsAt(f16, 0x1.834p0));
+    try testing.expectApproxEqAbs(0x1.d48p0, acosBinary16(-0x1.068p-2), math.floatEpsAt(f16, 0x1.d48p0));
+    try testing.expectApproxEqAbs(0x1.b7cp0, acosBinary16(-0x1.2c4p-3), math.floatEpsAt(f16, 0x1.b7cp0));
+    try testing.expectApproxEqAbs(0x1.654p0, acosBinary16(0x1.65p-3), math.floatEpsAt(f16, 0x1.654p0));
+    try testing.expectApproxEqAbs(0x1.6d8p-2, acosBinary16(0x1.dfcp-1), math.floatEpsAt(f16, 0x1.6d8p-2));
+    try testing.expectApproxEqAbs(0x1.32p1, acosBinary16(-0x1.764p-1), math.floatEpsAt(f16, 0x1.32p1));
+    try testing.expectApproxEqAbs(0x1.5b8p0, acosBinary16(0x1.b18p-3), math.floatEpsAt(f16, 0x1.5b8p0));
+    try testing.expectApproxEqAbs(0x1.668p0, acosBinary16(0x1.5acp-3), math.floatEpsAt(f16, 0x1.668p0));
+    try testing.expectApproxEqAbs(0x1.134p1, acosBinary16(-0x1.18cp-1), math.floatEpsAt(f16, 0x1.134p1));
+    try testing.expectApproxEqAbs(0x1.0dp1, acosBinary16(-0x1.03p-1), math.floatEpsAt(f16, 0x1.0dp1));
 }
 
 test "acosBinary32.special" {
-    try testing.expectApproxEqAbs(acosBinary32(0x0p+0), 0x1.921fb6p+0, math.floatEpsAt(f32, 0x1.921fb6p+0));
-    try testing.expectApproxEqAbs(acosBinary32(-0x1p+0), 0x1.921fb6p+1, math.floatEpsAt(f32, 0x1.921fb6p+1));
-    try testing.expectEqual(acosBinary32(0x1p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb6p+0, acosBinary32(0x0p+0), math.floatEpsAt(f32, 0x1.921fb6p+0));
+    try testing.expectApproxEqAbs(0x1.921fb6p+1, acosBinary32(-0x1p+0), math.floatEpsAt(f32, 0x1.921fb6p+1));
+    try testing.expectEqual(0x0p+0, acosBinary32(0x1p+0));
     try testing.expect(math.isNan(acosBinary32(0x1.000002p+0)));
     try testing.expect(math.isNan(acosBinary32(-0x1.000002p+0)));
     try testing.expect(math.isNan(acosBinary32(math.inf(f32))));
@@ -358,22 +358,22 @@ test "acosBinary32.special" {
 }
 
 test "acosBinary32" {
-    try testing.expectApproxEqAbs(acosBinary32(-0x1.13284cp-2), 0x1.d7c4e6p+0, math.floatEpsAt(f32, 0x1.d7c4e6p+0));
-    try testing.expectApproxEqAbs(acosBinary32(0x1.6ca8ep-1), 0x1.8e6756p-1, math.floatEpsAt(f32, 0x1.8e6756p-1));
-    try testing.expectApproxEqAbs(acosBinary32(0x1.c2ca6p-1), 0x1.f9d74cp-2, math.floatEpsAt(f32, 0x1.f9d74cp-2));
-    try testing.expectApproxEqAbs(acosBinary32(-0x1.55f12p-1), 0x1.26abdcp+1, math.floatEpsAt(f32, 0x1.26abdcp+1));
-    try testing.expectApproxEqAbs(acosBinary32(-0x1.15679ep-2), 0x1.d85a44p+0, math.floatEpsAt(f32, 0x1.d85a44p+0));
-    try testing.expectApproxEqAbs(acosBinary32(-0x1.41e132p-5), 0x1.9c2f68p+0, math.floatEpsAt(f32, 0x1.9c2f68p+0));
-    try testing.expectApproxEqAbs(acosBinary32(0x1.281b0ep-1), 0x1.e881bp-1, math.floatEpsAt(f32, 0x1.e881bp-1));
-    try testing.expectApproxEqAbs(acosBinary32(0x1.b5ce34p-1), 0x1.1713f6p-1, math.floatEpsAt(f32, 0x1.1713f6p-1));
-    try testing.expectApproxEqAbs(acosBinary32(-0x1.583482p-3), 0x1.bd5accp+0, math.floatEpsAt(f32, 0x1.bd5accp+0));
-    try testing.expectApproxEqAbs(acosBinary32(-0x1.ea8224p-1), 0x1.6ce7d8p+1, math.floatEpsAt(f32, 0x1.6ce7d8p+1));
+    try testing.expectApproxEqAbs(0x1.d7c4e6p+0, acosBinary32(-0x1.13284cp-2), math.floatEpsAt(f32, 0x1.d7c4e6p+0));
+    try testing.expectApproxEqAbs(0x1.8e6756p-1, acosBinary32(0x1.6ca8ep-1), math.floatEpsAt(f32, 0x1.8e6756p-1));
+    try testing.expectApproxEqAbs(0x1.f9d74cp-2, acosBinary32(0x1.c2ca6p-1), math.floatEpsAt(f32, 0x1.f9d74cp-2));
+    try testing.expectApproxEqAbs(0x1.26abdcp+1, acosBinary32(-0x1.55f12p-1), math.floatEpsAt(f32, 0x1.26abdcp+1));
+    try testing.expectApproxEqAbs(0x1.d85a44p+0, acosBinary32(-0x1.15679ep-2), math.floatEpsAt(f32, 0x1.d85a44p+0));
+    try testing.expectApproxEqAbs(0x1.9c2f68p+0, acosBinary32(-0x1.41e132p-5), math.floatEpsAt(f32, 0x1.9c2f68p+0));
+    try testing.expectApproxEqAbs(0x1.e881bp-1, acosBinary32(0x1.281b0ep-1), math.floatEpsAt(f32, 0x1.e881bp-1));
+    try testing.expectApproxEqAbs(0x1.1713f6p-1, acosBinary32(0x1.b5ce34p-1), math.floatEpsAt(f32, 0x1.1713f6p-1));
+    try testing.expectApproxEqAbs(0x1.bd5accp+0, acosBinary32(-0x1.583482p-3), math.floatEpsAt(f32, 0x1.bd5accp+0));
+    try testing.expectApproxEqAbs(0x1.6ce7d8p+1, acosBinary32(-0x1.ea8224p-1), math.floatEpsAt(f32, 0x1.6ce7d8p+1));
 }
 
 test "acosBinary64.special" {
-    try testing.expectApproxEqAbs(acosBinary64(0x0p+0), 0x1.921fb54442d18p+0, math.floatEpsAt(f64, 0x1.921fb54442d18p+0));
-    try testing.expectApproxEqAbs(acosBinary64(-0x1p+0), 0x1.921fb54442d18p+1, math.floatEpsAt(f64, 0x1.921fb54442d18p+1));
-    try testing.expectEqual(acosBinary64(0x1p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb54442d18p+0, acosBinary64(0x0p+0), math.floatEpsAt(f64, 0x1.921fb54442d18p+0));
+    try testing.expectApproxEqAbs(0x1.921fb54442d18p+1, acosBinary64(-0x1p+0), math.floatEpsAt(f64, 0x1.921fb54442d18p+1));
+    try testing.expectEqual(0x0p+0, acosBinary64(0x1p+0));
     try testing.expect(math.isNan(acosBinary64(0x1.0000000000001p+0)));
     try testing.expect(math.isNan(acosBinary64(-0x1.0000000000001p+0)));
     try testing.expect(math.isNan(acosBinary64(math.inf(f64))));
@@ -382,22 +382,22 @@ test "acosBinary64.special" {
 }
 
 test "acosBinary64" {
-    try testing.expectApproxEqAbs(acosBinary64(-0x1.13284b2b5006dp-2), 0x1.d7c4e61020905p+0, math.floatEpsAt(f64, 0x1.d7c4e61020905p+0));
-    try testing.expectApproxEqAbs(acosBinary64(0x1.6ca8dfb825911p-1), 0x1.8e6756e27c366p-1, math.floatEpsAt(f64, 0x1.8e6756e27c366p-1));
-    try testing.expectApproxEqAbs(acosBinary64(0x1.c2ca609de7505p-1), 0x1.f9d748eaf956p-2, math.floatEpsAt(f64, 0x1.f9d748eaf956p-2));
-    try testing.expectApproxEqAbs(acosBinary64(-0x1.55f11fba96889p-1), 0x1.26abdc68d07aap+1, math.floatEpsAt(f64, 0x1.26abdc68d07aap+1));
-    try testing.expectApproxEqAbs(acosBinary64(-0x1.15679e27084ddp-2), 0x1.d85a44ea44fe4p+0, math.floatEpsAt(f64, 0x1.d85a44ea44fe4p+0));
-    try testing.expectApproxEqAbs(acosBinary64(-0x1.41e131b093c41p-5), 0x1.9c2f688eee8abp+0, math.floatEpsAt(f64, 0x1.9c2f688eee8abp+0));
-    try testing.expectApproxEqAbs(acosBinary64(0x1.281b0d18455f5p-1), 0x1.e881b1d4eb2a1p-1, math.floatEpsAt(f64, 0x1.e881b1d4eb2a1p-1));
-    try testing.expectApproxEqAbs(acosBinary64(0x1.b5ce34a51b239p-1), 0x1.1713f567a87efp-1, math.floatEpsAt(f64, 0x1.1713f567a87efp-1));
-    try testing.expectApproxEqAbs(acosBinary64(-0x1.583481079de4dp-3), 0x1.bd5acbe8fcc59p+0, math.floatEpsAt(f64, 0x1.bd5acbe8fcc59p+0));
-    try testing.expectApproxEqAbs(acosBinary64(-0x1.ea8223103b871p-1), 0x1.6ce7d66f628e5p+1, math.floatEpsAt(f64, 0x1.6ce7d66f628e5p+1));
+    try testing.expectApproxEqAbs(0x1.d7c4e61020905p+0, acosBinary64(-0x1.13284b2b5006dp-2), math.floatEpsAt(f64, 0x1.d7c4e61020905p+0));
+    try testing.expectApproxEqAbs(0x1.8e6756e27c366p-1, acosBinary64(0x1.6ca8dfb825911p-1), math.floatEpsAt(f64, 0x1.8e6756e27c366p-1));
+    try testing.expectApproxEqAbs(0x1.f9d748eaf956p-2, acosBinary64(0x1.c2ca609de7505p-1), math.floatEpsAt(f64, 0x1.f9d748eaf956p-2));
+    try testing.expectApproxEqAbs(0x1.26abdc68d07aap+1, acosBinary64(-0x1.55f11fba96889p-1), math.floatEpsAt(f64, 0x1.26abdc68d07aap+1));
+    try testing.expectApproxEqAbs(0x1.d85a44ea44fe4p+0, acosBinary64(-0x1.15679e27084ddp-2), math.floatEpsAt(f64, 0x1.d85a44ea44fe4p+0));
+    try testing.expectApproxEqAbs(0x1.9c2f688eee8abp+0, acosBinary64(-0x1.41e131b093c41p-5), math.floatEpsAt(f64, 0x1.9c2f688eee8abp+0));
+    try testing.expectApproxEqAbs(0x1.e881b1d4eb2a1p-1, acosBinary64(0x1.281b0d18455f5p-1), math.floatEpsAt(f64, 0x1.e881b1d4eb2a1p-1));
+    try testing.expectApproxEqAbs(0x1.1713f567a87efp-1, acosBinary64(0x1.b5ce34a51b239p-1), math.floatEpsAt(f64, 0x1.1713f567a87efp-1));
+    try testing.expectApproxEqAbs(0x1.bd5acbe8fcc59p+0, acosBinary64(-0x1.583481079de4dp-3), math.floatEpsAt(f64, 0x1.bd5acbe8fcc59p+0));
+    try testing.expectApproxEqAbs(0x1.6ce7d66f628e5p+1, acosBinary64(-0x1.ea8223103b871p-1), math.floatEpsAt(f64, 0x1.6ce7d66f628e5p+1));
 }
 
 test "acosExtended80.special" {
-    try testing.expectApproxEqAbs(acosExtended80(0x0p+0), 0x1.921fb54442d1846ap+0, math.floatEpsAt(f80, 0x1.921fb54442d1846ap+0));
-    try testing.expectApproxEqAbs(acosExtended80(-0x1p+0), 0x1.921fb54442d1846ap+1, math.floatEpsAt(f80, 0x1.921fb54442d1846ap+1));
-    try testing.expectEqual(acosExtended80(0x1p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb54442d1846ap+0, acosExtended80(0x0p+0), math.floatEpsAt(f80, 0x1.921fb54442d1846ap+0));
+    try testing.expectApproxEqAbs(0x1.921fb54442d1846ap+1, acosExtended80(-0x1p+0), math.floatEpsAt(f80, 0x1.921fb54442d1846ap+1));
+    try testing.expectEqual(0x0p+0, acosExtended80(0x1p+0));
     try testing.expect(math.isNan(acosExtended80(0x1.0000000000000002p+0)));
     try testing.expect(math.isNan(acosExtended80(-0x1.0000000000000002p+0)));
     try testing.expect(math.isNan(acosExtended80(math.inf(f80))));
@@ -406,22 +406,22 @@ test "acosExtended80.special" {
 }
 
 test "acosExtended80" {
-    try testing.expectApproxEqAbs(acosExtended80(0x1.72068a321edc8804p-1), 0x1.86b349040d28f794p-1, math.floatEpsAt(f80, 0x1.86b349040d28f794p-1));
-    try testing.expectApproxEqAbs(acosExtended80(-0x1.06d0a467d22977ecp-2), 0x1.d4923ade73ec379cp0, math.floatEpsAt(f80, 0x1.d4923ade73ec379cp0));
-    try testing.expectApproxEqAbs(acosExtended80(0x1.77d21385faa9798ap-3), 0x1.62e0e8898c6d04f2p0, math.floatEpsAt(f80, 0x1.62e0e8898c6d04f2p0));
-    try testing.expectApproxEqAbs(acosExtended80(-0x1.73ee3e8bc2a44dbep-1), 0x1.3123cbcd5dc4bd58p1, math.floatEpsAt(f80, 0x1.3123cbcd5dc4bd58p1));
-    try testing.expectApproxEqAbs(acosExtended80(0x1.0a2dd1f6ffcf668ap-1), 0x1.062a6d562df2d316p0, math.floatEpsAt(f80, 0x1.062a6d562df2d316p0));
-    try testing.expectApproxEqAbs(acosExtended80(0x1.8e835c490a3aff9ep-3), 0x1.5ffd68b520aa55fap0, math.floatEpsAt(f80, 0x1.5ffd68b520aa55fap0));
-    try testing.expectApproxEqAbs(acosExtended80(0x1.add20cdc1565064cp-3), 0x1.5bfe6cabda700684p0, math.floatEpsAt(f80, 0x1.5bfe6cabda700684p0));
-    try testing.expectApproxEqAbs(acosExtended80(0x1.21986d43727fca72p-8), 0x1.90fe1c993b571924p0, math.floatEpsAt(f80, 0x1.90fe1c993b571924p0));
-    try testing.expectApproxEqAbs(acosExtended80(0x1.d61e0b3fae6a0564p-2), 0x1.18044ccc626e7f9ep0, math.floatEpsAt(f80, 0x1.18044ccc626e7f9ep0));
-    try testing.expectApproxEqAbs(acosExtended80(-0x1.171e7c4a41883ccap-4), 0x1.a39513b6c16532b4p0, math.floatEpsAt(f80, 0x1.a39513b6c16532b4p0));
+    try testing.expectApproxEqAbs(0x1.86b349040d28f794p-1, acosExtended80(0x1.72068a321edc8804p-1), math.floatEpsAt(f80, 0x1.86b349040d28f794p-1));
+    try testing.expectApproxEqAbs(0x1.d4923ade73ec379cp0, acosExtended80(-0x1.06d0a467d22977ecp-2), math.floatEpsAt(f80, 0x1.d4923ade73ec379cp0));
+    try testing.expectApproxEqAbs(0x1.62e0e8898c6d04f2p0, acosExtended80(0x1.77d21385faa9798ap-3), math.floatEpsAt(f80, 0x1.62e0e8898c6d04f2p0));
+    try testing.expectApproxEqAbs(0x1.3123cbcd5dc4bd58p1, acosExtended80(-0x1.73ee3e8bc2a44dbep-1), math.floatEpsAt(f80, 0x1.3123cbcd5dc4bd58p1));
+    try testing.expectApproxEqAbs(0x1.062a6d562df2d316p0, acosExtended80(0x1.0a2dd1f6ffcf668ap-1), math.floatEpsAt(f80, 0x1.062a6d562df2d316p0));
+    try testing.expectApproxEqAbs(0x1.5ffd68b520aa55fap0, acosExtended80(0x1.8e835c490a3aff9ep-3), math.floatEpsAt(f80, 0x1.5ffd68b520aa55fap0));
+    try testing.expectApproxEqAbs(0x1.5bfe6cabda700684p0, acosExtended80(0x1.add20cdc1565064cp-3), math.floatEpsAt(f80, 0x1.5bfe6cabda700684p0));
+    try testing.expectApproxEqAbs(0x1.90fe1c993b571924p0, acosExtended80(0x1.21986d43727fca72p-8), math.floatEpsAt(f80, 0x1.90fe1c993b571924p0));
+    try testing.expectApproxEqAbs(0x1.18044ccc626e7f9ep0, acosExtended80(0x1.d61e0b3fae6a0564p-2), math.floatEpsAt(f80, 0x1.18044ccc626e7f9ep0));
+    try testing.expectApproxEqAbs(0x1.a39513b6c16532b4p0, acosExtended80(-0x1.171e7c4a41883ccap-4), math.floatEpsAt(f80, 0x1.a39513b6c16532b4p0));
 }
 
 test "acosBinary128.special" {
-    try testing.expectApproxEqAbs(acosBinary128(0x0p+0), 0x1.921fb54442d18469898cc51701b8p0, math.floatEpsAt(f128, 0x1.921fb54442d18469898cc51701b8p0));
-    try testing.expectApproxEqAbs(acosBinary128(-0x1p+0), 0x1.921fb54442d18469898cc51701b8p1, math.floatEpsAt(f128, 0x1.921fb54442d18469898cc51701b8p1));
-    try testing.expectEqual(acosBinary128(0x1p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb54442d18469898cc51701b8p0, acosBinary128(0x0p+0), math.floatEpsAt(f128, 0x1.921fb54442d18469898cc51701b8p0));
+    try testing.expectApproxEqAbs(0x1.921fb54442d18469898cc51701b8p1, acosBinary128(-0x1p+0), math.floatEpsAt(f128, 0x1.921fb54442d18469898cc51701b8p1));
+    try testing.expectEqual(0x0p+0, acosBinary128(0x1p+0));
     try testing.expect(math.isNan(acosBinary128(0x1.0000000000000000000000000001p0)));
     try testing.expect(math.isNan(acosBinary128(-0x1.0000000000000000000000000001p0)));
     try testing.expect(math.isNan(acosBinary128(math.inf(f128))));
@@ -430,14 +430,14 @@ test "acosBinary128.special" {
 }
 
 test "acosBinary128" {
-    try testing.expectApproxEqAbs(acosBinary128(-0x1.511bdb99a3c4373bedf834ef4f68p-1), 0x1.250e9a58f049eeafa99db4360c88p1, math.floatEpsAt(f128, 0x1.250e9a58f049eeafa99db4360c88p1));
-    try testing.expectApproxEqAbs(acosBinary128(-0x1.5879cc3ad6dfd2a52e9891c69808p-1), 0x1.2786664b1c676c99437b68590004p1, math.floatEpsAt(f128, 0x1.2786664b1c676c99437b68590004p1));
-    try testing.expectApproxEqAbs(acosBinary128(0x1.3f988ba64a7eb97a751c5f0b3077p-1), 0x1.cb190cd361c7c03a09c470b4caebp-1, math.floatEpsAt(f128, 0x1.cb190cd361c7c03a09c470b4caebp-1));
-    try testing.expectApproxEqAbs(acosBinary128(-0x1.3f2d96c7768e4c4fa02315727959p-1), 0x1.1f373be697880111758f582b1a96p1, math.floatEpsAt(f128, 0x1.1f373be697880111758f582b1a96p1));
-    try testing.expectApproxEqAbs(acosBinary128(0x1.fad303c2e28c1f4d8f9fd0e5686fp-2), 0x1.0d92fd2a0a6ca3e4853c1de9ea6ap0, math.floatEpsAt(f128, 0x1.0d92fd2a0a6ca3e4853c1de9ea6ap0));
-    try testing.expectApproxEqAbs(acosBinary128(0x1.ddde322bd1a2ee50c5ba30c9c617p-2), 0x1.15d4b306e16fbf9ea4f29e82b154p0, math.floatEpsAt(f128, 0x1.15d4b306e16fbf9ea4f29e82b154p0));
-    try testing.expectApproxEqAbs(acosBinary128(-0x1.b02f6adefcbeb1d48666b827ff17p-1), 0x1.49b0a0355a5539052388e8a6dc11p1, math.floatEpsAt(f128, 0x1.49b0a0355a5539052388e8a6dc11p1));
-    try testing.expectApproxEqAbs(acosBinary128(0x1.c8581cce7cd3f6efab0fc60d9b7dp-2), 0x1.1be0b757f4cef022f5d2422b9c78p0, math.floatEpsAt(f128, 0x1.1be0b757f4cef022f5d2422b9c78p0));
-    try testing.expectApproxEqAbs(acosBinary128(-0x1.bf887b8c4e33cbef59993056f3dep-1), 0x1.513270e671db2d840f20b0186c2cp1, math.floatEpsAt(f128, 0x1.513270e671db2d840f20b0186c2cp1));
-    try testing.expectApproxEqAbs(acosBinary128(0x1.0c0f600ab6f9c84c6102942044cep-3), 0x1.70851a509f0e8bfbe780aa8f29f9p0, math.floatEpsAt(f128, 0x1.70851a509f0e8bfbe780aa8f29f9p0));
+    try testing.expectApproxEqAbs(0x1.250e9a58f049eeafa99db4360c88p1, acosBinary128(-0x1.511bdb99a3c4373bedf834ef4f68p-1), math.floatEpsAt(f128, 0x1.250e9a58f049eeafa99db4360c88p1));
+    try testing.expectApproxEqAbs(0x1.2786664b1c676c99437b68590004p1, acosBinary128(-0x1.5879cc3ad6dfd2a52e9891c69808p-1), math.floatEpsAt(f128, 0x1.2786664b1c676c99437b68590004p1));
+    try testing.expectApproxEqAbs(0x1.cb190cd361c7c03a09c470b4caebp-1, acosBinary128(0x1.3f988ba64a7eb97a751c5f0b3077p-1), math.floatEpsAt(f128, 0x1.cb190cd361c7c03a09c470b4caebp-1));
+    try testing.expectApproxEqAbs(0x1.1f373be697880111758f582b1a96p1, acosBinary128(-0x1.3f2d96c7768e4c4fa02315727959p-1), math.floatEpsAt(f128, 0x1.1f373be697880111758f582b1a96p1));
+    try testing.expectApproxEqAbs(0x1.0d92fd2a0a6ca3e4853c1de9ea6ap0, acosBinary128(0x1.fad303c2e28c1f4d8f9fd0e5686fp-2), math.floatEpsAt(f128, 0x1.0d92fd2a0a6ca3e4853c1de9ea6ap0));
+    try testing.expectApproxEqAbs(0x1.15d4b306e16fbf9ea4f29e82b154p0, acosBinary128(0x1.ddde322bd1a2ee50c5ba30c9c617p-2), math.floatEpsAt(f128, 0x1.15d4b306e16fbf9ea4f29e82b154p0));
+    try testing.expectApproxEqAbs(0x1.49b0a0355a5539052388e8a6dc11p1, acosBinary128(-0x1.b02f6adefcbeb1d48666b827ff17p-1), math.floatEpsAt(f128, 0x1.49b0a0355a5539052388e8a6dc11p1));
+    try testing.expectApproxEqAbs(0x1.1be0b757f4cef022f5d2422b9c78p0, acosBinary128(0x1.c8581cce7cd3f6efab0fc60d9b7dp-2), math.floatEpsAt(f128, 0x1.1be0b757f4cef022f5d2422b9c78p0));
+    try testing.expectApproxEqAbs(0x1.513270e671db2d840f20b0186c2cp1, acosBinary128(-0x1.bf887b8c4e33cbef59993056f3dep-1), math.floatEpsAt(f128, 0x1.513270e671db2d840f20b0186c2cp1));
+    try testing.expectApproxEqAbs(0x1.70851a509f0e8bfbe780aa8f29f9p0, acosBinary128(0x1.0c0f600ab6f9c84c6102942044cep-3), math.floatEpsAt(f128, 0x1.70851a509f0e8bfbe780aa8f29f9p0));
 }

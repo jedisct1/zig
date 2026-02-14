@@ -312,10 +312,10 @@ fn asinBinary128(x: f128) f128 {
 }
 
 test "asinBinary16.special" {
-    try testing.expectApproxEqAbs(asinBinary16(0x1p+0), 0x1.92p0, math.floatEpsAt(f16, 0x1.92p0));
-    try testing.expectApproxEqAbs(asinBinary16(-0x1p+0), -0x1.92p0, math.floatEpsAt(f16, -0x1.92p0));
-    try testing.expectEqual(asinBinary16(0x0p+0), 0x0p+0);
-    try testing.expectEqual(asinBinary16(-0x0p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.92p0, asinBinary16(0x1p+0), math.floatEpsAt(f16, 0x1.92p0));
+    try testing.expectApproxEqAbs(-0x1.92p0, asinBinary16(-0x1p+0), math.floatEpsAt(f16, -0x1.92p0));
+    try testing.expectEqual(0x0p+0, asinBinary16(0x0p+0));
+    try testing.expectEqual(0x0p+0, asinBinary16(-0x0p+0));
     try testing.expect(math.isNan(asinBinary16(0x1.004p0)));
     try testing.expect(math.isNan(asinBinary16(-0x1.004p0)));
     try testing.expect(math.isNan(asinBinary16(math.inf(f16))));
@@ -324,23 +324,23 @@ test "asinBinary16.special" {
 }
 
 test "asinBinary16" {
-    try testing.expectApproxEqAbs(asinBinary16(-0x1.e4cp-6), -0x1.e4cp-6, math.floatEpsAt(f16, -0x1.e4cp-6));
-    try testing.expectApproxEqAbs(asinBinary16(0x1.d68p-1), 0x1.2a8p0, math.floatEpsAt(f16, 0x1.2a8p0));
-    try testing.expectApproxEqAbs(asinBinary16(-0x1.a4cp-1), -0x1.eep-1, math.floatEpsAt(f16, -0x1.eep-1));
-    try testing.expectApproxEqAbs(asinBinary16(-0x1.0a4p-2), -0x1.0d4p-2, math.floatEpsAt(f16, -0x1.0d4p-2));
-    try testing.expectApproxEqAbs(asinBinary16(0x1.28cp-1), 0x1.3c8p-1, math.floatEpsAt(f16, 0x1.3c8p-1));
-    try testing.expectApproxEqAbs(asinBinary16(0x1.284p-3), 0x1.298p-3, math.floatEpsAt(f16, 0x1.298p-3));
-    try testing.expectApproxEqAbs(asinBinary16(-0x1.574p-1), -0x1.784p-1, math.floatEpsAt(f16, -0x1.784p-1));
-    try testing.expectApproxEqAbs(asinBinary16(-0x1.4ccp-1), -0x1.6a4p-1, math.floatEpsAt(f16, -0x1.6a4p-1));
-    try testing.expectApproxEqAbs(asinBinary16(0x1.a18p-1), 0x1.e84p-1, math.floatEpsAt(f16, 0x1.e84p-1));
-    try testing.expectApproxEqAbs(asinBinary16(0x1.7a8p-2), 0x1.83cp-2, math.floatEpsAt(f16, 0x1.83cp-2));
+    try testing.expectApproxEqAbs(-0x1.e4cp-6, asinBinary16(-0x1.e4cp-6), math.floatEpsAt(f16, -0x1.e4cp-6));
+    try testing.expectApproxEqAbs(0x1.2a8p0, asinBinary16(0x1.d68p-1), math.floatEpsAt(f16, 0x1.2a8p0));
+    try testing.expectApproxEqAbs(-0x1.eep-1, asinBinary16(-0x1.a4cp-1), math.floatEpsAt(f16, -0x1.eep-1));
+    try testing.expectApproxEqAbs(-0x1.0d4p-2, asinBinary16(-0x1.0a4p-2), math.floatEpsAt(f16, -0x1.0d4p-2));
+    try testing.expectApproxEqAbs(0x1.3c8p-1, asinBinary16(0x1.28cp-1), math.floatEpsAt(f16, 0x1.3c8p-1));
+    try testing.expectApproxEqAbs(0x1.298p-3, asinBinary16(0x1.284p-3), math.floatEpsAt(f16, 0x1.298p-3));
+    try testing.expectApproxEqAbs(-0x1.784p-1, asinBinary16(-0x1.574p-1), math.floatEpsAt(f16, -0x1.784p-1));
+    try testing.expectApproxEqAbs(-0x1.6a4p-1, asinBinary16(-0x1.4ccp-1), math.floatEpsAt(f16, -0x1.6a4p-1));
+    try testing.expectApproxEqAbs(0x1.e84p-1, asinBinary16(0x1.a18p-1), math.floatEpsAt(f16, 0x1.e84p-1));
+    try testing.expectApproxEqAbs(0x1.83cp-2, asinBinary16(0x1.7a8p-2), math.floatEpsAt(f16, 0x1.83cp-2));
 }
 
 test "asinBinary32.special" {
-    try testing.expectApproxEqAbs(asinBinary32(0x1p+0), 0x1.921fb6p+0, math.floatEpsAt(f32, 0x1.921fb6p+0));
-    try testing.expectApproxEqAbs(asinBinary32(-0x1p+0), -0x1.921fb6p+0, math.floatEpsAt(f32, -0x1.921fb6p+0));
-    try testing.expectEqual(asinBinary32(0x0p+0), 0x0p+0);
-    try testing.expectEqual(asinBinary32(-0x0p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb6p+0, asinBinary32(0x1p+0), math.floatEpsAt(f32, 0x1.921fb6p+0));
+    try testing.expectApproxEqAbs(-0x1.921fb6p+0, asinBinary32(-0x1p+0), math.floatEpsAt(f32, -0x1.921fb6p+0));
+    try testing.expectEqual(0x0p+0, asinBinary32(0x0p+0));
+    try testing.expectEqual(0x0p+0, asinBinary32(-0x0p+0));
     try testing.expect(math.isNan(asinBinary32(0x1.000002p+0)));
     try testing.expect(math.isNan(asinBinary32(-0x1.000002p+0)));
     try testing.expect(math.isNan(asinBinary32(math.inf(f32))));
@@ -349,23 +349,23 @@ test "asinBinary32.special" {
 }
 
 test "asinBinary32" {
-    try testing.expectApproxEqAbs(asinBinary32(-0x1.4c2906p-4), -0x1.4c868p-4, math.floatEpsAt(f32, -0x1.4c868p-4));
-    try testing.expectApproxEqAbs(asinBinary32(0x1.05fcfap-1), 0x1.130648p-1, math.floatEpsAt(f32, 0x1.130648p-1));
-    try testing.expectApproxEqAbs(asinBinary32(0x1.fab976p-2), 0x1.090abcp-1, math.floatEpsAt(f32, 0x1.090abcp-1));
-    try testing.expectApproxEqAbs(asinBinary32(0x1.8b4b8cp-1), 0x1.c39fa2p-1, math.floatEpsAt(f32, 0x1.c39fa2p-1));
-    try testing.expectApproxEqAbs(asinBinary32(0x1.7117c2p-1), 0x1.9c332p-1, math.floatEpsAt(f32, 0x1.9c332p-1));
-    try testing.expectApproxEqAbs(asinBinary32(0x1.e5e112p-5), 0x1.e62a1cp-5, math.floatEpsAt(f32, 0x1.e62a1cp-5));
-    try testing.expectApproxEqAbs(asinBinary32(-0x1.07673p-2), -0x1.0a65dep-2, math.floatEpsAt(f32, -0x1.0a65dep-2));
-    try testing.expectApproxEqAbs(asinBinary32(-0x1.2108dep-2), -0x1.25046p-2, math.floatEpsAt(f32, -0x1.25046p-2));
-    try testing.expectApproxEqAbs(asinBinary32(-0x1.4e6e6cp-1), -0x1.6c6f0cp-1, math.floatEpsAt(f32, -0x1.6c6f0cp-1));
-    try testing.expectApproxEqAbs(asinBinary32(0x1.22a16ap-1), 0x1.350f7ap-1, math.floatEpsAt(f32, 0x1.350f7ap-1));
+    try testing.expectApproxEqAbs(-0x1.4c868p-4, asinBinary32(-0x1.4c2906p-4), math.floatEpsAt(f32, -0x1.4c868p-4));
+    try testing.expectApproxEqAbs(0x1.130648p-1, asinBinary32(0x1.05fcfap-1), math.floatEpsAt(f32, 0x1.130648p-1));
+    try testing.expectApproxEqAbs(0x1.090abcp-1, asinBinary32(0x1.fab976p-2), math.floatEpsAt(f32, 0x1.090abcp-1));
+    try testing.expectApproxEqAbs(0x1.c39fa2p-1, asinBinary32(0x1.8b4b8cp-1), math.floatEpsAt(f32, 0x1.c39fa2p-1));
+    try testing.expectApproxEqAbs(0x1.9c332p-1, asinBinary32(0x1.7117c2p-1), math.floatEpsAt(f32, 0x1.9c332p-1));
+    try testing.expectApproxEqAbs(0x1.e62a1cp-5, asinBinary32(0x1.e5e112p-5), math.floatEpsAt(f32, 0x1.e62a1cp-5));
+    try testing.expectApproxEqAbs(-0x1.0a65dep-2, asinBinary32(-0x1.07673p-2), math.floatEpsAt(f32, -0x1.0a65dep-2));
+    try testing.expectApproxEqAbs(-0x1.25046p-2, asinBinary32(-0x1.2108dep-2), math.floatEpsAt(f32, -0x1.25046p-2));
+    try testing.expectApproxEqAbs(-0x1.6c6f0cp-1, asinBinary32(-0x1.4e6e6cp-1), math.floatEpsAt(f32, -0x1.6c6f0cp-1));
+    try testing.expectApproxEqAbs(0x1.350f7ap-1, asinBinary32(0x1.22a16ap-1), math.floatEpsAt(f32, 0x1.350f7ap-1));
 }
 
 test "asinBinary64.special" {
-    try testing.expectApproxEqAbs(asinBinary64(0x1p+0), 0x1.921fb54442d18p+0, math.floatEpsAt(f64, 0x1.921fb54442d18p+0));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1p+0), -0x1.921fb54442d18p+0, math.floatEpsAt(f64, -0x1.921fb54442d18p+0));
-    try testing.expectEqual(asinBinary64(0x0p+0), 0x0p+0);
-    try testing.expectEqual(asinBinary64(-0x0p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb54442d18p+0, asinBinary64(0x1p+0), math.floatEpsAt(f64, 0x1.921fb54442d18p+0));
+    try testing.expectApproxEqAbs(-0x1.921fb54442d18p+0, asinBinary64(-0x1p+0), math.floatEpsAt(f64, -0x1.921fb54442d18p+0));
+    try testing.expectEqual(0x0p+0, asinBinary64(0x0p+0));
+    try testing.expectEqual(0x0p+0, asinBinary64(-0x0p+0));
     try testing.expect(math.isNan(asinBinary64(0x1.000002p+0)));
     try testing.expect(math.isNan(asinBinary64(-0x1.000002p+0)));
     try testing.expect(math.isNan(asinBinary64(math.inf(f64))));
@@ -374,23 +374,23 @@ test "asinBinary64.special" {
 }
 
 test "asinBinary64" {
-    try testing.expectApproxEqAbs(asinBinary64(0x1.e674fba3e40d5p-2), 0x1.fae86c5941692p-2, math.floatEpsAt(f64, 0x1.fae86c5941692p-2));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1.30fd0566fd979p-1), -0x1.46b6ad730c93ap-1, math.floatEpsAt(f64, -0x1.46b6ad730c93ap-1));
-    try testing.expectApproxEqAbs(asinBinary64(0x1.6444a25abfeaap-2), 0x1.6be0be8074eep-2, math.floatEpsAt(f64, 0x1.6be0be8074eep-2));
-    try testing.expectApproxEqAbs(asinBinary64(0x1.40a53228d1a13p-1), 0x1.5a7e98f53f717p-1, math.floatEpsAt(f64, 0x1.5a7e98f53f717p-1));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1.ccc6d64845cfdp-1), -0x1.1ea2602d14e8p0, math.floatEpsAt(f64, -0x1.1ea2602d14e8p0));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1.94bd91b7fc74bp-1), -0x1.d2c2634193158p-1, math.floatEpsAt(f64, -0x1.d2c2634193158p-1));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1.8d741b5797fccp-2), -0x1.982d5f1895d2p-2, math.floatEpsAt(f64, -0x1.982d5f1895d2p-2));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1.3e8e7e15881c5p-3), -0x1.3fdaf7dfdc864p-3, math.floatEpsAt(f64, -0x1.3fdaf7dfdc864p-3));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1.88222d8ab8ca9p-2), -0x1.9269540735b7bp-2, math.floatEpsAt(f64, -0x1.9269540735b7bp-2));
-    try testing.expectApproxEqAbs(asinBinary64(-0x1.41c0e9babcbd2p-2), -0x1.474c4c6625527p-2, math.floatEpsAt(f64, -0x1.474c4c6625527p-2));
+    try testing.expectApproxEqAbs(0x1.fae86c5941692p-2, asinBinary64(0x1.e674fba3e40d5p-2), math.floatEpsAt(f64, 0x1.fae86c5941692p-2));
+    try testing.expectApproxEqAbs(-0x1.46b6ad730c93ap-1, asinBinary64(-0x1.30fd0566fd979p-1), math.floatEpsAt(f64, -0x1.46b6ad730c93ap-1));
+    try testing.expectApproxEqAbs(0x1.6be0be8074eep-2, asinBinary64(0x1.6444a25abfeaap-2), math.floatEpsAt(f64, 0x1.6be0be8074eep-2));
+    try testing.expectApproxEqAbs(0x1.5a7e98f53f717p-1, asinBinary64(0x1.40a53228d1a13p-1), math.floatEpsAt(f64, 0x1.5a7e98f53f717p-1));
+    try testing.expectApproxEqAbs(-0x1.1ea2602d14e8p0, asinBinary64(-0x1.ccc6d64845cfdp-1), math.floatEpsAt(f64, -0x1.1ea2602d14e8p0));
+    try testing.expectApproxEqAbs(-0x1.d2c2634193158p-1, asinBinary64(-0x1.94bd91b7fc74bp-1), math.floatEpsAt(f64, -0x1.d2c2634193158p-1));
+    try testing.expectApproxEqAbs(-0x1.982d5f1895d2p-2, asinBinary64(-0x1.8d741b5797fccp-2), math.floatEpsAt(f64, -0x1.982d5f1895d2p-2));
+    try testing.expectApproxEqAbs(-0x1.3fdaf7dfdc864p-3, asinBinary64(-0x1.3e8e7e15881c5p-3), math.floatEpsAt(f64, -0x1.3fdaf7dfdc864p-3));
+    try testing.expectApproxEqAbs(-0x1.9269540735b7bp-2, asinBinary64(-0x1.88222d8ab8ca9p-2), math.floatEpsAt(f64, -0x1.9269540735b7bp-2));
+    try testing.expectApproxEqAbs(-0x1.474c4c6625527p-2, asinBinary64(-0x1.41c0e9babcbd2p-2), math.floatEpsAt(f64, -0x1.474c4c6625527p-2));
 }
 
 test "asinExtended80.special" {
-    try testing.expectApproxEqAbs(asinExtended80(0x1p+0), 0x1.921fb54442d1846ap+0, math.floatEpsAt(f80, 0x1.921fb54442d1846ap+0));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1p+0), -0x1.921fb54442d1846ap+0, math.floatEpsAt(f80, -0x1.921fb54442d1846ap+0));
-    try testing.expectEqual(asinExtended80(0x0p+0), 0x0p+0);
-    try testing.expectEqual(asinExtended80(-0x0p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb54442d1846ap+0, asinExtended80(0x1p+0), math.floatEpsAt(f80, 0x1.921fb54442d1846ap+0));
+    try testing.expectApproxEqAbs(-0x1.921fb54442d1846ap+0, asinExtended80(-0x1p+0), math.floatEpsAt(f80, -0x1.921fb54442d1846ap+0));
+    try testing.expectEqual(0x0p+0, asinExtended80(0x0p+0));
+    try testing.expectEqual(0x0p+0, asinExtended80(-0x0p+0));
     try testing.expect(math.isNan(asinExtended80(0x1.0000000000000002p+0)));
     try testing.expect(math.isNan(asinExtended80(-0x1.0000000000000002p+0)));
     try testing.expect(math.isNan(asinExtended80(math.inf(f80))));
@@ -399,23 +399,23 @@ test "asinExtended80.special" {
 }
 
 test "asinExtended80" {
-    try testing.expectApproxEqAbs(asinExtended80(0x1.63cf98bc52ce0da8p-9), 0x1.63cfb560149daa9p-9, math.floatEpsAt(f80, 0x1.63cfb560149daa9p-9));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1.0473756f7ae930dp-1), -0x1.113cbacd8cd1b96cp-1, math.floatEpsAt(f80, -0x1.113cbacd8cd1b96cp-1));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1.2310057e005cc288p-2), -0x1.2721b231d197b064p-2, math.floatEpsAt(f80, -0x1.2721b231d197b064p-2));
-    try testing.expectApproxEqAbs(asinExtended80(0x1.f13b03bd685d96eap-1), 0x1.547c408c5d2b05aap0, math.floatEpsAt(f80, 0x1.547c408c5d2b05aap0));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1.d5c507e3ef84041cp-1), -0x1.296b76bfadbb5cecp0, math.floatEpsAt(f80, -0x1.296b76bfadbb5cecp0));
-    try testing.expectApproxEqAbs(asinExtended80(0x1.8222cbc9147153d8p-1), 0x1.b572da8729a84f2ap-1, math.floatEpsAt(f80, 0x1.b572da8729a84f2ap-1));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1.42c9e6b4a088a246p-11), -0x1.42c9e80ac0524dap-11, math.floatEpsAt(f80, -0x1.42c9e80ac0524dap-11));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1.8f78d49deadb521cp-3), -0x1.920ca86aef6c3028p-3, math.floatEpsAt(f80, -0x1.920ca86aef6c3028p-3));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1.ab98792783515774p-2), -0x1.b91cb4f7204d92fp-2, math.floatEpsAt(f80, -0x1.b91cb4f7204d92fp-2));
-    try testing.expectApproxEqAbs(asinExtended80(-0x1.104fe30cef6800aap-1), -0x1.1f20815fdc4c5304p-1, math.floatEpsAt(f80, -0x1.1f20815fdc4c5304p-1));
+    try testing.expectApproxEqAbs(0x1.63cfb560149daa9p-9, asinExtended80(0x1.63cf98bc52ce0da8p-9), math.floatEpsAt(f80, 0x1.63cfb560149daa9p-9));
+    try testing.expectApproxEqAbs(-0x1.113cbacd8cd1b96cp-1, asinExtended80(-0x1.0473756f7ae930dp-1), math.floatEpsAt(f80, -0x1.113cbacd8cd1b96cp-1));
+    try testing.expectApproxEqAbs(-0x1.2721b231d197b064p-2, asinExtended80(-0x1.2310057e005cc288p-2), math.floatEpsAt(f80, -0x1.2721b231d197b064p-2));
+    try testing.expectApproxEqAbs(0x1.547c408c5d2b05aap0, asinExtended80(0x1.f13b03bd685d96eap-1), math.floatEpsAt(f80, 0x1.547c408c5d2b05aap0));
+    try testing.expectApproxEqAbs(-0x1.296b76bfadbb5cecp0, asinExtended80(-0x1.d5c507e3ef84041cp-1), math.floatEpsAt(f80, -0x1.296b76bfadbb5cecp0));
+    try testing.expectApproxEqAbs(0x1.b572da8729a84f2ap-1, asinExtended80(0x1.8222cbc9147153d8p-1), math.floatEpsAt(f80, 0x1.b572da8729a84f2ap-1));
+    try testing.expectApproxEqAbs(-0x1.42c9e80ac0524dap-11, asinExtended80(-0x1.42c9e6b4a088a246p-11), math.floatEpsAt(f80, -0x1.42c9e80ac0524dap-11));
+    try testing.expectApproxEqAbs(-0x1.920ca86aef6c3028p-3, asinExtended80(-0x1.8f78d49deadb521cp-3), math.floatEpsAt(f80, -0x1.920ca86aef6c3028p-3));
+    try testing.expectApproxEqAbs(-0x1.b91cb4f7204d92fp-2, asinExtended80(-0x1.ab98792783515774p-2), math.floatEpsAt(f80, -0x1.b91cb4f7204d92fp-2));
+    try testing.expectApproxEqAbs(-0x1.1f20815fdc4c5304p-1, asinExtended80(-0x1.104fe30cef6800aap-1), math.floatEpsAt(f80, -0x1.1f20815fdc4c5304p-1));
 }
 
 test "asinBinary128.special" {
-    try testing.expectApproxEqAbs(asinBinary128(0x1p+0), 0x1.921fb54442d18469898cc51701b8p0, math.floatEpsAt(f128, 0x1.921fb54442d18469898cc51701b8p0));
-    try testing.expectApproxEqAbs(asinBinary128(-0x1p+0), -0x1.921fb54442d18469898cc51701b8p0, math.floatEpsAt(f128, -0x1.921fb54442d18469898cc51701b8p0));
-    try testing.expectEqual(asinBinary128(0x0p+0), 0x0p+0);
-    try testing.expectEqual(asinBinary128(-0x0p+0), 0x0p+0);
+    try testing.expectApproxEqAbs(0x1.921fb54442d18469898cc51701b8p0, asinBinary128(0x1p+0), math.floatEpsAt(f128, 0x1.921fb54442d18469898cc51701b8p0));
+    try testing.expectApproxEqAbs(-0x1.921fb54442d18469898cc51701b8p0, asinBinary128(-0x1p+0), math.floatEpsAt(f128, -0x1.921fb54442d18469898cc51701b8p0));
+    try testing.expectEqual(0x0p+0, asinBinary128(0x0p+0));
+    try testing.expectEqual(0x0p+0, asinBinary128(-0x0p+0));
     try testing.expect(math.isNan(asinBinary128(0x1.0000000000000000000000000001p0)));
     try testing.expect(math.isNan(asinBinary128(-0x1.0000000000000000000000000001p0)));
     try testing.expect(math.isNan(asinBinary128(math.inf(f128))));
@@ -424,14 +424,14 @@ test "asinBinary128.special" {
 }
 
 test "asinBinary128" {
-    try testing.expectApproxEqAbs(asinBinary128(0x1.85868ce287ca0196b01c25fec5ffp-3), 0x1.87e9c740d7837f8e8fa667988fbep-3, math.floatEpsAt(f128, 0x1.87e9c740d7837f8e8fa667988fbep-3));
-    try testing.expectApproxEqAbs(asinBinary128(0x1.8718d6d30b4daed08d04ef59f478p-1), 0x1.bd11a474e864213b48e0f005f1f4p-1, math.floatEpsAt(f128, 0x1.bd11a474e864213b48e0f005f1f4p-1));
-    try testing.expectApproxEqAbs(asinBinary128(0x1.11a67640cd7f0ba5d5e362f3abfap-1), 0x1.20b56f8b42649fe72d1f8d68a378p-1, math.floatEpsAt(f128, 0x1.20b56f8b42649fe72d1f8d68a378p-1));
-    try testing.expectApproxEqAbs(asinBinary128(-0x1.bd13bf14a9dce22188e52650daa7p-1), -0x1.0dc3a7ddb9736e5ad699bf338566p0, math.floatEpsAt(f128, -0x1.0dc3a7ddb9736e5ad699bf338566p0));
-    try testing.expectApproxEqAbs(asinBinary128(-0x1.dee0bc217fc462af57c484eefa71p-2), -0x1.f250716038f70fa50a5826c03802p-2, math.floatEpsAt(f128, -0x1.f250716038f70fa50a5826c03802p-2));
-    try testing.expectApproxEqAbs(asinBinary128(-0x1.ea7df9139371c10b9d6fd2bbccd3p-1), -0x1.47a8b4cdd327f90056722feddbabp0, math.floatEpsAt(f128, -0x1.47a8b4cdd327f90056722feddbabp0));
-    try testing.expectApproxEqAbs(asinBinary128(0x1.04aaea6de3b5a616460702f26dfcp-2), 0x1.079178d52be662dec67e2cd7f6e9p-2, math.floatEpsAt(f128, 0x1.079178d52be662dec67e2cd7f6e9p-2));
-    try testing.expectApproxEqAbs(asinBinary128(-0x1.c7ea85e6b61be666435a7d99444cp-1), -0x1.192df5a8d71702cf1e27014887b2p0, math.floatEpsAt(f128, -0x1.192df5a8d71702cf1e27014887b2p0));
-    try testing.expectApproxEqAbs(asinBinary128(-0x1.6e210214e40edf6c8479998189d1p-1), -0x1.97f1092fd94ac0fdfddae2e1222bp-1, math.floatEpsAt(f128, -0x1.97f1092fd94ac0fdfddae2e1222bp-1));
-    try testing.expectApproxEqAbs(asinBinary128(-0x1.95061bf93ed6986a45d20f0e1064p-3), -0x1.97b62bc5ae6512093828828325e1p-3, math.floatEpsAt(f128, -0x1.97b62bc5ae6512093828828325e1p-3));
+    try testing.expectApproxEqAbs(0x1.87e9c740d7837f8e8fa667988fbep-3, asinBinary128(0x1.85868ce287ca0196b01c25fec5ffp-3), math.floatEpsAt(f128, 0x1.87e9c740d7837f8e8fa667988fbep-3));
+    try testing.expectApproxEqAbs(0x1.bd11a474e864213b48e0f005f1f4p-1, asinBinary128(0x1.8718d6d30b4daed08d04ef59f478p-1), math.floatEpsAt(f128, 0x1.bd11a474e864213b48e0f005f1f4p-1));
+    try testing.expectApproxEqAbs(0x1.20b56f8b42649fe72d1f8d68a378p-1, asinBinary128(0x1.11a67640cd7f0ba5d5e362f3abfap-1), math.floatEpsAt(f128, 0x1.20b56f8b42649fe72d1f8d68a378p-1));
+    try testing.expectApproxEqAbs(-0x1.0dc3a7ddb9736e5ad699bf338566p0, asinBinary128(-0x1.bd13bf14a9dce22188e52650daa7p-1), math.floatEpsAt(f128, -0x1.0dc3a7ddb9736e5ad699bf338566p0));
+    try testing.expectApproxEqAbs(-0x1.f250716038f70fa50a5826c03802p-2, asinBinary128(-0x1.dee0bc217fc462af57c484eefa71p-2), math.floatEpsAt(f128, -0x1.f250716038f70fa50a5826c03802p-2));
+    try testing.expectApproxEqAbs(-0x1.47a8b4cdd327f90056722feddbabp0, asinBinary128(-0x1.ea7df9139371c10b9d6fd2bbccd3p-1), math.floatEpsAt(f128, -0x1.47a8b4cdd327f90056722feddbabp0));
+    try testing.expectApproxEqAbs(0x1.079178d52be662dec67e2cd7f6e9p-2, asinBinary128(0x1.04aaea6de3b5a616460702f26dfcp-2), math.floatEpsAt(f128, 0x1.079178d52be662dec67e2cd7f6e9p-2));
+    try testing.expectApproxEqAbs(-0x1.192df5a8d71702cf1e27014887b2p0, asinBinary128(-0x1.c7ea85e6b61be666435a7d99444cp-1), math.floatEpsAt(f128, -0x1.192df5a8d71702cf1e27014887b2p0));
+    try testing.expectApproxEqAbs(-0x1.97f1092fd94ac0fdfddae2e1222bp-1, asinBinary128(-0x1.6e210214e40edf6c8479998189d1p-1), math.floatEpsAt(f128, -0x1.97f1092fd94ac0fdfddae2e1222bp-1));
+    try testing.expectApproxEqAbs(-0x1.97b62bc5ae6512093828828325e1p-3, asinBinary128(-0x1.95061bf93ed6986a45d20f0e1064p-3), math.floatEpsAt(f128, -0x1.97b62bc5ae6512093828828325e1p-3));
 }
