@@ -4,6 +4,12 @@
 // https://git.musl-libc.org/cgit/musl/tree/src/math/acosf.c
 // https://git.musl-libc.org/cgit/musl/tree/src/math/acos.c
 // https://git.musl-libc.org/cgit/musl/tree/src/math/acosl.c
+//
+// Ported from ARM-software, which is licensed under the MIT license:
+// https://github.com/ARM-software/optimized-routines/blob/master/LICENSE
+//
+// https://github.com/ARM-software/optimized-routines/blob/master/math/aarch64/advsimd/acosf.c
+// https://github.com/ARM-software/optimized-routines/blob/master/math/aarch64/advsimd/acos.c
 
 const std = @import("../std.zig");
 const math = std.math;
@@ -17,14 +23,22 @@ const native_endian = builtin.cpu.arch.endian();
 ///  - acos(x)   = nan if x < -1 or x > 1
 pub fn acos(x: anytype) @TypeOf(x) {
     const T = @TypeOf(x);
-    return switch (T) {
-        f16 => acosBinary16(x),
-        f32 => acosBinary32(x),
-        f64 => acosBinary64(x),
-        f80 => acosExtended80(x),
-        f128 => acosBinary128(x),
-        else => @compileError("acos not implemented for " ++ @typeName(T)),
-    };
+    switch (@typeInfo(T)) {
+        .float => |info| switch (info.bits) {
+            16 => return acosBinary16(x),
+            32 => return acosBinary32(x),
+            64 => return acosBinary64(x),
+            80 => return acosExtended80(x),
+            128 => return acosBinary128(x),
+            else => comptime unreachable,
+        },
+        .vector => |info| switch (info.child) {
+            f32 => return acosBinary32Vec(info.len, x),
+            f64 => return acosBinary64Vec(info.len, x),
+            else => @compileError("unimplemented"),
+        },
+        else => comptime unreachable,
+    }
 }
 
 fn approxBinary16(z: f32) f32 {
@@ -440,4 +454,174 @@ test "acosBinary128" {
     try testing.expectApproxEqAbs(0x1.1be0b757f4cef022f5d2422b9c78p0, acosBinary128(0x1.c8581cce7cd3f6efab0fc60d9b7dp-2), math.floatEpsAt(f128, 0x1.1be0b757f4cef022f5d2422b9c78p0));
     try testing.expectApproxEqAbs(0x1.513270e671db2d840f20b0186c2cp1, acosBinary128(-0x1.bf887b8c4e33cbef59993056f3dep-1), math.floatEpsAt(f128, 0x1.513270e671db2d840f20b0186c2cp1));
     try testing.expectApproxEqAbs(0x1.70851a509f0e8bfbe780aa8f29f9p0, acosBinary128(0x1.0c0f600ab6f9c84c6102942044cep-3), math.floatEpsAt(f128, 0x1.70851a509f0e8bfbe780aa8f29f9p0));
+}
+
+fn acosBinary32Vec(comptime vec_len: comptime_int, x: @Vector(vec_len, f32)) @TypeOf(x) {
+    const pi: @Vector(vec_len, f32) = @splat(math.pi);
+    const pi_over_2: @Vector(vec_len, f32) = @splat(math.pi / 2.0);
+    const zero: @Vector(vec_len, f32) = @splat(0.0);
+    const half: @Vector(vec_len, f32) = @splat(0.5);
+    const neg_one: @Vector(vec_len, f32) = @splat(-1.0);
+    const two: @Vector(vec_len, f32) = @splat(2.0);
+    const c0: @Vector(vec_len, f32) = @splat(0x1.55555ep-3);
+    const c1: @Vector(vec_len, f32) = @splat(0x1.33261ap-4);
+    const c2: @Vector(vec_len, f32) = @splat(0x1.70d7dcp-5);
+    const c3: @Vector(vec_len, f32) = @splat(0x1.b059dp-6);
+    const c4: @Vector(vec_len, f32) = @splat(0x1.3af7d8p-5);
+
+    const ax = @abs(x);
+    const ax_lt_half = ax < half;
+    const is_neg = x < zero;
+    const z2 = @select(f32, ax_lt_half, x * x, @mulAdd(@Vector(vec_len, f32), -half, ax, half));
+    const z = @select(f32, ax_lt_half, ax, @sqrt(z2));
+    const z3 = z2 * z;
+    const p3_4 = @mulAdd(@Vector(vec_len, f32), z2, c4, c3);
+    const p2_4 = @mulAdd(@Vector(vec_len, f32), z2, p3_4, c2);
+    const p1_4 = @mulAdd(@Vector(vec_len, f32), z2, p2_4, c1);
+    const p0_4 = @mulAdd(@Vector(vec_len, f32), z2, p1_4, c0);
+    const p = @mulAdd(@Vector(vec_len, f32), z3, p0_4, z);
+    const mul = @select(f32, ax_lt_half, neg_one, two);
+    const add = @select(f32, ax_lt_half, pi_over_2, @select(f32, is_neg, pi, zero));
+    return @mulAdd(@Vector(vec_len, f32), mul, @select(f32, is_neg, -p, p), add);
+}
+
+fn acosBinary64Vec(comptime vec_len: comptime_int, x: @Vector(vec_len, f64)) @TypeOf(x) {
+    const pi: @Vector(vec_len, f64) = @splat(math.pi);
+    const pi_over_2: @Vector(vec_len, f64) = @splat(math.pi / 2.0);
+    const zero: @Vector(vec_len, f64) = @splat(0.0);
+    const half: @Vector(vec_len, f64) = @splat(0.5);
+    const neg_one: @Vector(vec_len, f64) = @splat(-1.0);
+    const two: @Vector(vec_len, f64) = @splat(2.0);
+    const c0: @Vector(vec_len, f64) = @splat(0x1.555555555554ep-3);
+    const c1: @Vector(vec_len, f64) = @splat(0x1.3333333337233p-4);
+    const c2: @Vector(vec_len, f64) = @splat(0x1.6db6db67f6d9fp-5);
+    const c3: @Vector(vec_len, f64) = @splat(0x1.f1c71fbd29fbbp-6);
+    const c4: @Vector(vec_len, f64) = @splat(0x1.6e8b264d467d6p-6);
+    const c5: @Vector(vec_len, f64) = @splat(0x1.1c5997c357e9dp-6);
+    const c6: @Vector(vec_len, f64) = @splat(0x1.c86a22cd9389dp-7);
+    const c7: @Vector(vec_len, f64) = @splat(0x1.856073c22ebbep-7);
+    const c8: @Vector(vec_len, f64) = @splat(0x1.fd1151acb6bedp-8);
+    const c9: @Vector(vec_len, f64) = @splat(0x1.087182f799c1dp-6);
+    const c10: @Vector(vec_len, f64) = @splat(-0x1.6602748120927p-7);
+    const c11: @Vector(vec_len, f64) = @splat(0x1.cfa0dd1f9478p-6);
+
+    const ax = @abs(x);
+    const ax_lt_half = ax < half;
+    const is_neg = x < zero;
+    const z2 = @select(f64, ax_lt_half, x * x, @mulAdd(@Vector(vec_len, f64), -half, ax, half));
+    const z = @select(f64, ax_lt_half, ax, @sqrt(z2));
+    const z3 = z2 * z;
+    const z4 = z2 * z2;
+    const z8 = z4 * z4;
+    const p0_1 = @mulAdd(@Vector(vec_len, f64), z2, c1, c0);
+    const p2_3 = @mulAdd(@Vector(vec_len, f64), z2, c3, c2);
+    const p0_3 = @mulAdd(@Vector(vec_len, f64), z4, p2_3, p0_1);
+    const p4_5 = @mulAdd(@Vector(vec_len, f64), z2, c5, c4);
+    const p6_7 = @mulAdd(@Vector(vec_len, f64), z2, c7, c6);
+    const p4_7 = @mulAdd(@Vector(vec_len, f64), z4, p6_7, p4_5);
+    const p8_9 = @mulAdd(@Vector(vec_len, f64), z2, c9, c8);
+    const p10_11 = @mulAdd(@Vector(vec_len, f64), z2, c11, c10);
+    const p8_11 = @mulAdd(@Vector(vec_len, f64), z4, p10_11, p8_9);
+    const p4_11 = @mulAdd(@Vector(vec_len, f64), z8, p8_11, p4_7);
+    const p0_11 = @mulAdd(@Vector(vec_len, f64), z8, p4_11, p0_3);
+    const p = @mulAdd(@Vector(vec_len, f64), z3, p0_11, z);
+    const mul = @select(f64, ax_lt_half, neg_one, two);
+    const add = @select(f64, ax_lt_half, pi_over_2, @select(f64, is_neg, pi, zero));
+    return @mulAdd(@Vector(vec_len, f64), mul, @select(f64, is_neg, -p, p), add);
+}
+
+test "acosBinary32Vec.special" {
+    const input: @Vector(8, f32) = .{
+        0x0p+0,
+        -0x1p+0,
+        0x1p+0,
+        0x1.000002p+0,
+        -0x1.000002p+0,
+        math.inf(f32),
+        -math.inf(f32),
+        math.nan(f32),
+    };
+    const output = acosBinary32Vec(8, input);
+    try testing.expectApproxEqAbs(0x1.921fb6p+0, output[0], math.floatEpsAt(f32, 0x1.921fb6p+0));
+    try testing.expectApproxEqAbs(0x1.921fb6p+1, output[1], math.floatEpsAt(f32, 0x1.921fb6p+1));
+    try testing.expectEqual(0x0p+0, output[2]);
+    try testing.expect(math.isNan(output[3]));
+    try testing.expect(math.isNan(output[4]));
+    try testing.expect(math.isNan(output[5]));
+    try testing.expect(math.isNan(output[6]));
+    try testing.expect(math.isNan(output[7]));
+}
+
+test "acosBinary32Vec" {
+    const input: @Vector(10, f32) = .{
+        -0x1.13284cp-2,
+        0x1.6ca8ep-1,
+        0x1.c2ca6p-1,
+        -0x1.55f12p-1,
+        -0x1.15679ep-2,
+        -0x1.41e132p-5,
+        0x1.281b0ep-1,
+        0x1.b5ce34p-1,
+        -0x1.583482p-3,
+        -0x1.ea8224p-1,
+    };
+    const output = acosBinary32Vec(10, input);
+    try testing.expectApproxEqAbs(0x1.d7c4e6p+0, output[0], math.floatEpsAt(f32, 0x1.d7c4e6p+0));
+    try testing.expectApproxEqAbs(0x1.8e6756p-1, output[1], math.floatEpsAt(f32, 0x1.8e6756p-1));
+    try testing.expectApproxEqAbs(0x1.f9d74cp-2, output[2], math.floatEpsAt(f32, 0x1.f9d74cp-2));
+    try testing.expectApproxEqAbs(0x1.26abdcp+1, output[3], math.floatEpsAt(f32, 0x1.26abdcp+1));
+    try testing.expectApproxEqAbs(0x1.d85a44p+0, output[4], math.floatEpsAt(f32, 0x1.d85a44p+0));
+    try testing.expectApproxEqAbs(0x1.9c2f68p+0, output[5], math.floatEpsAt(f32, 0x1.9c2f68p+0));
+    try testing.expectApproxEqAbs(0x1.e881bp-1, output[6], math.floatEpsAt(f32, 0x1.e881bp-1));
+    try testing.expectApproxEqAbs(0x1.1713f6p-1, output[7], math.floatEpsAt(f32, 0x1.1713f6p-1));
+    try testing.expectApproxEqAbs(0x1.bd5accp+0, output[8], math.floatEpsAt(f32, 0x1.bd5accp+0));
+    try testing.expectApproxEqAbs(0x1.6ce7d8p+1, output[9], math.floatEpsAt(f32, 0x1.6ce7d8p+1));
+}
+
+test "acosBinary64Vec.special" {
+    const input: @Vector(8, f64) = .{
+        0x0p+0,
+        -0x1p+0,
+        0x1p+0,
+        0x1.0000000000001p+0,
+        -0x1.0000000000001p+0,
+        math.inf(f64),
+        -math.inf(f64),
+        math.nan(f64),
+    };
+    const output = acosBinary64Vec(8, input);
+    try testing.expectApproxEqAbs(0x1.921fb54442d18p+0, output[0], math.floatEpsAt(f64, 0x1.921fb54442d18p+0));
+    try testing.expectApproxEqAbs(0x1.921fb54442d18p+1, output[1], math.floatEpsAt(f64, 0x1.921fb54442d18p+1));
+    try testing.expectEqual(0x0p+0, output[2]);
+    try testing.expect(math.isNan(output[3]));
+    try testing.expect(math.isNan(output[4]));
+    try testing.expect(math.isNan(output[5]));
+    try testing.expect(math.isNan(output[6]));
+    try testing.expect(math.isNan(output[7]));
+}
+
+test "acosBinary64Vec" {
+    const input: @Vector(10, f64) = .{
+        -0x1.13284b2b5006dp-2,
+        0x1.6ca8dfb825911p-1,
+        0x1.c2ca609de7505p-1,
+        -0x1.55f11fba96889p-1,
+        -0x1.15679e27084ddp-2,
+        -0x1.41e131b093c41p-5,
+        0x1.281b0d18455f5p-1,
+        0x1.b5ce34a51b239p-1,
+        -0x1.583481079de4dp-3,
+        -0x1.ea8223103b871p-1,
+    };
+    const output = acosBinary64Vec(10, input);
+    try testing.expectApproxEqAbs(0x1.d7c4e61020905p+0, output[0], math.floatEpsAt(f64, 0x1.d7c4e61020905p+0));
+    try testing.expectApproxEqAbs(0x1.8e6756e27c366p-1, output[1], math.floatEpsAt(f64, 0x1.8e6756e27c366p-1));
+    try testing.expectApproxEqAbs(0x1.f9d748eaf956p-2, output[2], math.floatEpsAt(f64, 0x1.f9d748eaf956p-2));
+    try testing.expectApproxEqAbs(0x1.26abdc68d07aap+1, output[3], math.floatEpsAt(f64, 0x1.26abdc68d07aap+1));
+    try testing.expectApproxEqAbs(0x1.d85a44ea44fe4p+0, output[4], math.floatEpsAt(f64, 0x1.d85a44ea44fe4p+0));
+    try testing.expectApproxEqAbs(0x1.9c2f688eee8abp+0, output[5], math.floatEpsAt(f64, 0x1.9c2f688eee8abp+0));
+    try testing.expectApproxEqAbs(0x1.e881b1d4eb2a1p-1, output[6], math.floatEpsAt(f64, 0x1.e881b1d4eb2a1p-1));
+    try testing.expectApproxEqAbs(0x1.1713f567a87efp-1, output[7], math.floatEpsAt(f64, 0x1.1713f567a87efp-1));
+    try testing.expectApproxEqAbs(0x1.bd5acbe8fcc59p+0, output[8], math.floatEpsAt(f64, 0x1.bd5acbe8fcc59p+0));
+    try testing.expectApproxEqAbs(0x1.6ce7d66f628e5p+1, output[9], math.floatEpsAt(f64, 0x1.6ce7d66f628e5p+1));
 }
