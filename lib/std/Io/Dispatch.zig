@@ -123,7 +123,6 @@ const Fiber = struct {
         const Awaiting = enum(@Int(.unsigned, @bitSizeOf(usize) - shift)) {
             nothing = 0,
             group = 1,
-            select = 2,
             _,
 
             const shift = 1;
@@ -277,9 +276,6 @@ const Fiber = struct {
                     ev.queue.async(fiber, &Fiber.@"resume");
                 }
             },
-            .select => if (@atomicRmw(i32, &fiber.await_count, .Add, 1, .monotonic) == -1) {
-                ev.queue.async(fiber, &Fiber.@"resume");
-            },
             _ => |awaiting| awaiting.toCancelable().async(),
         }
     }
@@ -369,8 +365,6 @@ pub fn io(ev: *Evented) Io {
             .recancel = recancel,
             .swapCancelProtection = swapCancelProtection,
             .checkCancel = checkCancel,
-
-            .select = select,
 
             .futexWait = futexWait,
             .futexWaitUncancelable = futexWaitUncancelable,
@@ -1687,50 +1681,6 @@ fn futexForAddress(ev: *Evented, address: usize) *Futex {
     comptime assert(std.math.isPowerOfTwo(ev.futexes.len));
     // The high bits of `hashed` have better entropy than the low bits.
     return &ev.futexes[hashed >> @clz(ev.futexes.len - 1)];
-}
-
-fn select(userdata: ?*anyopaque, futures: []const *Io.AnyFuture) Io.Cancelable!usize {
-    const ev: *Evented = @ptrCast(@alignCast(userdata));
-    const fiber = Thread.current().currentFiber();
-    var await_count: u31, var result = for (futures, 0..) |future, future_index| {
-        const future_fiber: *Fiber = @ptrCast(@alignCast(future));
-        if (@atomicRmw(
-            ?*Fiber,
-            &future_fiber.link.awaiter,
-            .Xchg,
-            fiber,
-            .acq_rel,
-        )) |awaiter| {
-            assert(awaiter == Fiber.finished);
-            break .{ @intCast(future_index), future_index };
-        }
-    } else result: {
-        const await_count: u31 = @intCast(futures.len);
-        ev.yield(.{ .await = 1 });
-        break :result .{ await_count - 1, futures.len };
-    };
-    for (futures[0..result], 0..) |future, future_index| {
-        const future_fiber: *Fiber = @ptrCast(@alignCast(future));
-        const awaiter = @atomicRmw(?*Fiber, &future_fiber.link.awaiter, .Xchg, null, .monotonic);
-        if (awaiter == Fiber.finished) {
-            @atomicStore(?*Fiber, &future_fiber.link.awaiter, Fiber.finished, .monotonic);
-            result = @min(future_index, result);
-        } else {
-            assert(awaiter == fiber);
-            await_count -= 1;
-        }
-    }
-    // Equivalent to `ev.yield(null, .{ .await = await_count });`,
-    // but avoiding a context switch in the common case.
-    switch (std.math.order(
-        @atomicRmw(i32, &fiber.await_count, .Sub, await_count, .monotonic),
-        await_count,
-    )) {
-        .lt => ev.yield(.{ .await = 0 }),
-        .eq => {},
-        .gt => unreachable,
-    }
-    return result;
 }
 
 fn futexWait(

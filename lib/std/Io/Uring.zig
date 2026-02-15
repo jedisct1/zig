@@ -175,7 +175,6 @@ const Fiber = struct {
         const Awaiting = enum(u31) {
             nothing = std.math.maxInt(u31),
             group = std.math.maxInt(u31) - 1,
-            select = std.math.maxInt(u31) - 2,
             /// An io_uring fd.
             _,
 
@@ -186,14 +185,14 @@ const Fiber = struct {
             fn fromIoUringFd(fd: fd_t) Awaiting {
                 const awaiting: Awaiting = @enumFromInt(fd);
                 switch (awaiting) {
-                    .nothing, .group, .select => unreachable,
+                    .nothing, .group => unreachable,
                     _ => return awaiting,
                 }
             }
 
             fn toIoUringFd(awaiting: Awaiting) fd_t {
                 switch (awaiting) {
-                    .nothing, .group, .select => unreachable,
+                    .nothing, .group => unreachable,
                     _ => return @intFromEnum(awaiting),
                 }
             }
@@ -375,9 +374,6 @@ const Fiber = struct {
                     fiber.status = .{ .queue_next = null };
                     _ = ev.schedule(.current(), .{ .head = fiber, .tail = fiber });
                 }
-            },
-            .select => if (@atomicRmw(i32, &fiber.await_count, .Add, 1, .monotonic) == -1) {
-                _ = ev.schedule(.current(), .{ .head = fiber, .tail = fiber });
             },
             _ => |awaiting| {
                 const awaiting_io_uring_fd = awaiting.toIoUringFd();
@@ -683,8 +679,6 @@ pub fn io(ev: *Evented) Io {
             .recancel = recancel,
             .swapCancelProtection = swapCancelProtection,
             .checkCancel = checkCancel,
-
-            .select = select,
 
             .futexWait = futexWait,
             .futexWaitUncancelable = futexWaitUncancelable,
@@ -1926,57 +1920,6 @@ fn checkCancel(userdata: ?*anyopaque) Io.Cancelable!void {
         },
         .blocked => {},
     }
-}
-
-fn select(userdata: ?*anyopaque, futures: []const *Io.AnyFuture) Io.Cancelable!usize {
-    const ev: *Evented = @ptrCast(@alignCast(userdata));
-    var cancel_region: CancelRegion = .init();
-    defer cancel_region.deinit();
-    var await_count: u31, var result = for (futures, 0..) |future, future_index| {
-        const future_fiber: *Fiber = @ptrCast(@alignCast(future));
-        if (@atomicRmw(
-            ?*Fiber,
-            &future_fiber.link.awaiter,
-            .Xchg,
-            cancel_region.fiber,
-            .acq_rel,
-        )) |awaiter| {
-            assert(awaiter == Fiber.finished);
-            break .{ @intCast(future_index), future_index };
-        }
-    } else result: {
-        const await_count: u31 = @intCast(futures.len);
-        cancel_region.await(.select) catch |err| switch (err) {
-            error.Canceled => |e| break :result .{ await_count + 1, e },
-        };
-        ev.yield(null, .{ .await = 1 });
-        cancel_region.await(.nothing) catch |err| switch (err) {
-            error.Canceled => |e| break :result .{ await_count, e },
-        };
-        break :result .{ await_count - 1, futures.len };
-    };
-    for (futures[0 .. result catch futures.len], 0..) |future, future_index| {
-        const future_fiber: *Fiber = @ptrCast(@alignCast(future));
-        const awaiter = @atomicRmw(?*Fiber, &future_fiber.link.awaiter, .Xchg, null, .monotonic);
-        if (awaiter == Fiber.finished) {
-            @atomicStore(?*Fiber, &future_fiber.link.awaiter, Fiber.finished, .monotonic);
-            result = if (result) |finished_index| @min(future_index, finished_index) else |e| e;
-        } else {
-            assert(awaiter == cancel_region.fiber);
-            await_count -= 1;
-        }
-    }
-    // Equivalent to `ev.yield(null, .{ .await = await_count });`,
-    // but avoiding a context switch in the common case.
-    switch (std.math.order(
-        @atomicRmw(i32, &cancel_region.fiber.await_count, .Sub, await_count, .monotonic),
-        await_count,
-    )) {
-        .lt => ev.yield(null, .{ .await = 0 }),
-        .eq => {},
-        .gt => unreachable,
-    }
-    return result;
 }
 
 fn futexWait(
