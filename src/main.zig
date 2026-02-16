@@ -2078,6 +2078,8 @@ fn buildOutputType(
                     .nostdlib => {
                         create_module.opts.ensure_libc_on_non_freestanding = false;
                         create_module.opts.ensure_libcpp_on_non_freestanding = false;
+                        want_compiler_rt = false;
+                        want_ubsan_rt = false;
                     },
                     .nostdlib_cpp => create_module.opts.ensure_libcpp_on_non_freestanding = false,
                     .shared => {
