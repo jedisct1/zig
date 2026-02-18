@@ -23,10 +23,17 @@ pub fn PriorityDequeue(comptime T: type, comptime Context: type, comptime compar
         len: usize,
         context: Context,
 
-        /// Initialize and return a new priority dequeue.
-        pub fn init(context: Context) Self {
+        /// A priority dequeue containing no elements.
+        pub const empty: Self = .{
+            .items = &.{},
+            .len = 0,
+            .context = undefined,
+        };
+
+        /// Initialize and return a new priority dequeue with context.
+        pub fn initContext(context: Context) Self {
             return Self{
-                .items = &[_]T{},
+                .items = &.{},
                 .len = 0,
                 .context = context,
             };
@@ -451,7 +458,8 @@ const PDQ = PriorityDequeue(u32, void, lessThanComparison);
 
 test "push and pop min" {
     const gpa = std.testing.allocator;
-    var queue = PDQ.init({});
+
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 54);
@@ -480,7 +488,7 @@ test "push and pop min structs" {
             _ = context;
             return std.math.order(a.size, b.size);
         }
-    }.order).init({});
+    }.order).initContext({});
     defer queue.deinit(gpa);
 
     try queue.push(gpa, .{ .size = 54 });
@@ -501,7 +509,7 @@ test "push and pop min structs" {
 test "push and pop max" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 54);
@@ -522,7 +530,7 @@ test "push and pop max" {
 test "push and pop same min" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 1);
@@ -543,7 +551,7 @@ test "push and pop same min" {
 test "push and pop same max" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 1);
@@ -564,7 +572,7 @@ test "push and pop same max" {
 test "popOrNull empty" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try expect(queue.popMin() == null);
@@ -574,7 +582,7 @@ test "popOrNull empty" {
 test "edge case 3 elements" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 9);
@@ -589,7 +597,7 @@ test "edge case 3 elements" {
 test "edge case 3 elements max" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 9);
@@ -604,7 +612,7 @@ test "edge case 3 elements max" {
 test "peekMin" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try expect(queue.peekMin() == null);
@@ -620,7 +628,7 @@ test "peekMin" {
 test "peekMax" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try expect(queue.peekMin() == null);
@@ -636,7 +644,7 @@ test "peekMax" {
 test "sift up with odd indices, popMin" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
@@ -653,7 +661,7 @@ test "sift up with odd indices, popMin" {
 test "sift up with odd indices, popMax" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
@@ -670,7 +678,7 @@ test "sift up with odd indices, popMax" {
 test "pushSlice min" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
@@ -685,7 +693,7 @@ test "pushSlice min" {
 test "pushSlice max" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     const items = [_]u32{ 15, 7, 21, 14, 13, 22, 12, 6, 7, 25, 5, 24, 11, 16, 15, 24, 2, 1 };
@@ -742,7 +750,7 @@ test "fromOwnedSlice" {
 test "update min queue" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 55);
@@ -759,7 +767,7 @@ test "update min queue" {
 test "update same min queue" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 1);
@@ -777,7 +785,7 @@ test "update same min queue" {
 test "update max queue" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 55);
@@ -795,7 +803,7 @@ test "update max queue" {
 test "update same max queue" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 1);
@@ -813,7 +821,7 @@ test "update same max queue" {
 test "update after pop" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 1);
@@ -824,7 +832,7 @@ test "update after pop" {
 test "iterator" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     var map = std.AutoHashMap(u32, void).init(testing.allocator);
     defer {
         queue.deinit(gpa);
@@ -848,7 +856,7 @@ test "iterator" {
 test "pop at index" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 3);
@@ -873,7 +881,7 @@ test "pop at index" {
 test "iterator while empty" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     var it = queue.iterator();
@@ -884,7 +892,7 @@ test "iterator while empty" {
 test "shrinkAndFree" {
     const gpa = std.testing.allocator;
 
-    var queue = PDQ.init({});
+    var queue: PDQ = .empty;
     defer queue.deinit(gpa);
 
     try queue.ensureTotalCapacity(gpa, 4);
@@ -1031,7 +1039,7 @@ test "push and pop" {
 
     const context = [_]u32{ 5, 3, 4, 2, 2, 8, 0 };
 
-    var queue = CPDQ.init(context[0..]);
+    var queue: CPDQ = .initContext(context[0..]);
     defer queue.deinit(gpa);
 
     try queue.push(gpa, 0);
@@ -1060,7 +1068,7 @@ test "don't compare a value to a copy of itself" {
             all_cmps_unique = all_cmps_unique and (a != b);
             return std.math.order(a, b);
         }
-    }.uniqueLessThan).init({});
+    }.uniqueLessThan).initContext({});
     defer depq.deinit(gpa);
 
     try depq.push(gpa, 1);
