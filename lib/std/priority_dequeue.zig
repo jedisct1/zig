@@ -149,28 +149,14 @@ pub fn PriorityDequeue(comptime T: type, comptime Context: type, comptime compar
             return self.bestItemAtIndices(1, 2, .gt).index;
         }
 
-        /// Pop the smallest element from the dequeue. Returns
-        /// `null` if empty.
-        pub fn popMinOrNull(self: *Self) ?T {
-            return if (self.len > 0) self.popMin() else null;
+        /// Remove and return the smallest element from the dequeue, or `null` if empty
+        pub fn popMin(self: *Self) ?T {
+            return if (self.len > 0) self.popIndex(0) else null;
         }
 
-        /// Remove and return the smallest element from the
-        /// dequeue.
-        pub fn popMin(self: *Self) T {
-            return self.popIndex(0);
-        }
-
-        /// Pop the largest element from the dequeue. Returns
-        /// `null` if empty.
-        pub fn popMaxOrNull(self: *Self) ?T {
-            return if (self.len > 0) self.popMax() else null;
-        }
-
-        /// Remove and return the largest element from the
-        /// dequeue.
-        pub fn popMax(self: *Self) T {
-            return self.popIndex(self.maxIndex().?);
+        /// Remove and return the largest element from the dequeue, or `null` if empty
+        pub fn popMax(self: *Self) ?T {
+            return if (self.len > 0) self.popIndex(self.maxIndex().?) else null;
         }
 
         /// Remove and return element at index. Indices are in the
@@ -504,12 +490,12 @@ test "push and pop min structs" {
     try queue.push(gpa, .{ .size = 25 });
     try queue.push(gpa, .{ .size = 13 });
 
-    try expectEqual(@as(u32, 7), queue.popMin().size);
-    try expectEqual(@as(u32, 12), queue.popMin().size);
-    try expectEqual(@as(u32, 13), queue.popMin().size);
-    try expectEqual(@as(u32, 23), queue.popMin().size);
-    try expectEqual(@as(u32, 25), queue.popMin().size);
-    try expectEqual(@as(u32, 54), queue.popMin().size);
+    try expectEqual(@as(u32, 7), queue.popMin().?.size);
+    try expectEqual(@as(u32, 12), queue.popMin().?.size);
+    try expectEqual(@as(u32, 13), queue.popMin().?.size);
+    try expectEqual(@as(u32, 23), queue.popMin().?.size);
+    try expectEqual(@as(u32, 25), queue.popMin().?.size);
+    try expectEqual(@as(u32, 54), queue.popMin().?.size);
 }
 
 test "push and pop max" {
@@ -581,8 +567,8 @@ test "popOrNull empty" {
     var queue = PDQ.init({});
     defer queue.deinit(gpa);
 
-    try expect(queue.popMinOrNull() == null);
-    try expect(queue.popMaxOrNull() == null);
+    try expect(queue.popMin() == null);
+    try expect(queue.popMax() == null);
 }
 
 test "edge case 3 elements" {
@@ -721,7 +707,7 @@ test "fromOwnedSlice trivial case 0" {
     defer queue.deinit(gpa);
 
     try expectEqual(@as(usize, 0), queue.len);
-    try expect(queue.popMinOrNull() == null);
+    try expect(queue.popMin() == null);
 }
 
 test "fromOwnedSlice trivial case 1" {
@@ -735,7 +721,7 @@ test "fromOwnedSlice trivial case 1" {
 
     try expectEqual(@as(usize, 1), queue.len);
     try expectEqual(items[0], queue.popMin());
-    try expect(queue.popMinOrNull() == null);
+    try expect(queue.popMin() == null);
 }
 
 test "fromOwnedSlice" {
@@ -881,7 +867,7 @@ test "pop at index" {
     try expectEqual(queue.popIndex(two_idx), 2);
     try expectEqual(queue.popMin(), 1);
     try expectEqual(queue.popMin(), 3);
-    try expectEqual(queue.popMinOrNull(), null);
+    try expectEqual(queue.popMin(), null);
 }
 
 test "iterator while empty" {
@@ -917,7 +903,7 @@ test "shrinkAndFree" {
     try expectEqual(@as(u32, 3), queue.popMax());
     try expectEqual(@as(u32, 2), queue.popMax());
     try expectEqual(@as(u32, 1), queue.popMax());
-    try expect(queue.popMaxOrNull() == null);
+    try expect(queue.popMax() == null);
 }
 
 test "fuzz testing min" {
@@ -942,7 +928,7 @@ fn fuzzTestMin(rng: std.Random, comptime queue_size: usize) !void {
     defer queue.deinit(gpa);
 
     var last_removed: ?u32 = null;
-    while (queue.popMinOrNull()) |next| {
+    while (queue.popMin()) |next| {
         if (last_removed) |last| {
             try expect(last <= next);
         }
@@ -972,7 +958,7 @@ fn fuzzTestMax(rng: std.Random, queue_size: usize) !void {
     defer queue.deinit(gpa);
 
     var last_removed: ?u32 = null;
-    while (queue.popMaxOrNull()) |next| {
+    while (queue.popMax()) |next| {
         if (last_removed) |last| {
             try expect(last >= next);
         }
@@ -1006,13 +992,13 @@ fn fuzzTestMinMax(rng: std.Random, queue_size: usize) !void {
     var i: usize = 0;
     while (i < queue_size) : (i += 1) {
         if (i % 2 == 0) {
-            const next = queue.popMin();
+            const next = queue.popMin().?;
             if (last_min) |last| {
                 try expect(last <= next);
             }
             last_min = next;
         } else {
-            const next = queue.popMax();
+            const next = queue.popMax().?;
             if (last_max) |last| {
                 try expect(last >= next);
             }
