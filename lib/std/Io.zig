@@ -1178,7 +1178,6 @@ pub fn Select(comptime U: type) type {
         io: Io,
         group: Group,
         queue: Queue(U),
-        outstanding: usize,
 
         const S = @This();
 
@@ -1191,7 +1190,6 @@ pub fn Select(comptime U: type) type {
                 .io = io,
                 .queue = .init(buffer),
                 .group = .init,
-                .outstanding = 0,
             };
         }
 
@@ -1235,7 +1233,6 @@ pub fn Select(comptime U: type) type {
                 }
             };
             const context: Context = .{ .select = s, .args = args };
-            _ = @atomicRmw(usize, &s.outstanding, .Add, 1, .monotonic);
             s.io.vtable.groupAsync(s.io.userdata, &s.group, @ptrCast(&context), .of(Context), Context.start);
         }
 
@@ -1276,16 +1273,12 @@ pub fn Select(comptime U: type) type {
             };
             const context: Context = .{ .select = s, .args = args };
             try s.io.vtable.groupConcurrent(s.io.userdata, &s.group, @ptrCast(&context), .of(Context), Context.start);
-            _ = @atomicRmw(usize, &s.outstanding, .Add, 1, .monotonic);
         }
 
         /// Blocks until another task of the select finishes.
         ///
-        /// Asserts there is at least one more `outstanding` task.
-        ///
         /// Not threadsafe.
         pub fn await(s: *S) Cancelable!U {
-            s.outstanding -= 1;
             return s.queue.getOne(s.io) catch |err| switch (err) {
                 error.Canceled => |e| return e,
                 error.Closed => unreachable,
@@ -1301,7 +1294,6 @@ pub fn Select(comptime U: type) type {
         ///
         /// Idempotent. Not threadsafe.
         pub fn cancel(s: *S) void {
-            s.outstanding = 0;
             s.group.cancel(s.io);
         }
     };
