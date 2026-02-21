@@ -1173,10 +1173,19 @@ pub fn checkCancel(io: Io) Cancelable!void {
     return io.vtable.checkCancel(io.userdata);
 }
 
+/// Executes tasks together, providing a mechanism to wait until one or more
+/// tasks complete. Similar to `Batch` but operates at the higher level task
+/// abstraction layer rather than lower level `Operation` abstraction layer.
+///
+/// The provided tagged union will be used as the return type of the await
+/// function. When calling async or concurrent, one specifies which union field
+/// the called function's result will be placed into upon completion.
 pub fn Select(comptime U: type) type {
     return struct {
         io: Io,
         group: Group,
+        /// The queue is never closed because there may be live resources
+        /// inserted into it which would otherwise leak.
         queue: Queue(U),
 
         const S = @This();
