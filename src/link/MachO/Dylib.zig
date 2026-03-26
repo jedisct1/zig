@@ -710,6 +710,16 @@ pub const TargetMatcher = struct {
         const apple_string = try targetToAppleString(allocator, cpu_arch, platform);
         try self.target_strings.append(allocator, apple_string);
 
+        // Starting with the macOS 26 SDK, Apple only ships arm64e targets in .tbd files,
+        // dropping arm64. Since arm64e is a superset of arm64 (adding pointer authentication),
+        // libraries targeting arm64e are link-compatible with arm64.
+        if (cpu_arch == .aarch64) {
+            const arm64e_string = try std.fmt.allocPrint(allocator, "arm64e-{s}", .{
+                platformToAppleString(platform),
+            });
+            try self.target_strings.append(allocator, arm64e_string);
+        }
+
         switch (platform) {
             .IOSSIMULATOR, .TVOSSIMULATOR, .WATCHOSSIMULATOR, .VISIONOSSIMULATOR => {
                 // For Apple simulator targets, linking gets tricky as we need to link against the simulator
@@ -752,9 +762,8 @@ pub const TargetMatcher = struct {
         };
     }
 
-    pub fn targetToAppleString(allocator: Allocator, cpu_arch: std.Target.Cpu.Arch, platform: macho.PLATFORM) ![]const u8 {
-        const arch = cpuArchToAppleString(cpu_arch);
-        const plat = switch (platform) {
+    fn platformToAppleString(platform: macho.PLATFORM) []const u8 {
+        return switch (platform) {
             .MACOS => "macos",
             .IOS => "ios",
             .TVOS => "tvos",
@@ -769,6 +778,11 @@ pub const TargetMatcher = struct {
             .DRIVERKIT => "driverkit",
             else => unreachable,
         };
+    }
+
+    pub fn targetToAppleString(allocator: Allocator, cpu_arch: std.Target.Cpu.Arch, platform: macho.PLATFORM) ![]const u8 {
+        const arch = cpuArchToAppleString(cpu_arch);
+        const plat = platformToAppleString(platform);
         return std.fmt.allocPrint(allocator, "{s}-{s}", .{ arch, plat });
     }
 
