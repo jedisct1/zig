@@ -501,7 +501,7 @@ fn Fe_(comptime bits: comptime_int) type {
             if (!timing_safe.isZero(Limb, acc)) return error.Overflow;
             fe.v.limbs_len = m_limbs_count;
 
-            _ = fe.v.conditionalSubWithOverflow(ct.limbsCmpGeq(fe.v, m.v), m.v);
+            for (0..3) |_| _ = fe.v.reduceOnce(0, m.v); // can be almost 4m with fromUintSecret()
             return fe;
         }
 
@@ -609,6 +609,7 @@ fn mulAddWide(z: []Limb, x: []const Limb, y: []const Limb) void {
 /// A modulus, defining a finite field.
 /// All operations within the field are performed modulo this modulus, without heap allocations.
 /// `max_bits` represents the number of bits in the maximum value the modulus can be set to.
+/// The modulus is treated as public, unless it was created with fromUintSecret().
 pub fn Modulus(comptime max_bits: comptime_int) type {
     return struct {
         const Self = @This();
@@ -700,7 +701,6 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         }
 
         /// Creates a new modulus from a `Uint` value.
-        /// The modulus must be odd and larger than 2.
         pub fn fromUint(v_: FeUint) InvalidModulusError!Self {
             if (!v_.isOdd()) return error.EvenModulus;
 
@@ -714,7 +714,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
             var m = initWithoutRR(v, @clz(hi) - carry_bits, computeM0Inv(lo));
 
-            computeRR(&m);
+            computeRR(&m, m.bits() - 1);
 
             return m;
         }
@@ -728,6 +728,22 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         /// Creates a new modulus from a byte string.
         pub fn fromBytes(bytes: []const u8, comptime endian: Endian) (InvalidModulusError || OverflowError)!Self {
             return fromBytesWithOptions(bytes, endian, .{});
+        }
+
+        /// Creates a secret modulus, such as a blinded RSA prime.
+        /// The modulus must be odd and between 2^(announced_bits-2) and 2^announced_bits
+        pub fn fromUintSecret(v: FeUint, announced_bits: usize) (InvalidModulusError || OverflowError)!Self {
+            if (announced_bits < 2) return error.ModulusTooSmall;
+            if (announced_bits > FeUint.capacity_bits) return error.Overflow;
+
+            var mv = v;
+            mv.limbs_len = @divCeil(announced_bits, t_bits);
+            @memset(mv.limbs_buffer[mv.limbs_len..], 0);
+
+            var m = initWithoutRR(mv, mv.limbs_len * t_bits - announced_bits, computeM0Inv(mv.limbsConst()[0]));
+            computeRR(&m, announced_bits - 2); // 2^(announced_bits-2) < v
+
+            return m;
         }
 
         /// Creates a new modulus from a Uint value, with options.
@@ -826,12 +842,13 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         }
 
         // Computes R^2 for the Montgomery representation.
-        fn computeRR(self: *Self) void {
+        fn computeRR(self: *Self, start: usize) void {
             const n = self.limbs_count();
             var rr = self.zero;
 
             if (n < 3) {
                 rr.v.limbs()[n - 1] = 1;
+                _ = rr.v.reduceOnce(0, self.v); // required if the modulus is secret
                 for ((n - 1)..(2 * n)) |_| {
                     self.shiftIn(&rr, 0);
                 }
@@ -839,7 +856,6 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
                 return;
             }
 
-            const start = self.bits() - 1; // largest power of two < m.
             const log_r = n * t_bits;
             rr.v.limbs()[start / t_bits] = math.shl(Limb, 1, start % t_bits);
             for (start..log_r) |_| {
@@ -1149,6 +1165,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         /// Reduces an arbitrary `Uint`, converting it to a field element.
         pub fn reduce(self: Self, x: anytype) Fe {
+            assert(x.limbs_len >= self.limbs_count()); // Input must have at least as many active limbs as the modulus
             if (self.v.isOdd()) {
                 const n = self.limbs_count();
                 var acc = self.zero;
@@ -1967,5 +1984,21 @@ test "modular inversion" {
     for ([_]M{ odd, even }) |m| {
         const x = m.subOne(m.zero);
         try testing.expect(m.isOne(m.mul(x, m.invert(x).?)));
+    }
+}
+
+test "secret modulus" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+
+    for ([_]usize{ t_bits + 1, 2 * t_bits + 1 }) |bits| {
+        const mv = math.shl(u128, 1, bits - 2) + 1;
+        const m = try Modulus(128).fromUintSecret(try Uint(128).fromPrimitive(u128, mv), bits);
+        var buf: [16]u8 = undefined;
+        const max = math.shl(u128, 1, bits) - 1;
+        mem.writeInt(u128, &buf, max, .big);
+        const x = try Modulus(128).Fe.fromBytesReduced(m, &buf, .big);
+        const r: u256 = max % mv;
+        try testing.expectEqual(r, try x.toPrimitive(u128));
+        try testing.expectEqual((r * r) % mv, try m.sq(x).toPrimitive(u128));
     }
 }
