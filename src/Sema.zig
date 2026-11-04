@@ -23427,9 +23427,33 @@ fn zirReduce(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.
     return block.addReduce(operand, operation);
 }
 
-fn zirShuffle(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
+fn coercedVectorLength(sema: *Sema, block: *Block, ty: Type, src: LazySrcLoc) CompileError!u32 {
     const pt = sema.pt;
     const zcu = pt.zcu;
+
+    const len: u64 = switch (zcu.intern_pool.indexToKey(ty.toIntern())) {
+        .vector_type => |vector_type| vector_type.len,
+        .tuple_type => |tuple| tuple.types.len,
+        .array_type => |array| array.len,
+        else => return sema.fail(
+            block,
+            src,
+            "expected vector; found {qf}",
+            .{ty.fmt(zcu)},
+        ),
+    };
+    return std.math.cast(u32, len) orelse {
+        return sema.fail(
+            block,
+            src,
+            "vector length of {d} is over 2^32-1",
+            .{len},
+        );
+    };
+}
+
+fn zirShuffle(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
+    const pt = sema.pt;
     const inst_data = sema.code.instructions.items(.data)[@backingInt(inst)].pl_node;
     const extra = sema.code.extraData(Zir.Inst.Shuffle, inst_data.payload_index).data;
     const elem_ty_src = block.builtinCallArgSrc(inst_data.src_node, 0);
@@ -23442,14 +23466,9 @@ fn zirShuffle(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air
     const a = sema.resolveInst(extra.a);
     const b = sema.resolveInst(extra.b);
     var mask = sema.resolveInst(extra.mask);
-    var mask_ty = sema.typeOf(mask);
-
-    const mask_len = switch (sema.typeOf(mask).zigTypeTag(zcu)) {
-        .array, .vector => sema.typeOf(mask).arrayLen(zcu),
-        else => return sema.fail(block, mask_src, "expected vector or array, found '{f}'", .{sema.typeOf(mask).fmt(zcu)}),
-    };
-    mask_ty = try pt.vectorType(.{
-        .len = @intCast(mask_len),
+    const mask_len = try sema.coercedVectorLength(block, sema.typeOf(mask), mask_src);
+    const mask_ty = try pt.vectorType(.{
+        .len = mask_len,
         .child = .i32_type,
     });
     mask = try sema.coerce(block, mask_ty, mask, mask_src);
@@ -23482,25 +23501,22 @@ fn analyzeShuffle(
     const pt = sema.pt;
     const zcu = pt.zcu;
 
-    // If the type of `a` is `@TypeOf(undefined)`, i.e. the argument is untyped,
-    // this is 0, because it is an error to index into this vector.
+    // If the type of `a` is `@TypeOf(undefined)`, i.e. the argument is untyped, this is 0, because
+    // it is an error to index into this vector.
+    const a_uncoerced_ty = sema.typeOf(a_uncoerced);
     const a_len: u32 = switch (sema.typeOf(a_uncoerced).zigTypeTag(zcu)) {
-        .array, .vector => @intCast(sema.typeOf(a_uncoerced).arrayLen(zcu)),
         .undefined => 0,
-        else => return sema.fail(block, a_src, "expected vector of '{f}', found '{f}'", .{
-            elem_ty.fmt(zcu), sema.typeOf(a_uncoerced).fmt(zcu),
-        }),
+        else => try sema.coercedVectorLength(block, a_uncoerced_ty, a_src),
     };
     const a_ty = try pt.vectorType(.{ .len = a_len, .child = elem_ty.toIntern() });
     const a_coerced = try sema.coerce(block, a_ty, a_uncoerced, a_src);
 
-    // If the type of `b` is `@TypeOf(undefined)`, i.e. the argument is untyped, this is 0, because it is an error to index into this vector.
+    // If the type of `b` is `@TypeOf(undefined)`, i.e. the argument is untyped, this is 0, because
+    // it is an error to index into this vector.
+    const b_uncoerced_ty = sema.typeOf(b_uncoerced);
     const b_len: u32 = switch (sema.typeOf(b_uncoerced).zigTypeTag(zcu)) {
-        .array, .vector => @intCast(sema.typeOf(b_uncoerced).arrayLen(zcu)),
         .undefined => 0,
-        else => return sema.fail(block, b_src, "expected vector of '{f}', found '{f}'", .{
-            elem_ty.fmt(zcu), sema.typeOf(b_uncoerced).fmt(zcu),
-        }),
+        else => try sema.coercedVectorLength(block, b_uncoerced_ty, b_src),
     };
     const b_ty = try pt.vectorType(.{ .len = b_len, .child = elem_ty.toIntern() });
     const b_coerced = try sema.coerce(block, b_ty, b_uncoerced, b_src);
