@@ -13369,6 +13369,7 @@ fn analyzeTupleCat(
 ) CompileError!Air.Inst.Ref {
     const pt = sema.pt;
     const zcu = pt.zcu;
+    const ip = &zcu.intern_pool;
     const comp = zcu.comp;
     const gpa = comp.gpa;
     const io = comp.io;
@@ -13392,48 +13393,41 @@ fn analyzeTupleCat(
     }
     const final_len = try sema.usizeCast(block, src, dest_fields);
 
-    const types = try sema.arena.alloc(InternPool.Index, final_len);
-    const values = try sema.arena.alloc(InternPool.Index, final_len);
+    const tuple_ty: Type = t: {
+        const types = try sema.arena.alloc(InternPool.Index, final_len);
+        const default_values = try sema.arena.alloc(InternPool.Index, final_len);
 
-    const opt_runtime_src = rs: {
-        var runtime_src: ?LazySrcLoc = null;
-        var i: u32 = 0;
-        while (i < lhs_len) : (i += 1) {
-            types[i] = lhs_ty.fieldType(i, zcu).toIntern();
-            const operand_src = block.src(.{ .array_cat_lhs = .{
-                .array_cat_offset = src_node,
-                .elem_index = i,
-            } });
-            if (lhs_ty.structFieldDefaultValue(i, zcu)) |default_val| {
-                values[i] = default_val.toIntern();
-            } else {
-                runtime_src = operand_src;
-                values[i] = .none;
-            }
-        }
-        i = 0;
-        while (i < rhs_len) : (i += 1) {
-            types[i + lhs_len] = rhs_ty.fieldType(i, zcu).toIntern();
-            const operand_src = block.src(.{ .array_cat_rhs = .{
-                .array_cat_offset = src_node,
-                .elem_index = i,
-            } });
-            if (rhs_ty.structFieldDefaultValue(i, zcu)) |default_val| {
-                values[i + lhs_len] = default_val.toIntern();
-            } else {
-                runtime_src = operand_src;
-                values[i + lhs_len] = .none;
-            }
-        }
-        break :rs runtime_src;
+        const lhs_tuple = ip.indexToKey(lhs_ty.toIntern()).tuple_type;
+        const rhs_tuple = ip.indexToKey(rhs_ty.toIntern()).tuple_type;
+
+        const lhs_types = lhs_tuple.types.get(ip);
+        const rhs_types = rhs_tuple.types.get(ip);
+
+        const lhs_default_values = lhs_tuple.values.get(ip);
+        const rhs_default_values = rhs_tuple.values.get(ip);
+
+        @memcpy(types[0..lhs_types.len], lhs_types);
+        @memcpy(types[lhs_types.len..], rhs_types);
+
+        @memcpy(default_values[0..lhs_default_values.len], lhs_default_values);
+        @memcpy(default_values[lhs_default_values.len..], rhs_default_values);
+
+        break :t .fromInterned(try zcu.intern_pool.getTupleType(gpa, io, pt.tid, .{
+            .types = types,
+            .values = default_values,
+        }));
     };
 
-    const tuple_ty: Type = .fromInterned(try zcu.intern_pool.getTupleType(gpa, io, pt.tid, .{
-        .types = types,
-        .values = values,
-    }));
+    const runtime_src = rs: {
+        const lhs_value = sema.resolveValue(lhs) orelse
+            break :rs block.src(.{ .node_offset_bin_lhs = src_node });
+        const rhs_value = sema.resolveValue(rhs) orelse
+            break :rs block.src(.{ .node_offset_bin_rhs = src_node });
 
-    const runtime_src = opt_runtime_src orelse {
+        const values = try sema.arena.alloc(InternPool.Index, final_len);
+        for (0..lhs_len) |i| values[i] = (try lhs_value.elemValue(pt, i)).toIntern();
+        for (0..rhs_len) |i| values[lhs_len + i] = (try rhs_value.elemValue(pt, i)).toIntern();
+
         const tuple_val = try pt.aggregateValue(tuple_ty, values);
         return Air.internedToRef(tuple_val.toIntern());
     };
