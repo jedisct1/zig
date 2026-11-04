@@ -23433,6 +23433,8 @@ fn zirShuffle(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air
     const inst_data = sema.code.instructions.items(.data)[@backingInt(inst)].pl_node;
     const extra = sema.code.extraData(Zir.Inst.Shuffle, inst_data.payload_index).data;
     const elem_ty_src = block.builtinCallArgSrc(inst_data.src_node, 0);
+    const a_src = block.builtinCallArgSrc(inst_data.src_node, 1);
+    const b_src = block.builtinCallArgSrc(inst_data.src_node, 2);
     const mask_src = block.builtinCallArgSrc(inst_data.src_node, 3);
 
     const elem_ty = try sema.resolveType(block, elem_ty_src, extra.elem_type);
@@ -23452,24 +23454,33 @@ fn zirShuffle(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air
     });
     mask = try sema.coerce(block, mask_ty, mask, mask_src);
     const mask_val = try sema.resolveConstValue(block, mask_src, mask, .{ .simple = .operand_shuffle_mask });
-    return sema.analyzeShuffle(block, inst_data.src_node, elem_ty, a, b, mask_val, @intCast(mask_len));
+    return sema.analyzeShuffle(
+        block,
+        elem_ty,
+        a,
+        a_src,
+        b,
+        b_src,
+        mask_val,
+        @intCast(mask_len),
+        mask_src,
+    );
 }
 
 fn analyzeShuffle(
     sema: *Sema,
     block: *Block,
-    src_node: std.zig.Ast.Node.Offset,
     elem_ty: Type,
     a_uncoerced: Air.Inst.Ref,
+    a_src: LazySrcLoc,
     b_uncoerced: Air.Inst.Ref,
+    b_src: LazySrcLoc,
     mask: Value,
     mask_len: u32,
+    mask_src: LazySrcLoc,
 ) CompileError!Air.Inst.Ref {
     const pt = sema.pt;
     const zcu = pt.zcu;
-    const a_src = block.builtinCallArgSrc(src_node, 1);
-    const b_src = block.builtinCallArgSrc(src_node, 2);
-    const mask_src = block.builtinCallArgSrc(src_node, 3);
 
     // If the type of `a` is `@TypeOf(undefined)`, i.e. the argument is untyped,
     // this is 0, because it is an error to index into this vector.
