@@ -1151,7 +1151,7 @@ fn analyzeBodyInner(
             .alloc_comptime_mut           => try sema.zirAllocComptime(block, inst),
             .make_ptr_const               => try sema.zirMakePtrConst(block, inst),
             .anyframe_type                => try sema.zirAnyframeType(block, inst),
-            .array_cat                    => try sema.zirArrayCat(block, inst),
+            .cat                    => try sema.zirCat(block, inst),
             .array_type                   => try sema.zirArrayType(block, inst),
             .array_type_sentinel          => try sema.zirArrayTypeSentinel(block, inst),
             .reify_int                    => try sema.zirReifyInt(block, inst),
@@ -13448,7 +13448,7 @@ fn analyzeTupleCat(
     return block.addAggregateInit(tuple_ty, element_refs);
 }
 
-fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
+fn zirCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
     const pt = sema.pt;
     const zcu = pt.zcu;
     const inst_data = sema.code.instructions.items(.data)[@backingInt(inst)].pl_node;
@@ -13468,11 +13468,11 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
     const lhs_src = block.src(.{ .node_offset_bin_lhs = inst_data.src_node });
     const rhs_src = block.src(.{ .node_offset_bin_rhs = inst_data.src_node });
 
-    const lhs_info = try sema.getArrayCatInfo(block, lhs_src, lhs, rhs_ty) orelse lhs_info: {
+    const lhs_info = try sema.getCatInfo(block, lhs_src, lhs, rhs_ty) orelse lhs_info: {
         if (lhs_is_tuple) break :lhs_info undefined;
         return sema.fail(block, lhs_src, "expected indexable; found '{f}'", .{lhs_ty.fmt(zcu)});
     };
-    const rhs_info = try sema.getArrayCatInfo(block, rhs_src, rhs, lhs_ty) orelse {
+    const rhs_info = try sema.getCatInfo(block, rhs_src, rhs, lhs_ty) orelse {
         assert(!rhs_is_tuple);
         return sema.fail(block, rhs_src, "expected indexable; found '{f}'", .{rhs_ty.fmt(zcu)});
     };
@@ -13484,6 +13484,43 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
         .{ .override = &.{ lhs_src, rhs_src } },
     );
 
+    return sema.analyzeArrayCat(
+        block,
+        src,
+        inst_data.src_node,
+        resolved_elem_ty,
+        lhs,
+        lhs_ty,
+        lhs_info,
+        lhs_src,
+        rhs,
+        rhs_ty,
+        rhs_info,
+        rhs_src,
+    );
+}
+
+fn analyzeArrayCat(
+    sema: *Sema,
+    block: *Block,
+    src: LazySrcLoc,
+    src_node: std.zig.Ast.Node.Offset,
+    elem_ty: Type,
+    lhs: Air.Inst.Ref,
+    lhs_ty: Type,
+    lhs_info: Type.ArrayInfo,
+    lhs_src: LazySrcLoc,
+    rhs: Air.Inst.Ref,
+    rhs_ty: Type,
+    rhs_info: Type.ArrayInfo,
+    rhs_src: LazySrcLoc,
+) CompileError!Air.Inst.Ref {
+    const pt = sema.pt;
+    const zcu = pt.zcu;
+
+    const lhs_is_tuple = lhs_ty.isTuple(zcu);
+    const rhs_is_tuple = rhs_ty.isTuple(zcu);
+
     // When there is a sentinel mismatch, no sentinel on the result.
     // Otherwise, use the sentinel value provided by either operand,
     // coercing it to the peer-resolved element type.
@@ -13492,24 +13529,24 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
             const lhs_sent = Air.internedToRef(lhs_sent_val.toIntern());
             if (rhs_info.sentinel) |rhs_sent_val| {
                 const rhs_sent = Air.internedToRef(rhs_sent_val.toIntern());
-                const lhs_sent_casted = try sema.coerce(block, resolved_elem_ty, lhs_sent, lhs_src);
-                const rhs_sent_casted = try sema.coerce(block, resolved_elem_ty, rhs_sent, rhs_src);
+                const lhs_sent_casted = try sema.coerce(block, elem_ty, lhs_sent, lhs_src);
+                const rhs_sent_casted = try sema.coerce(block, elem_ty, rhs_sent, rhs_src);
                 const lhs_sent_casted_val = (try sema.resolveDefinedValue(block, lhs_src, lhs_sent_casted)).?;
                 const rhs_sent_casted_val = (try sema.resolveDefinedValue(block, rhs_src, rhs_sent_casted)).?;
-                if (try sema.valuesEqual(lhs_sent_casted_val, rhs_sent_casted_val, resolved_elem_ty)) {
+                if (try sema.valuesEqual(lhs_sent_casted_val, rhs_sent_casted_val, elem_ty)) {
                     break :s lhs_sent_casted_val;
                 } else {
                     break :s null;
                 }
             } else {
-                const lhs_sent_casted = try sema.coerce(block, resolved_elem_ty, lhs_sent, lhs_src);
+                const lhs_sent_casted = try sema.coerce(block, elem_ty, lhs_sent, lhs_src);
                 const lhs_sent_casted_val = (try sema.resolveDefinedValue(block, lhs_src, lhs_sent_casted)).?;
                 break :s lhs_sent_casted_val;
             }
         } else {
             if (rhs_info.sentinel) |rhs_sent_val| {
                 const rhs_sent = Air.internedToRef(rhs_sent_val.toIntern());
-                const rhs_sent_casted = try sema.coerce(block, resolved_elem_ty, rhs_sent, rhs_src);
+                const rhs_sent_casted = try sema.coerce(block, elem_ty, rhs_sent, rhs_src);
                 const rhs_sent_casted_val = (try sema.resolveDefinedValue(block, rhs_src, rhs_sent_casted)).?;
                 break :s rhs_sent_casted_val;
             } else {
@@ -13542,7 +13579,7 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
     const result_ty = try pt.arrayType(.{
         .len = result_len,
         .sentinel = if (res_sent_val) |v| v.toIntern() else .none,
-        .child = resolved_elem_ty.toIntern(),
+        .child = elem_ty.toIntern(),
     });
     const ptr_addrspace = p: {
         if (lhs_ty.zigTypeTag(zcu) == .pointer) break :p lhs_ty.ptrAddressSpace(zcu);
@@ -13580,12 +13617,12 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
                 const lhs_elem_i = elem_i;
                 const elem_default_val: ?Value = if (lhs_is_tuple) lhs_ty.structFieldDefaultValue(lhs_elem_i, zcu) else null;
                 const elem_val = elem_default_val orelse
-                    if (lhs_sub_val.isUndef(zcu)) try pt.undefValue(resolved_elem_ty) else try lhs_sub_val.elemValue(pt, lhs_elem_i);
-                const operand_src = block.src(.{ .array_cat_lhs = .{
-                    .array_cat_offset = inst_data.src_node,
+                    if (lhs_sub_val.isUndef(zcu)) try pt.undefValue(elem_ty) else try lhs_sub_val.elemValue(pt, lhs_elem_i);
+                const operand_src = block.src(.{ .cat_lhs = .{
+                    .cat_offset = src_node,
                     .elem_index = elem_i,
                 } });
-                const coerced_elem_val_inst = try sema.coerce(block, resolved_elem_ty, .fromValue(elem_val), operand_src);
+                const coerced_elem_val_inst = try sema.coerce(block, elem_ty, .fromValue(elem_val), operand_src);
                 const coerced_elem_val = sema.resolveValue(coerced_elem_val_inst).?;
                 element_vals[elem_i] = coerced_elem_val.toIntern();
             }
@@ -13593,12 +13630,12 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
                 const rhs_elem_i = elem_i - lhs_len;
                 const elem_default_val: ?Value = if (rhs_is_tuple) rhs_ty.structFieldDefaultValue(rhs_elem_i, zcu) else null;
                 const elem_val = elem_default_val orelse
-                    if (rhs_sub_val.isUndef(zcu)) try pt.undefValue(resolved_elem_ty) else try rhs_sub_val.elemValue(pt, rhs_elem_i);
-                const operand_src = block.src(.{ .array_cat_rhs = .{
-                    .array_cat_offset = inst_data.src_node,
+                    if (rhs_sub_val.isUndef(zcu)) try pt.undefValue(elem_ty) else try rhs_sub_val.elemValue(pt, rhs_elem_i);
+                const operand_src = block.src(.{ .cat_rhs = .{
+                    .cat_offset = src_node,
                     .elem_index = @intCast(rhs_elem_i),
                 } });
-                const coerced_elem_val_inst = try sema.coerce(block, resolved_elem_ty, .fromValue(elem_val), operand_src);
+                const coerced_elem_val_inst = try sema.coerce(block, elem_ty, .fromValue(elem_val), operand_src);
                 const coerced_elem_val = sema.resolveValue(coerced_elem_val_inst).?;
                 element_vals[elem_i] = coerced_elem_val.toIntern();
             }
@@ -13627,7 +13664,7 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
             .flags = .{ .address_space = ptr_as },
         });
         const elem_ptr_ty = try pt.ptrType(.{
-            .child = resolved_elem_ty.toIntern(),
+            .child = elem_ty.toIntern(),
             .flags = .{ .address_space = ptr_as },
         });
 
@@ -13637,11 +13674,11 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
         // we can hotpath via a memcpy.
         if (lhs_ty.zigTypeTag(zcu) == .pointer and
             rhs_ty.zigTypeTag(zcu) == .pointer and
-            lhs_info.elem_type.toIntern() == resolved_elem_ty.toIntern() and
-            rhs_info.elem_type.toIntern() == resolved_elem_ty.toIntern())
+            lhs_info.elem_type.toIntern() == elem_ty.toIntern() and
+            rhs_info.elem_type.toIntern() == elem_ty.toIntern())
         {
             const slice_ty = try pt.ptrType(.{
-                .child = resolved_elem_ty.toIntern(),
+                .child = elem_ty.toIntern(),
                 .flags = .{
                     .size = .slice,
                     .address_space = ptr_as,
@@ -13656,7 +13693,7 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
                 const lhs_dest_ptr_ty = try pt.ptrType(.{
                     .child = (try pt.arrayType(.{
                         .len = lhs_len,
-                        .child = resolved_elem_ty.toIntern(),
+                        .child = elem_ty.toIntern(),
                     })).toIntern(),
                     .flags = .{
                         .size = .one,
@@ -13675,7 +13712,7 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
                 const rhs_dest_ptr_ty = try pt.ptrType(.{
                     .child = (try pt.arrayType(.{
                         .len = rhs_len,
-                        .child = resolved_elem_ty.toIntern(),
+                        .child = elem_ty.toIntern(),
                     })).toIntern(),
                     .flags = .{
                         .size = .one,
@@ -13713,8 +13750,8 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
         while (elem_i < lhs_len) : (elem_i += 1) {
             const elem_index = try pt.intRef(.usize, elem_i);
             const elem_ptr = try block.addPtrElemPtr(mutable_alloc, elem_index, elem_ptr_ty);
-            const operand_src = block.src(.{ .array_cat_lhs = .{
-                .array_cat_offset = inst_data.src_node,
+            const operand_src = block.src(.{ .cat_lhs = .{
+                .cat_offset = src_node,
                 .elem_index = elem_i,
             } });
             const init = try sema.elemVal(block, operand_src, lhs, lhs_src, elem_index, src, true);
@@ -13725,8 +13762,8 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
             const elem_index = try pt.intRef(.usize, elem_i);
             const rhs_index = try pt.intRef(.usize, rhs_elem_i);
             const elem_ptr = try block.addPtrElemPtr(mutable_alloc, elem_index, elem_ptr_ty);
-            const operand_src = block.src(.{ .array_cat_rhs = .{
-                .array_cat_offset = inst_data.src_node,
+            const operand_src = block.src(.{ .cat_rhs = .{
+                .cat_offset = src_node,
                 .elem_index = @intCast(rhs_elem_i),
             } });
             const init = try sema.elemVal(block, operand_src, rhs, rhs_src, rhs_index, src, true);
@@ -13747,29 +13784,29 @@ fn zirArrayCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Ai
         var elem_i: u32 = 0;
         while (elem_i < lhs_len) : (elem_i += 1) {
             const index = try pt.intRef(.usize, elem_i);
-            const operand_src = block.src(.{ .array_cat_lhs = .{
-                .array_cat_offset = inst_data.src_node,
+            const operand_src = block.src(.{ .cat_lhs = .{
+                .cat_offset = src_node,
                 .elem_index = elem_i,
             } });
             const init = try sema.elemVal(block, operand_src, lhs, lhs_src, index, src, true);
-            element_refs[elem_i] = try sema.coerce(block, resolved_elem_ty, init, operand_src);
+            element_refs[elem_i] = try sema.coerce(block, elem_ty, init, operand_src);
         }
         while (elem_i < result_len) : (elem_i += 1) {
             const rhs_elem_i = elem_i - lhs_len;
             const index = try pt.intRef(.usize, rhs_elem_i);
-            const operand_src = block.src(.{ .array_cat_rhs = .{
-                .array_cat_offset = inst_data.src_node,
+            const operand_src = block.src(.{ .cat_rhs = .{
+                .cat_offset = src_node,
                 .elem_index = @intCast(rhs_elem_i),
             } });
             const init = try sema.elemVal(block, operand_src, rhs, rhs_src, index, src, true);
-            element_refs[elem_i] = try sema.coerce(block, resolved_elem_ty, init, operand_src);
+            element_refs[elem_i] = try sema.coerce(block, elem_ty, init, operand_src);
         }
     }
 
     return block.addAggregateInit(result_ty, element_refs);
 }
 
-fn getArrayCatInfo(sema: *Sema, block: *Block, src: LazySrcLoc, operand: Air.Inst.Ref, peer_ty: Type) !?Type.ArrayInfo {
+fn getCatInfo(sema: *Sema, block: *Block, src: LazySrcLoc, operand: Air.Inst.Ref, peer_ty: Type) !?Type.ArrayInfo {
     const pt = sema.pt;
     const zcu = pt.zcu;
     const operand_ty = sema.typeOf(operand);
@@ -13855,8 +13892,8 @@ fn analyzeTupleMul(
         var runtime_src: ?LazySrcLoc = null;
         for (0..tuple_len) |i| {
             types[i] = operand_ty.fieldType(i, zcu).toIntern();
-            const operand_src = block.src(.{ .array_cat_lhs = .{
-                .array_cat_offset = src_node,
+            const operand_src = block.src(.{ .cat_lhs = .{
+                .cat_offset = src_node,
                 .elem_index = @intCast(i),
             } });
             if (operand_ty.structFieldDefaultValue(i, zcu)) |default_val| {
