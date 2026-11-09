@@ -1826,6 +1826,7 @@ try value == 5678{#endsyntax#}</pre>
           <td>
             <ul>
               <li>{#link|Arrays#}</li>
+              <li>{#link|Vectors#}</li>
               <li>{#link|Tuples#}</li>
             </ul>
           </td>

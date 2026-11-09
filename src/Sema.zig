@@ -13448,6 +13448,87 @@ fn analyzeTupleCat(
     return block.addAggregateInit(tuple_ty, element_refs);
 }
 
+fn analyzeVectorCat(
+    sema: *Sema,
+    block: *Block,
+    src_node: std.zig.Ast.Node.Offset,
+    lhs: Air.Inst.Ref,
+    lhs_src: LazySrcLoc,
+    rhs: Air.Inst.Ref,
+    rhs_src: LazySrcLoc,
+    resolved_elem_ty: Type,
+) CompileError!Air.Inst.Ref {
+    const pt = sema.pt;
+    const zcu = pt.zcu;
+
+    const lhs_ty = sema.typeOf(lhs);
+    const rhs_ty = sema.typeOf(rhs);
+    const src = block.nodeOffset(src_node);
+
+    const lhs_len = switch (zcu.intern_pool.indexToKey(lhs_ty.toIntern())) {
+        .vector_type => |vector_type| vector_type.len,
+        else => return sema.fail(
+            block,
+            lhs_src,
+            "expected vector; found {qf}",
+            .{lhs_ty.fmt(zcu)},
+        ),
+    };
+    const rhs_len = switch (zcu.intern_pool.indexToKey(rhs_ty.toIntern())) {
+        .vector_type => |vector_type| vector_type.len,
+        else => return sema.fail(
+            block,
+            rhs_src,
+            "expected vector; found {qf}",
+            .{rhs_ty.fmt(zcu)},
+        ),
+    };
+    const result_len_u64: u64 = @as(u64, lhs_len) + @as(u64, rhs_len);
+    const result_len = try sema.u32Cast(block, src, result_len_u64);
+    const result_vec: InternPool.Key.VectorType = .{
+        .len = result_len,
+        .child = resolved_elem_ty.toIntern(),
+    };
+    if (lhs_len == 0) return sema.coerce(
+        block,
+        try pt.vectorType(result_vec),
+        rhs,
+        rhs_src,
+    );
+    if (rhs_len == 0) return sema.coerce(
+        block,
+        try pt.vectorType(result_vec),
+        lhs,
+        lhs_src,
+    );
+
+    const mask_elements = try sema.arena.alloc(InternPool.Index, result_len);
+    for (mask_elements[0..lhs_len], 0..) |*elem, i| {
+        elem.* = (try pt.intValue(.i32, @as(i32, @intCast(i)))).toIntern();
+    }
+    for (mask_elements[lhs_len..][0..rhs_len], 0..) |*elem, i| {
+        elem.* = (try pt.intValue(.i32, ~@as(i32, @intCast(i)))).toIntern();
+    }
+    const mask_ty = try pt.vectorType(.{
+        .len = result_len,
+        .child = .i32_type,
+    });
+    const mask = try pt.aggregateValue(mask_ty, mask_elements);
+
+    const mask_src = src;
+    return sema.analyzeShuffle(
+        block,
+        resolved_elem_ty,
+        lhs,
+        lhs_src,
+        rhs,
+        rhs_src,
+        mask,
+        result_len,
+        mask_src,
+    );
+}
+
 fn zirCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
     const pt = sema.pt;
     const zcu = pt.zcu;
@@ -13483,6 +13564,20 @@ fn zirCat(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.Ins
         .{ .types = &.{ lhs_info.elem_type, rhs_info.elem_type } },
         .{ .override = &.{ lhs_src, rhs_src } },
     );
+
+    const lhs_is_vector = lhs_ty.isVector(zcu);
+    const rhs_is_vector = rhs_ty.isVector(zcu);
+    if (lhs_is_vector or rhs_is_vector) {
+        return sema.analyzeVectorCat(
+            block,
+            inst_data.src_node,
+            lhs,
+            lhs_src,
+            rhs,
+            rhs_src,
+            resolved_elem_ty,
+        );
+    }
 
     return sema.analyzeArrayCat(
         block,
@@ -13812,6 +13907,11 @@ fn getCatInfo(sema: *Sema, block: *Block, src: LazySrcLoc, operand: Air.Inst.Ref
     const operand_ty = sema.typeOf(operand);
     switch (operand_ty.zigTypeTag(zcu)) {
         .array => return operand_ty.arrayInfo(zcu),
+        .vector => return .{
+            .len = operand_ty.vectorLen(zcu),
+            .sentinel = null,
+            .elem_type = operand_ty.childType(zcu),
+        },
         .pointer => {
             const ptr_info = operand_ty.ptrInfo(zcu);
             switch (ptr_info.flags.size) {
@@ -13859,80 +13959,6 @@ fn getCatInfo(sema: *Sema, block: *Block, src: LazySrcLoc, operand: Air.Inst.Ref
         else => {},
     }
     return null;
-}
-
-fn analyzeTupleMul(
-    sema: *Sema,
-    block: *Block,
-    src_node: std.zig.Ast.Node.Offset,
-    operand: Air.Inst.Ref,
-    factor: usize,
-) CompileError!Air.Inst.Ref {
-    const pt = sema.pt;
-    const zcu = pt.zcu;
-    const comp = zcu.comp;
-    const gpa = comp.gpa;
-    const io = comp.io;
-
-    const operand_ty = sema.typeOf(operand);
-    const src = block.nodeOffset(src_node);
-    const len_src = block.src(.{ .node_offset_bin_rhs = src_node });
-
-    const tuple_len = operand_ty.structFieldCount(zcu);
-    const final_len = std.math.mul(usize, tuple_len, factor) catch
-        return sema.fail(block, len_src, "operation results in overflow", .{});
-
-    if (final_len == 0) {
-        return .empty_tuple;
-    }
-    const types = try sema.arena.alloc(InternPool.Index, final_len);
-    const values = try sema.arena.alloc(InternPool.Index, final_len);
-
-    const opt_runtime_src = rs: {
-        var runtime_src: ?LazySrcLoc = null;
-        for (0..tuple_len) |i| {
-            types[i] = operand_ty.fieldType(i, zcu).toIntern();
-            const operand_src = block.src(.{ .cat_lhs = .{
-                .cat_offset = src_node,
-                .elem_index = @intCast(i),
-            } });
-            if (operand_ty.structFieldDefaultValue(i, zcu)) |default_val| {
-                values[i] = default_val.toIntern();
-            } else {
-                runtime_src = operand_src;
-                values[i] = .none; // TODO don't treat unreachable_value as special
-            }
-        }
-        for (0..factor) |i| {
-            @memmove(types[tuple_len * i ..][0..tuple_len], types[0..tuple_len]);
-            @memmove(values[tuple_len * i ..][0..tuple_len], values[0..tuple_len]);
-        }
-        break :rs runtime_src;
-    };
-
-    const tuple_ty: Type = .fromInterned(try zcu.intern_pool.getTupleType(gpa, io, pt.tid, .{
-        .types = types,
-        .values = values,
-    }));
-
-    const runtime_src = opt_runtime_src orelse {
-        const tuple_val = try pt.aggregateValue(tuple_ty, values);
-        return Air.internedToRef(tuple_val.toIntern());
-    };
-
-    try sema.requireRuntimeBlock(block, src, runtime_src);
-
-    const element_refs = try sema.arena.alloc(Air.Inst.Ref, final_len);
-    var i: u32 = 0;
-    while (i < tuple_len) : (i += 1) {
-        element_refs[i] = try sema.tupleFieldValByIndex(block, operand, @intCast(i), operand_ty);
-    }
-    i = 1;
-    while (i < factor) : (i += 1) {
-        @memcpy(element_refs[tuple_len * i ..][0..tuple_len], element_refs[0..tuple_len]);
-    }
-
-    return block.addAggregateInit(tuple_ty, element_refs);
 }
 
 fn zirNegate(sema: *Sema, block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
