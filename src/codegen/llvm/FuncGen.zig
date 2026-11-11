@@ -7198,7 +7198,12 @@ const ParamTypeIterator = struct {
                         it.types_len = 1;
                         return .multiple_llvm_types;
                     },
-                    .double_integer => return .{ .i64_array = 2 },
+                    .double_integer => {
+                        // AAPCS64 C.10: If the argument has an alignment of 16 then the NGRN
+                        // is rounded up to the next even number.
+                        if (ty.abiAlignment(zcu).toByteUnits().? >= 16) return .abi_sized_int;
+                        return .{ .i64_array = 2 };
+                    },
                 }
             },
             .arm_aapcs, .arm_aapcs_vfp => {
