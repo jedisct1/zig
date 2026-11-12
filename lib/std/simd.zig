@@ -146,14 +146,12 @@ pub fn repeat(comptime len: usize, vec: anytype) @Vector(len, std.meta.Child(@Ty
     return @shuffle(Child, vec, undefined, iota(i32, len) % @as(@Vector(len, i32), @splat(@intCast(vectorLength(@TypeOf(vec))))));
 }
 
+/// Deprecated in favor of `a ++ b`.
+///
 /// Returns a vector containing all elements of the first vector at the lower indices followed by all elements of the second vector
 /// at the higher indices.
 pub fn join(a: anytype, b: anytype) @Vector(vectorLength(@TypeOf(a)) + vectorLength(@TypeOf(b)), std.meta.Child(@TypeOf(a))) {
-    const Child = std.meta.Child(@TypeOf(a));
-    const a_len = vectorLength(@TypeOf(a));
-    const b_len = vectorLength(@TypeOf(b));
-
-    return @shuffle(Child, a, b, @as([a_len]i32, iota(i32, a_len)) ++ @as([b_len]i32, ~iota(i32, b_len)));
+    return a ++ b;
 }
 
 /// Returns a vector whose elements alternates between those of each input vector.
@@ -179,7 +177,7 @@ pub fn interlace(vecs: anytype) @Vector(vectorLength(@TypeOf(vecs[0])) * vecs.le
         const Vi32 = @Vector(len, i32);
         const count_up = iota(i32, len);
         const cycle = @divFloor(count_up, @as(Vi32, @splat(@intCast(vecs_arr.len))));
-        const select_mask = repeat(len, join(@as(@Vector(a_vec_count, bool), @splat(true)), @as(@Vector(b_vec_count, bool), @splat(false))));
+        const select_mask = repeat(len, @as(@Vector(a_vec_count, bool), @splat(true)) ++ @as(@Vector(b_vec_count, bool), @splat(false)));
         const a_indices = count_up - cycle * @as(Vi32, @splat(@intCast(b_vec_count)));
         const b_indices = shiftElementsRight(count_up - cycle * @as(Vi32, @splat(@intCast(a_vec_count))), a_vec_count, 0);
         break :blk @select(i32, select_mask, a_indices, ~b_indices);
@@ -251,7 +249,7 @@ test "vector patterns" {
 pub fn mergeShift(a: anytype, b: anytype, comptime shift: VectorCount(@TypeOf(a, b))) @TypeOf(a, b) {
     const len = vectorLength(@TypeOf(a, b));
 
-    return extract(join(a, b), shift, len);
+    return extract(a ++ b, shift, len);
 }
 
 /// Elements are shifted rightwards (towards higher indices). New elements are added to the left, and the rightmost elements are cut off
