@@ -21,9 +21,9 @@ pub const base_tag: Step.Tag = .config_header;
 pub const Style = union(enum) {
     /// A configure format supported by autotools that uses `#undef foo` to
     /// mark lines that can be substituted with different values.
-    autoconf_undef: std.Build.LazyPath,
+    autoconf_header: std.Build.LazyPath,
     /// A configure format supported by autotools that uses `@FOO@` output variables.
-    autoconf_at: std.Build.LazyPath,
+    autoconf_file: std.Build.LazyPath,
     /// The configure format supported by CMake. It uses `@FOO@`, `${}` and
     /// `#cmakedefine` for template substitution.
     cmake: std.Build.LazyPath,
@@ -37,7 +37,7 @@ pub const Style = union(enum) {
 
     pub fn getPath(style: Style) ?std.Build.LazyPath {
         switch (style) {
-            .autoconf_undef, .autoconf_at, .cmake, .meson => |s| return s,
+            .autoconf_header, .autoconf_file, .cmake, .meson => |s| return s,
             .blank, .nasm => return null,
         }
     }
