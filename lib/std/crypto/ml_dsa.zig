@@ -19,6 +19,7 @@ const errors = std.crypto.errors;
 const math = std.math;
 const mem = std.mem;
 const sha3 = crypto.hash.sha3;
+const timing_safe = crypto.timing_safe;
 
 const ContextTooLongError = errors.ContextTooLongError;
 const EncodingError = errors.EncodingError;
@@ -1391,10 +1392,7 @@ fn sampleInBall(comptime tau: u16, seed: []const u8) Poly {
         p.cs[i] = p.cs[b];
 
         // Set position b to ±1 based on sign bit
-        p.cs[b] = 1;
-        const sign_bit: u1 = @truncate(signs);
-        const mask = bitMask(u32, sign_bit);
-        p.cs[b] ^= mask & (1 | (Q - 1));
+        p.cs[b] = timing_safe.select(u32, .fromBool(signs & 1 != 0), Q - 1, 1);
         signs >>= 1;
     }
 
@@ -3481,16 +3479,6 @@ fn modularPow(comptime T: type, comptime a: T, s: T, comptime p: T) T {
     return ret;
 }
 
-/// Creates an all-ones or all-zeros mask from a single bit value.
-/// Returns all 1s (0xFF...FF) if bit == 1, all 0s if bit == 0.
-fn bitMask(comptime T: type, bit: T) T {
-    const type_info = @typeInfo(T);
-    if (type_info != .int or type_info.int.signedness != .unsigned) {
-        @compileError("bitMask requires an unsigned integer type");
-    }
-    return -%bit;
-}
-
 /// Montgomery reduction: for input x, returns y where y ≡ x*R^(-1) (mod q).
 /// This is a generic implementation parameterized by the modulus q, its inverse qInv,
 /// the Montgomery constant R, and the result bound.
@@ -3589,13 +3577,4 @@ fn sampleUniformRejection(
     }
 
     return ret;
-}
-
-test bitMask {
-    try testing.expectEqual(@as(u32, 0x00000000), bitMask(u32, 0));
-    try testing.expectEqual(@as(u32, 0xFFFFFFFF), bitMask(u32, 1));
-    try testing.expectEqual(@as(u8, 0x00), bitMask(u8, 0));
-    try testing.expectEqual(@as(u8, 0xFF), bitMask(u8, 1));
-    try testing.expectEqual(@as(u64, 0x0000000000000000), bitMask(u64, 0));
-    try testing.expectEqual(@as(u64, 0xFFFFFFFFFFFFFFFF), bitMask(u64, 1));
 }
