@@ -755,23 +755,18 @@ test "Test Barrett reduction" {
     }
 }
 
-// Returns x if x < q and x - q otherwise.  Assumes x ≥ -29439.
+// Returns x if x < q and x - q otherwise.  Assumes that x - q fits in 15 bits.
 fn csubq(x: i16) i16 {
     var r = x;
     r -= Q;
-    r += (r >> 15) & Q;
+    r += (r >> 14) & Q;
     return r;
 }
 
 test "Test csubq" {
-    var x: i32 = -29439;
-    while (x < 1 << 15) : (x += 1) {
-        const y1 = csubq(@as(i16, @intCast(x)));
-        var y2 = @as(i16, @intCast(x));
-        if (@as(i16, @intCast(x)) >= Q) {
-            y2 -= Q;
-        }
-        try testing.expectEqual(y1, y2);
+    var x: i16 = Q - (1 << 14);
+    while (x < Q + (1 << 14)) : (x += 1) {
+        try testing.expectEqual(if (x >= Q) x - Q else x, csubq(x));
     }
 }
 
