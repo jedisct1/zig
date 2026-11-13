@@ -245,9 +245,6 @@ fn renderAutoconfFile(
     const conf = &maker.scanned_config.configuration;
     const newline = detectNewline(contents);
 
-    try w.writeAll(c_generated_line);
-    try w.writeAll(newline);
-
     var any_errors = false;
     var line_index: u32 = 0;
     var line_it = std.mem.splitScalar(u8, contents, '\n');
