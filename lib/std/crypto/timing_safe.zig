@@ -262,25 +262,19 @@ const Protected = struct {
     }
 
     const Choice = struct {
-        mask: isize,
+        bit: usize,
 
         pub fn fromBool(c: bool) Protected.Choice {
-            return .{ .mask = if (@inComptime()) Plain.mask(isize, c) else Protected.mask(isize, c) };
-        }
-
-        fn maskAs(c: Protected.Choice, comptime T: type) T {
-            const bits = @typeInfo(T).int.bits;
-            if (bits == 0) return 0;
-            const s: @Int(.signed, bits) = if (bits < word_bits) @truncate(c.mask) else c.mask;
-            return @bitCast(s);
+            const bit: usize = @intFromBool(c);
+            return .{ .bit = if (@inComptime()) bit else Protected.valueBarrier(bit) };
         }
     };
 
     fn select(comptime T: type, c: Protected.Choice, a: T, b: T) T {
         switch (@typeInfo(T)) {
-            .int => return b ^ (c.maskAs(T) & (a ^ b)),
+            .int => return b ^ (maskFromBit(T, c.bit) & (a ^ b)),
             .array => |info| {
-                const m = c.maskAs(info.child);
+                const m = maskFromBit(info.child, c.bit);
                 var r = b;
                 for (&r, a) |*ri, ai| {
                     ri.* ^= m & (ai ^ ri.*);
@@ -294,12 +288,12 @@ const Protected = struct {
     fn conditionalSwap(comptime T: type, c: Protected.Choice, noalias a: *T, noalias b: *T) void {
         switch (@typeInfo(T)) {
             .int => {
-                const t = (a.* ^ b.*) & c.maskAs(T);
+                const t = (a.* ^ b.*) & maskFromBit(T, c.bit);
                 a.* ^= t;
                 b.* ^= t;
             },
             .array => |info| {
-                const m = c.maskAs(info.child);
+                const m = maskFromBit(info.child, c.bit);
                 for (a, b) |*x, *y| {
                     const t = (x.* ^ y.*) & m;
                     x.* ^= t;
