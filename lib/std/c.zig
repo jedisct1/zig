@@ -10472,6 +10472,7 @@ pub const FUTEX = switch (native_os) {
 pub const MFD = switch (native_os) {
     .linux => linux.MFD,
     .freebsd => freebsd.MFD,
+    .netbsd => netbsd.MFD,
     else => void,
 };
 
