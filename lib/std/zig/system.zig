@@ -223,16 +223,12 @@ pub fn getExternalExecutor(io: Io, candidate: *const std.Target, options: GetExt
 }
 
 pub const ResolveTargetError = error{
-    FileSystem,
+    OutOfMemory,
     SystemResources,
-    SymLinkLoop,
     ProcessFdQuotaExceeded,
     SystemFdQuotaExceeded,
-    DeviceBusy,
-    OsVersionQueryFailed,
-    /// Android-only. Querying API level through `getprop` failed.
-    ApiLevelQueryFailed,
-} || Io.Cancelable || Io.UnexpectedError;
+    ResourceLimitReached,
+} || Io.Cancelable;
 
 /// Given a `Target.Query`, which specifies in detail which parts of the
 /// target should be detected natively, which should be standard or default,
@@ -246,11 +242,13 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
     const query_os_tag = query.os_tag orelse builtin.os.tag;
     const query_abi = query.abi orelse builtin.abi;
     var os = query_os_tag.defaultVersionRange(query_cpu_arch, query_abi);
+
     if (query.os_tag == null) {
         switch (builtin.target.os.tag) {
             .linux, .illumos => {
                 const uts = posix.uname();
                 const release = mem.sliceTo(&uts.release, 0);
+
                 // The release field sometimes has a weird format,
                 // `Version.parse` will attempt to find some meaningful interpretation.
                 if (std.SemanticVersion.parse(release)) |ver| {
@@ -260,8 +258,9 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                     os.version_range.linux.range.min = stripped;
                     os.version_range.linux.range.max = stripped;
                 } else |err| switch (err) {
-                    error.Overflow => {},
-                    error.InvalidVersion => {},
+                    error.Overflow,
+                    error.InvalidVersion,
+                    => {},
                 }
             },
             .windows => {
@@ -270,7 +269,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                 os.version_range.windows.max = detected_version;
             },
             .macos => try darwin.macos.detect(io, &os),
-            .freebsd, .netbsd, .dragonfly => {
+            .freebsd, .netbsd, .dragonfly => v: {
                 const key = switch (builtin.target.os.tag) {
                     .freebsd => "kern.osreldate",
                     .netbsd, .dragonfly => "kern.osrevision",
@@ -285,7 +284,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                     .PERM => unreachable, // only when setting values,
                     .NOMEM => unreachable, // memory already on the stack
                     .NOENT => unreachable, // constant, known good value
-                    else => return error.OsVersionQueryFailed,
+                    else => break :v,
                 }
 
                 switch (builtin.target.os.tag) {
@@ -298,6 +297,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                         const minor1 = (value % 100_000) / 10_000; // usually 0 since 5.1
                         const minor2 = (value % 10_000) / 1_000; // 0 before 5.1, minor version since
                         const patch = value % 1_000;
+
                         os.version_range.semver.min = .{ .major = major, .minor = minor1 + minor2, .patch = patch };
                         os.version_range.semver.max = os.version_range.semver.min;
                     },
@@ -311,6 +311,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                         const major = value / 100_000_000;
                         const minor = (value % 100_000_000) / 1_000_000;
                         const patch = (value % 10_000) / 100;
+
                         os.version_range.semver.min = .{ .major = major, .minor = minor, .patch = patch };
                         os.version_range.semver.max = os.version_range.semver.min;
                     },
@@ -323,13 +324,14 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                         const major = value / 100_000;
                         const minor = (value % 100_000) / 100;
                         const patch = value % 100;
+
                         os.version_range.semver.min = .{ .major = major, .minor = minor, .patch = patch };
                         os.version_range.semver.max = os.version_range.semver.min;
                     },
                     else => unreachable,
                 }
             },
-            .openbsd => {
+            .openbsd => v: {
                 const mib: [2]c_int = [_]c_int{
                     posix.CTL.KERN,
                     posix.KERN.OSRELEASE,
@@ -343,7 +345,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                     error.PermissionDenied => unreachable, // only when setting values,
                     error.SystemResources => unreachable, // memory already on the stack
                     error.UnknownName => unreachable, // constant, known good value
-                    error.Unexpected => return error.OsVersionQueryFailed,
+                    error.Unexpected => break :v,
                 };
 
                 if (Target.Query.parseVersion(buf[0 .. len - 1 :0])) |ver| {
@@ -351,8 +353,10 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                     assert(ver.pre == null);
                     os.version_range.semver.min = ver;
                     os.version_range.semver.max = ver;
-                } else |_| {
-                    return error.OsVersionQueryFailed;
+                } else |err| switch (err) {
+                    error.Overflow,
+                    error.InvalidVersion,
+                    => {},
                 }
             },
             else => {
@@ -403,25 +407,24 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
     const arch = if (maybe_cpu) |c| c.arch else query_cpu_arch;
 
     var detected = detectAbiAndDynamicLinker(io, arch, os, query) catch |err| switch (err) {
-        error.Canceled => |e| return e,
-        error.Unexpected => |e| return e,
-        error.ApiLevelQueryFailed => |e| return e,
-        error.WouldBlock => return error.Unexpected,
-        error.ConnectionResetByPeer => return error.Unexpected,
-        error.NotOpenForReading => return error.Unexpected,
-        error.SocketUnconnected => return error.Unexpected,
-        error.ReadOnlyFileSystem => return error.Unexpected,
-
-        error.AccessDenied,
-        error.SymLinkLoop,
-        error.ProcessFdQuotaExceeded,
-        error.SystemFdQuotaExceeded,
+        error.OutOfMemory,
         error.SystemResources,
+        error.SystemFdQuotaExceeded,
+        error.ProcessFdQuotaExceeded,
+        error.ResourceLimitReached,
+        error.Canceled,
+        => |e| return e,
+
+        error.LockViolation => unreachable, // Windows-only
+
+        error.WouldBlock,
+        error.ConnectionResetByPeer,
+        error.NotOpenForReading,
+        error.SocketUnconnected,
+        error.AccessDenied,
         error.IsDir,
-        error.DeviceBusy,
         error.InputOutput,
-        error.LockViolation,
-        error.FileSystem,
+        error.Unexpected,
 
         error.UnableToOpenElfFile,
         error.UnhelpfulFile,
@@ -842,30 +845,18 @@ fn detectNativeCpuAndFeatures(io: Io, cpu_arch: Target.Cpu.Arch) ?Target.Cpu {
 }
 
 const AbiAndDynamicLinkerFromFileError = error{
-    Canceled,
-    AccessDenied,
-    Unexpected,
-    Unseekable,
-    ReadFailed,
-    EndOfStream,
-    NameTooLong,
-    StaticElfFile,
-    InvalidElfFile,
-    StreamTooLong,
-    Timeout,
-    SymLinkLoop,
     SystemResources,
     ProcessFdQuotaExceeded,
     SystemFdQuotaExceeded,
-    IsDir,
-    WouldBlock,
-    InputOutput,
-    BrokenPipe,
-    ConnectionResetByPeer,
-    NotOpenForReading,
-    SocketUnconnected,
-    LockViolation,
-    FileSystem,
+    ReadFailed,
+    AccessDenied,
+    Unseekable,
+    EndOfStream,
+    NameTooLong,
+    Unexpected,
+    Canceled,
+    StaticElfFile,
+    InvalidElfFile,
 };
 
 fn abiAndDynamicLinkerFromFile(
@@ -884,7 +875,7 @@ fn abiAndDynamicLinkerFromFile(
         .abi = .default(arch, os.tag),
         .dynamic_linker = query.dynamic_linker orelse .none,
     };
-    var rpath_offset: ?u64 = null; // Found inside PT.DYNAMIC
+    var dynamic: ?struct { offset: u64, size: u64 } = null; // PT.DYNAMIC
     const look_for_ld = query.dynamic_linker == null;
 
     var got_dyn_section: bool = false;
@@ -920,15 +911,7 @@ fn abiAndDynamicLinkerFromFile(
             .DYNAMIC => {
                 got_dyn_section = true;
 
-                if (builtin.target.os.tag == .linux and result.abi.isGnu() and query.glibc_version == null) {
-                    var dyn_it = header.iterateDynamicSection(file_reader, phdr.offset, phdr.filesz);
-                    while (try dyn_it.next()) |dyn| {
-                        if (dyn.d_tag == elf.DT_RUNPATH) {
-                            rpath_offset = dyn.d_val;
-                            break;
-                        }
-                    }
-                }
+                dynamic = .{ .offset = phdr.offset, .size = phdr.filesz };
             },
             else => continue,
         };
@@ -954,43 +937,48 @@ fn abiAndDynamicLinkerFromFile(
             }
         }
 
-        const str_section_off = header.shoff + @as(u64, header.shentsize) * @as(u64, header.shstrndx);
-        try file_reader.seekTo(str_section_off);
-        const shstr = try elf.takeSectionHeader(&file_reader.interface, header.is_64, header.endian);
-        var strtab_buf: [4096]u8 = undefined;
-        const shstrtab = strtab_buf[0..@min(shstr.sh_size, strtab_buf.len)];
-        try file_reader.seekTo(shstr.sh_offset);
-        try file_reader.interface.readSliceAll(shstrtab);
-        const dynstr: ?struct { offset: u64, size: u64 } = find_dyn_str: {
-            var it = header.iterateSectionHeaders(file_reader);
-            while (try it.next()) |shdr| {
-                const end = mem.findScalarPos(u8, shstrtab, shdr.sh_name, 0) orelse continue;
-                const sh_name = shstrtab[shdr.sh_name..end :0];
-                if (mem.eql(u8, sh_name, ".dynstr")) break :find_dyn_str .{
-                    .offset = shdr.sh_offset,
-                    .size = shdr.sh_size,
-                };
-            } else break :find_dyn_str null;
-        };
-        if (dynstr) |ds| {
-            if (rpath_offset) |rpoff| {
-                if (rpoff > ds.size) return error.InvalidElfFile;
-                const rpoff_file = ds.offset + rpoff;
-                const rp_max_size = ds.size - rpoff;
+        if (dynamic) |dyn| rpath: {
+            const maybe_rpath_list = findRunPath(file_reader, header, dyn.offset, dyn.size) catch |err| switch (err) {
+                error.ReadFailed => switch (file_reader.err.?) {
+                    error.SystemResources,
+                    error.Canceled,
+                    => |e| return e,
 
-                try file_reader.seekTo(rpoff_file);
-                const rpath_list = try file_reader.interface.takeSentinel(0);
-                if (rpath_list.len > rp_max_size) return error.StreamTooLong;
+                    error.LockViolation => unreachable, // Windows-only
 
-                var it = mem.tokenizeScalar(u8, rpath_list, ':');
-                while (it.next()) |rpath| {
-                    if (glibcVerFromRPath(io, rpath)) |ver| {
-                        result.os.version_range.linux.glibc = ver;
-                        return result;
-                    } else |err| switch (err) {
-                        error.GLibCNotFound => continue,
-                        else => |e| return e,
-                    }
+                    error.InputOutput,
+                    error.IsDir,
+                    error.AccessDenied,
+                    error.WouldBlock,
+                    error.ConnectionResetByPeer,
+                    error.NotOpenForReading,
+                    error.SocketUnconnected,
+                    error.Unexpected,
+                    => break :rpath,
+                },
+
+                error.Canceled => |e| return e,
+
+                error.Unseekable,
+                error.AccessDenied,
+                error.EndOfStream,
+                error.StreamTooLong,
+                error.Unexpected,
+
+                error.InvalidElfFile,
+                => break :rpath,
+            };
+
+            const rpath_list = maybe_rpath_list orelse break :rpath;
+
+            var it = mem.tokenizeScalar(u8, rpath_list, ':');
+            while (it.next()) |rpath| {
+                if (glibcVerFromRPath(io, rpath)) |ver| {
+                    result.os.version_range.linux.glibc = ver;
+                    return result;
+                } else |err| switch (err) {
+                    error.GLibCNotFound => continue,
+                    else => |e| return e,
                 }
             }
         }
@@ -1001,9 +989,13 @@ fn abiAndDynamicLinkerFromFile(
             //
             // `/lib64/ld-linux-x86-64.so.2` -> `/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2`
             var real_path_buffer: [posix.PATH_MAX]u8 = undefined;
-            const real_dl_path = if (Io.Dir.cwd().realPathFile(io, dl_path, &real_path_buffer)) |n| real_path_buffer[0..n]
-            else |err| switch (err) {
-                error.Canceled => |e| return e,
+            const real_dl_path = if (Io.Dir.cwd().realPathFile(io, dl_path, &real_path_buffer)) |n| real_path_buffer[0..n] else |err| switch (err) {
+                error.SystemResources,
+                error.SystemFdQuotaExceeded,
+                error.ProcessFdQuotaExceeded,
+                error.Canceled,
+                => |e| return e,
+
                 else => break :glibc_ver,
             };
 
@@ -1064,26 +1056,76 @@ test glibcVerFromLinkName {
     try std.testing.expectError(error.InvalidGnuLibCVersion, glibcVerFromLinkName("ld-2.37.4.5.so", "ld-"));
 }
 
-fn glibcVerFromRPath(io: Io, rpath: []const u8) !std.SemanticVersion {
+const GlibcVerError = error{
+    SystemResources,
+    ProcessFdQuotaExceeded,
+    SystemFdQuotaExceeded,
+    Canceled,
+    GLibCNotFound,
+};
+
+fn findRunPath(
+    file_reader: *Io.File.Reader,
+    header: *const elf.Header,
+    dyn_offset: u64,
+    dyn_size: u64,
+) !?[]const u8 {
+    const rpath_offset = rpath_offset: {
+        var it = header.iterateDynamicSection(file_reader, dyn_offset, dyn_size);
+        while (try it.next()) |dyn| {
+            if (dyn.d_tag == elf.DT_RUNPATH) break :rpath_offset dyn.d_val;
+        }
+        return null;
+    };
+
+    const str_section_off = header.shoff + @as(u64, header.shentsize) * @as(u64, header.shstrndx);
+    try file_reader.seekTo(str_section_off);
+    const shstr = try elf.takeSectionHeader(&file_reader.interface, header.is_64, header.endian);
+    var strtab_buf: [4096]u8 = undefined;
+    const shstrtab = strtab_buf[0..@min(shstr.sh_size, strtab_buf.len)];
+    try file_reader.seekTo(shstr.sh_offset);
+    try file_reader.interface.readSliceAll(shstrtab);
+    const dynstr: struct { offset: u64, size: u64 } = find_dyn_str: {
+        var it = header.iterateSectionHeaders(file_reader);
+        while (try it.next()) |shdr| {
+            const end = mem.findScalarPos(u8, shstrtab, shdr.sh_name, 0) orelse continue;
+            const sh_name = shstrtab[shdr.sh_name..end :0];
+            if (mem.eql(u8, sh_name, ".dynstr")) break :find_dyn_str .{
+                .offset = shdr.sh_offset,
+                .size = shdr.sh_size,
+            };
+        } else return error.InvalidElfFile;
+    };
+
+    if (rpath_offset > dynstr.size) return error.InvalidElfFile;
+    try file_reader.seekTo(dynstr.offset + rpath_offset);
+    const rpath = try file_reader.interface.takeSentinel(0);
+    if (rpath.len > dynstr.size - rpath_offset) return error.StreamTooLong;
+    return rpath;
+}
+
+fn glibcVerFromRPath(io: Io, rpath: []const u8) GlibcVerError!std.SemanticVersion {
     const cwd: Io.Dir = .cwd();
 
     var dir = cwd.openDir(io, rpath, .{}) catch |err| switch (err) {
-        error.NameTooLong => return error.Unexpected,
-        error.BadPathName => return error.Unexpected,
-        error.NetworkNotFound => return error.Unexpected, // Windows-only
+        error.SystemResources,
+        error.SystemFdQuotaExceeded,
+        error.ProcessFdQuotaExceeded,
+        error.Canceled,
+        => |e| return e,
 
-        error.FileNotFound => return error.GLibCNotFound,
-        error.NotDir => return error.GLibCNotFound,
-        error.AccessDenied => return error.GLibCNotFound,
-        error.PermissionDenied => return error.GLibCNotFound,
-        error.NoDevice => return error.GLibCNotFound,
+        error.NetworkNotFound => unreachable, // Windows-only
 
-        error.ProcessFdQuotaExceeded => |e| return e,
-        error.SystemFdQuotaExceeded => |e| return e,
-        error.SystemResources => |e| return e,
-        error.SymLinkLoop => |e| return e,
-        error.Unexpected => |e| return e,
-        error.Canceled => |e| return e,
+        error.NameTooLong,
+        error.BadPathName,
+        error.FileNotFound,
+        error.NotDir,
+        error.AccessDenied,
+        error.PermissionDenied,
+        error.NoDevice,
+        error.SymLinkLoop,
+        error.Unexpected,
+        => return error.GLibCNotFound,
     };
     defer dir.close(io);
 
@@ -1096,35 +1138,38 @@ fn glibcVerFromRPath(io: Io, rpath: []const u8) !std.SemanticVersion {
     return glibcVerFromSoPath(io, dir, "libc.so.6");
 }
 
-fn glibcVerFromSoPath(io: Io, dir: Io.Dir, sub_path: []const u8) !std.SemanticVersion {
+fn glibcVerFromSoPath(io: Io, dir: Io.Dir, sub_path: []const u8) GlibcVerError!std.SemanticVersion {
     var file = dir.openFile(io, sub_path, .{}) catch |err| switch (err) {
-        error.NameTooLong => return error.Unexpected,
-        error.BadPathName => return error.Unexpected,
-        error.PipeBusy => return error.Unexpected, // Windows-only
-        error.NetworkNotFound => return error.Unexpected, // Windows-only
-        error.AntivirusInterference => return error.Unexpected, // Windows-only
-        error.FileLocksUnsupported => return error.Unexpected, // No lock requested.
-        error.NoSpaceLeft => return error.Unexpected, // read-only
-        error.PathAlreadyExists => return error.Unexpected, // read-only
-        error.DeviceBusy => return error.Unexpected, // read-only
-        error.FileBusy => return error.Unexpected, // read-only
-        error.ReadOnlyFileSystem => return error.Unexpected, // read-only
-        error.NoDevice => return error.Unexpected, // not asking for a special device
-        error.FileTooBig => return error.Unexpected,
-        error.WouldBlock => return error.Unexpected, // not opened in non-blocking
+        error.SystemResources,
+        error.SystemFdQuotaExceeded,
+        error.ProcessFdQuotaExceeded,
+        error.Canceled,
+        => |e| return e,
 
-        error.AccessDenied => return error.GLibCNotFound,
-        error.PermissionDenied => return error.GLibCNotFound,
-        error.FileNotFound => return error.GLibCNotFound,
-        error.NotDir => return error.GLibCNotFound,
-        error.IsDir => return error.GLibCNotFound,
+        error.PipeBusy,
+        error.NetworkNotFound,
+        error.AntivirusInterference,
+        => unreachable, // Windows-only
 
-        error.ProcessFdQuotaExceeded => |e| return e,
-        error.SystemFdQuotaExceeded => |e| return e,
-        error.SystemResources => |e| return e,
-        error.SymLinkLoop => |e| return e,
-        error.Unexpected => |e| return e,
-        error.Canceled => |e| return e,
+        error.NameTooLong,
+        error.BadPathName,
+        error.FileLocksUnsupported,
+        error.NoSpaceLeft,
+        error.PathAlreadyExists,
+        error.DeviceBusy,
+        error.FileBusy,
+        error.ReadOnlyFileSystem,
+        error.FileTooBig,
+        error.WouldBlock,
+        error.AccessDenied,
+        error.PermissionDenied,
+        error.FileNotFound,
+        error.NotDir,
+        error.IsDir,
+        error.NoDevice,
+        error.SymLinkLoop,
+        error.Unexpected,
+        => return error.GLibCNotFound,
     };
     defer file.close(io);
 
@@ -1132,16 +1177,37 @@ fn glibcVerFromSoPath(io: Io, dir: Io.Dir, sub_path: []const u8) !std.SemanticVe
     var file_reader: Io.File.Reader = .init(file, io, &buffer);
 
     return glibcVerFromSoFile(&file_reader) catch |err| switch (err) {
+        error.ReadFailed => switch (file_reader.err.?) {
+            error.SystemResources,
+            error.Canceled,
+            => |e| return e,
+
+            error.LockViolation => unreachable, // Windows-only
+
+            error.InputOutput,
+            error.IsDir,
+            error.AccessDenied,
+            error.WouldBlock,
+            error.ConnectionResetByPeer,
+            error.NotOpenForReading,
+            error.SocketUnconnected,
+            error.Unexpected,
+            => return error.GLibCNotFound,
+        },
+
+        error.Canceled => |e| return e,
+
+        error.EndOfStream,
+        error.Unseekable,
+        error.AccessDenied,
+        error.Unexpected,
+
         error.InvalidElfMagic,
         error.InvalidElfEndian,
         error.InvalidElfClass,
         error.InvalidElfVersion,
         error.InvalidGnuLibCVersion,
-        error.EndOfStream,
         => return error.GLibCNotFound,
-
-        error.ReadFailed => return file_reader.err.?,
-        else => |e| return e,
     };
 }
 
@@ -1294,30 +1360,41 @@ fn detectAbiAndDynamicLinker(io: Io, arch: Target.Cpu.Arch, os: Target.Os, query
 
         while (true) {
             const file = Io.Dir.openFileAbsolute(io, file_name, .{}) catch |err| switch (err) {
-                error.NoSpaceLeft => return error.Unexpected,
-                error.NameTooLong => return error.Unexpected,
-                error.PathAlreadyExists => return error.Unexpected,
-                error.BadPathName => return error.Unexpected,
-                error.PipeBusy => return error.Unexpected,
-                error.FileLocksUnsupported => return error.Unexpected,
-                error.FileBusy => return error.Unexpected, // opened without write permissions
-                error.AntivirusInterference => return error.Unexpected, // Windows-only error
+                error.SystemResources,
+                error.SystemFdQuotaExceeded,
+                error.ProcessFdQuotaExceeded,
+                error.Canceled,
+                => |e| return e,
 
+                error.FileNotFound => if (builtin.target.os.tag == .linux and mem.eql(u8, file_name, "/usr/bin/env")) {
+                    // Android does not have a /usr directory, so try again
+                    file_name = "/system/bin/env";
+                    continue;
+                } else return error.UnableToOpenElfFile,
+
+                error.PipeBusy,
+                error.NetworkNotFound,
+                error.AntivirusInterference,
+                => unreachable, // Windows-only
+
+                error.NoSpaceLeft,
+                error.NameTooLong,
+                error.PathAlreadyExists,
+                error.BadPathName,
+                error.FileLocksUnsupported,
+                error.FileBusy,
                 error.IsDir,
                 error.NotDir,
                 error.AccessDenied,
                 error.PermissionDenied,
                 error.NoDevice,
-                error.FileNotFound,
-                error.NetworkNotFound,
                 error.FileTooBig,
+                error.SymLinkLoop,
+                error.WouldBlock,
+                error.DeviceBusy,
+                error.ReadOnlyFileSystem,
                 error.Unexpected,
-                => |e| if (builtin.target.os.tag == .linux and e == error.FileNotFound and mem.eql(u8, file_name, "/usr/bin/env")) {
-                    // Android does not have a /usr directory, so try again
-                    file_name = "/system/bin/env";
-                    continue;
-                } else return error.UnableToOpenElfFile,
-                else => |e| return e,
+                => return error.UnableToOpenElfFile,
             };
             var is_elf_file = false;
             defer if (!is_elf_file) file.close(io);
@@ -1332,7 +1409,9 @@ fn detectAbiAndDynamicLinker(io: Io, arch: Target.Cpu.Arch, os: Target.Os, query
                     const shebang_line = file_reader.interface.takeSentinel('\n') catch |err| switch (err) {
                         error.ReadFailed => return file_reader.err.?,
                         // It's neither an ELF file nor file with shebang line.
-                        error.EndOfStream, error.StreamTooLong => return error.UnhelpfulFile,
+                        error.EndOfStream,
+                        error.StreamTooLong,
+                        => return error.UnhelpfulFile,
                     };
                     if (!mem.startsWith(u8, shebang_line, "#!")) return error.UnhelpfulFile;
                     // We detected shebang, now parse entire line.
@@ -1367,41 +1446,80 @@ fn detectAbiAndDynamicLinker(io: Io, arch: Target.Cpu.Arch, os: Target.Os, query
     defer file_reader.file.close(io);
 
     var result = abiAndDynamicLinkerFromFile(&file_reader, &header, arch, os, ld_info_list, query) catch |err| switch (err) {
-        error.FileSystem,
         error.SystemResources,
-        error.SymLinkLoop,
-        error.ProcessFdQuotaExceeded,
         error.SystemFdQuotaExceeded,
+        error.ProcessFdQuotaExceeded,
         error.Canceled,
         => |e| return e,
 
         error.ReadFailed => return file_reader.err.?,
 
-        else => |e| {
-            std.log.warn("encountered {t}; falling back to default ABI and dynamic linker", .{e});
-            return defaultAbiAndDynamicLinker(arch, os, query);
-        },
+        error.Unseekable,
+        error.AccessDenied,
+        error.EndOfStream,
+        error.NameTooLong,
+        error.Unexpected,
+
+        error.StaticElfFile,
+        error.InvalidElfFile,
+        => return defaultAbiAndDynamicLinker(arch, os, query),
     };
 
     if (builtin.target.os.tag == .linux and result.abi.isAndroid() and query.android_api_level == null) {
-        result.os.version_range.linux.android = detectAndroidApiLevel(io) catch |err| return switch (err) {
+        if (detectAndroidApiLevel(io)) |api_level| {
+            result.os.version_range.linux.android = api_level;
+        } else |err| switch (err) {
+            error.ProcessAlreadyExec,
+            error.InvalidUserId,
+            error.InvalidProcessGroupId,
+            // Windows-only
             error.InvalidWtf8,
             error.InvalidBatchScriptArg,
-            => unreachable, // Windows-only
-            error.ApiLevelQueryFailed => |e| e,
-            else => blk: {
-                std.log.err("spawning or reading from getprop failed ({s})", .{@errorName(err)});
-                switch (err) {
-                    error.SystemResources,
-                    error.FileSystem,
-                    error.ProcessFdQuotaExceeded,
-                    error.SystemFdQuotaExceeded,
-                    error.SymLinkLoop,
-                    => |e| break :blk e,
-                    else => break :blk error.ApiLevelQueryFailed,
-                }
-            },
-        };
+            error.UnrecognizedVolume,
+            error.InvalidName,
+            error.PipeBusy,
+            error.NetworkNotFound,
+            error.AntivirusInterference,
+            error.LockViolation,
+            => unreachable,
+
+            error.OutOfMemory,
+            error.SystemResources,
+            error.SystemFdQuotaExceeded,
+            error.ProcessFdQuotaExceeded,
+            error.ResourceLimitReached,
+            error.Canceled,
+            => |e| return e,
+
+            error.InputOutput,
+            error.IsDir,
+            error.ConnectionResetByPeer,
+            error.NotOpenForReading,
+            error.SocketUnconnected,
+            error.WouldBlock,
+            error.AccessDenied,
+            error.FileTooBig,
+            error.NoSpaceLeft,
+            error.DeviceBusy,
+            error.PermissionDenied,
+            error.NoDevice,
+            error.FileBusy,
+            error.PathAlreadyExists,
+            error.SymLinkLoop,
+            error.FileNotFound,
+            error.NotDir,
+            error.ReadOnlyFileSystem,
+            error.NameTooLong,
+            error.BadPathName,
+            error.FileLocksUnsupported,
+            error.OperationUnsupported,
+            error.FileSystem,
+            error.InvalidExe,
+            error.Unexpected,
+
+            error.ApiLevelQueryFailed,
+            => {},
+        }
     }
 
     return result;
@@ -1439,35 +1557,17 @@ fn detectAndroidApiLevel(io: Io) !u32 {
     // Currently API levels are two-digit numbers, but we want to make sure we never read a partial value.
     var stdout_buf: [92 + 1]u8 = undefined;
     var reader = child.stdout.?.readerStreaming(io, &.{});
-    const n = try reader.interface.readSliceShort(&stdout_buf);
+    const n = reader.interface.readSliceShort(&stdout_buf) catch |err| switch (err) {
+        error.ReadFailed => return reader.err.?,
+    };
 
     switch (try child.wait(io)) {
-        .exited => |code| if (code != 0) {
-            std.log.err("getprop terminated abnormally with exit code: {d}", .{code});
-            return error.ApiLevelQueryFailed;
-        },
-        .signal => |sig| {
-            std.log.err("getprop terminated abnormally with signal: {t}", .{sig});
-            return error.ApiLevelQueryFailed;
-        },
-        .stopped => |sig| {
-            std.log.err("getprop stopped abnormally with signal: {t}", .{sig});
-            return error.ApiLevelQueryFailed;
-        },
-        .unknown => {
-            std.log.err("getprop terminated abnormally", .{});
-            return error.ApiLevelQueryFailed;
-        },
+        .exited => |code| if (code != 0) return error.ApiLevelQueryFailed,
+        .signal, .stopped, .unknown => return error.ApiLevelQueryFailed,
     }
 
     const result = mem.trimEnd(u8, stdout_buf[0..n], "\n");
-    return std.fmt.parseInt(u32, result, 10) catch |e| {
-        std.log.err(
-            "Could not parse API level, unexpected getprop output '{s}' ({s})",
-            .{ result, @errorName(e) },
-        );
-        return error.ApiLevelQueryFailed;
-    };
+    return std.fmt.parseInt(u32, result, 10) catch error.ApiLevelQueryFailed;
 }
 
 test {
