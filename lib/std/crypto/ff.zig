@@ -358,7 +358,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
         // Replaces the limbs of `x` with the limbs of `y` if `on` is `true`.
         fn cmov(x: *Self, on: bool, y: Self) void {
             for (x.limbs(), y.limbsConst()) |*x_limb, y_limb| {
-                x_limb.* = timing_safe.select(Limb, on, y_limb, x_limb.*);
+                x_limb.* = timing_safe.select(Limb, .fromBool(on), y_limb, x_limb.*);
             }
         }
 
@@ -368,7 +368,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             assert(y.limbs_len <= x.limbs_len);
             for (x.limbs(), 0..) |*x_limb, i| {
                 const res = x_limb.* + y.limbs_buffer[i] + carry;
-                x_limb.* = timing_safe.select(Limb, on, @as(TLimb, @truncate(res)), x_limb.*);
+                x_limb.* = timing_safe.select(Limb, .fromBool(on), @as(TLimb, @truncate(res)), x_limb.*);
                 carry = @truncate(res >> t_bits);
             }
             return carry;
@@ -380,7 +380,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             assert(y.limbs_len <= x.limbs_len);
             for (x.limbs(), 0..) |*x_limb, i| {
                 const res = x_limb.* -% y.limbs_buffer[i] -% borrow;
-                x_limb.* = timing_safe.select(Limb, on, @as(TLimb, @truncate(res)), x_limb.*);
+                x_limb.* = timing_safe.select(Limb, .fromBool(on), @as(TLimb, @truncate(res)), x_limb.*);
                 borrow = @truncate(res >> t_bits);
             }
             return borrow;
@@ -860,7 +860,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
                 var carry: u1 = @truncate(math.shr(Limb, y, i));
                 var borrow: u1 = 0;
                 for (0..self.limbs_count()) |j| {
-                    const l = timing_safe.select(Limb, need_sub, d_limbs[j], x_limbs[j]);
+                    const l = timing_safe.select(Limb, .fromBool(need_sub), d_limbs[j], x_limbs[j]);
                     var res = (l << 1) + carry;
                     x_limbs[j] = @as(TLimb, @truncate(res));
                     carry = @truncate(res >> t_bits);
