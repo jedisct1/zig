@@ -943,6 +943,17 @@ fn abiAndDynamicLinkerFromFile(
     }
 
     if (builtin.target.os.tag == .linux and result.abi.isGnu() and query.glibc_version == null) {
+        // Since glibc 2.33, the dynamic linker contains the banner string just like libc.so.6.
+        if (result.dynamic_linker.get()) |dl_path| {
+            if (glibcVerFromSoPath(io, .cwd(), dl_path)) |ver| {
+                result.os.version_range.linux.glibc = ver;
+                return result;
+            } else |err| switch (err) {
+                error.GLibCNotFound => {},
+                else => |e| return e,
+            }
+        }
+
         const str_section_off = header.shoff + @as(u64, header.shentsize) * @as(u64, header.shstrndx);
         try file_reader.seekTo(str_section_off);
         const shstr = try elf.takeSectionHeader(&file_reader.interface, header.is_64, header.endian);
@@ -985,9 +996,20 @@ fn abiAndDynamicLinkerFromFile(
         }
 
         if (result.dynamic_linker.get()) |dl_path| glibc_ver: {
-            // There is no DT_RUNPATH so we try to find libc.so.6 inside the same
-            // directory as the dynamic linker.
-            if (fs.path.dirname(dl_path)) |rpath| {
+            // The dynamic linker path is very often a symlink into the lib directory where the rest
+            // of the glibc binaries live, e.g. on Debian:
+            //
+            // `/lib64/ld-linux-x86-64.so.2` -> `/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2`
+            var real_path_buffer: [posix.PATH_MAX]u8 = undefined;
+            const real_dl_path = if (Io.Dir.cwd().realPathFile(io, dl_path, &real_path_buffer)) |n| real_path_buffer[0..n]
+            else |err| switch (err) {
+                error.Canceled => |e| return e,
+                else => break :glibc_ver,
+            };
+
+            // There is no `DT_RUNPATH` so we try to find `libc.so.6` inside the same directory as
+            // the dynamic linker.
+            if (fs.path.dirname(real_dl_path)) |rpath| {
                 if (glibcVerFromRPath(io, rpath)) |ver| {
                     result.os.version_range.linux.glibc = ver;
                     return result;
@@ -997,71 +1019,18 @@ fn abiAndDynamicLinkerFromFile(
                 }
             }
 
-            // So far, no luck. Next we try to see if the information is
-            // present in the symlink data for the dynamic linker path.
-            var link_buffer: [posix.PATH_MAX]u8 = undefined;
-            const link_name = if (Io.Dir.readLinkAbsolute(io, dl_path, &link_buffer)) |n|
-                link_buffer[0..n]
-            else |err| switch (err) {
-                error.NameTooLong => unreachable,
-                error.BadPathName => unreachable, // Windows only
-                error.UnsupportedReparsePointType => unreachable, // Windows only
-                error.NetworkNotFound => unreachable, // Windows only
-                error.AntivirusInterference => unreachable, // Windows only
-                error.FileBusy => unreachable, // Windows only
-
-                error.AccessDenied,
-                error.PermissionDenied,
-                error.FileNotFound,
-                error.NotLink,
-                error.NotDir,
-                => break :glibc_ver,
-
-                error.SystemResources,
-                error.FileSystem,
-                error.SymLinkLoop,
-                error.Canceled,
-                error.Unexpected,
-                => |e| return e,
-            };
+            // Before glibc 2.34, the dynamic linker was installed as `ld-X.Y.so`, so the version
+            // may be present in its file name.
             result.os.version_range.linux.glibc = glibcVerFromLinkName(
-                fs.path.basename(link_name),
+                fs.path.basename(real_dl_path),
                 "ld-",
             ) catch |err| switch (err) {
                 error.UnrecognizedGnuLibCFileName,
                 error.InvalidGnuLibCVersion,
                 => break :glibc_ver,
             };
-            return result;
-        }
 
-        // Nothing worked so far. Finally we fall back to hard-coded search paths.
-        // Some distros such as Debian keep their libc.so.6 in `/lib/$triple/`.
-        var path_buf: [posix.PATH_MAX]u8 = undefined;
-        var index: usize = 0;
-        const prefix = "/lib/";
-        const cpu_arch = @tagName(arch);
-        const os_tag = @tagName(result.os.tag);
-        const abi = @tagName(result.abi);
-        @memcpy(path_buf[index..][0..prefix.len], prefix);
-        index += prefix.len;
-        @memcpy(path_buf[index..][0..cpu_arch.len], cpu_arch);
-        index += cpu_arch.len;
-        path_buf[index] = '-';
-        index += 1;
-        @memcpy(path_buf[index..][0..os_tag.len], os_tag);
-        index += os_tag.len;
-        path_buf[index] = '-';
-        index += 1;
-        @memcpy(path_buf[index..][0..abi.len], abi);
-        index += abi.len;
-        const rpath = path_buf[0..index];
-        if (glibcVerFromRPath(io, rpath)) |ver| {
-            result.os.version_range.linux.glibc = ver;
             return result;
-        } else |err| switch (err) {
-            error.GLibCNotFound => {},
-            else => |e| return e,
         }
     }
 
@@ -1124,8 +1093,11 @@ fn glibcVerFromRPath(io: Io, rpath: []const u8) !std.SemanticVersion {
     // installations, there is no symlink. Thus we instead use a more
     // robust check of opening the libc shared object and reading the
     // release version out of its banner string.
-    const glibc_so_basename = "libc.so.6";
-    var file = dir.openFile(io, glibc_so_basename, .{}) catch |err| switch (err) {
+    return glibcVerFromSoPath(io, dir, "libc.so.6");
+}
+
+fn glibcVerFromSoPath(io: Io, dir: Io.Dir, sub_path: []const u8) !std.SemanticVersion {
+    var file = dir.openFile(io, sub_path, .{}) catch |err| switch (err) {
         error.NameTooLong => return error.Unexpected,
         error.BadPathName => return error.Unexpected,
         error.PipeBusy => return error.Unexpected, // Windows-only
