@@ -10,7 +10,11 @@ const Target = std.Target;
 
 /// Detect macOS version.
 /// `target_os` is not modified if the version can't be detected.
-pub fn detect(io: Io, target_os: *Target.Os) std.zig.system.ResolveTargetError!void {
+pub fn detect(
+    io: Io,
+    target_os: *Target.Os,
+    diags: *std.zig.system.ResolveTargetDiagnostics,
+) std.zig.system.ResolveTargetError!void {
     // Drop use of osproductversion sysctl because:
     //   1. only available 10.13.4 High Sierra and later
     //   2. when used from a binary built against < SDK 11.0 it returns 10.16 and masks Big Sur 11.x version
@@ -52,6 +56,7 @@ pub fn detect(io: Io, target_os: *Target.Os) std.zig.system.ResolveTargetError!v
         prefixSlash ++ "SystemVersion.plist",
         prefixSlash ++ ".SystemVersionPlatform.plist",
     };
+    var diag: ?std.zig.system.ResolveTargetDiagnostics.OsVersion = null;
     for (paths) |path| {
         // approx. 4 times historical file size
         var buf: [2048]u8 = undefined;
@@ -63,9 +68,15 @@ pub fn detect(io: Io, target_os: *Target.Os) std.zig.system.ResolveTargetError!v
             error.Canceled,
             => |e| return e,
 
-            else => continue,
+            else => |e| {
+                if (diag == null) diag = .{ .read_error = .{ .path = path, .err = e } };
+                continue;
+            },
         };
-        const ver = parseSystemVersion(bytes) catch continue;
+        const ver = parseSystemVersion(bytes) catch {
+            if (diag == null) diag = .{ .invalid_file = .{ .path = path } };
+            continue;
+        };
 
         // never return non-canonical `10.(16+)`
         if (ver.major == 10 and ver.minor >= 16) continue;
@@ -76,6 +87,8 @@ pub fn detect(io: Io, target_os: *Target.Os) std.zig.system.ResolveTargetError!v
         target_os.version_range.semver.max = ver;
         return;
     }
+
+    diags.os_version = diag orelse .{ .invalid_file = .{ .path = paths[paths.len - 1] } };
 }
 
 fn parseSystemVersion(buf: []const u8) !std.SemanticVersion {

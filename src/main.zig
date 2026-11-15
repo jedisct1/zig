@@ -430,7 +430,7 @@ fn mainArgs(
                 .cwd = try std.zig.getResolvedCwd(io, arena),
             });
             defer dirs.deinit(io);
-            const host = std.zig.resolveTargetQueryOrFatal(io, .{});
+            const host = std.zig.resolveTargetQueryOrFatal(io, arena, .{});
             var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
             try @import("print_targets.zig").cmdTargets(
                 arena,
@@ -464,7 +464,7 @@ fn mainArgs(
                 .cwd = try std.zig.getResolvedCwd(io, arena),
             });
             defer dirs.deinit(io);
-            const host = std.zig.resolveTargetQueryOrFatal(io, .{});
+            const host = std.zig.resolveTargetQueryOrFatal(io, arena, .{});
             var stdout_writer = Io.File.stdout().writer(io, &stdout_buffer);
             try @import("print_env.zig").cmdEnv(
                 arena,
@@ -4094,7 +4094,7 @@ fn createModule(
         }
 
         const target_query = std.zig.parseTargetQueryOrReportFatalError(arena, target_parse_options);
-        const target = std.zig.resolveTargetQueryOrFatal(io, target_query);
+        const target = std.zig.resolveTargetQueryOrFatal(io, arena, target_query);
         break :t .{
             .result = target,
             .is_native_os = target_query.isNativeOs(),
@@ -5042,7 +5042,7 @@ fn jitCmdInner(
 
     const target_query: std.Target.Query = .{};
     const resolved_target: Module.ResolvedTarget = .{
-        .result = std.zig.resolveTargetQueryOrFatal(io, target_query),
+        .result = std.zig.resolveTargetQueryOrFatal(io, arena, target_query),
         .is_native_os = true,
         .is_native_abi = true,
         .is_explicit_dynamic_linker = false,
@@ -5880,7 +5880,7 @@ fn warnAboutForeignBinaries(io: Io, arena: Allocator, opts: struct {
     link_mode: std.lang.LinkMode,
     link_libc: bool,
 }) !void {
-    const host_target = std.zig.resolveTargetQueryOrFatal(io, .{});
+    const host_target = std.zig.resolveTargetQueryOrFatal(io, arena, .{});
 
     switch (std.zig.system.getExternalExecutor(io, opts.target, .{
         .host_cpu_arch = host_target.cpu.arch,

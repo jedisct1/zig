@@ -228,14 +228,168 @@ pub const ResolveTargetError = error{
     ProcessFdQuotaExceeded,
     SystemFdQuotaExceeded,
     ResourceLimitReached,
+    /// Guarantees `!diags.isEmpty()`.
+    InvalidTargetQuery,
 } || Io.Cancelable;
+
+pub const ResolveTargetDiagnostics = struct {
+    os_version: ?OsVersion,
+    dynamic_linker: ?DynamicLinker,
+    libc_version: ?LibcVersion,
+    android_api_level: ?AndroidApiLevel,
+
+    pub const none: ResolveTargetDiagnostics = .{
+        .os_version = null,
+        .dynamic_linker = null,
+        .libc_version = null,
+        .android_api_level = null,
+    };
+
+    pub const OsVersion = union(enum) {
+        invalid_version: struct { version: []const u8 },
+        sysctl_failed: switch (builtin.target.os.tag) {
+            .dragonfly, .freebsd, .netbsd, .openbsd => posix.E,
+            else => noreturn,
+        },
+        read_error: if (builtin.target.os.tag.isDarwin()) struct { path: []const u8, err: Io.Dir.ReadFileError } else noreturn,
+        invalid_file: if (builtin.target.os.tag.isDarwin()) struct { path: []const u8 } else noreturn,
+
+        pub fn format(diag: OsVersion, w: *Io.Writer) Io.Writer.Error!void {
+            switch (diag) {
+                .invalid_version => |e| try w.print("failed to parse OS version {q}", .{e.version}),
+                .sysctl_failed => |e| try w.print("failed to sysctl(): {any}", .{e}),
+                .read_error => |e| try w.print("failed to read {q}: {t}", .{ e.path, e.err }),
+                .invalid_file => |e| try w.print("failed to parse OS version from {q}", .{e.path}),
+            }
+        }
+    };
+
+    pub const DynamicLinker = union(enum) {
+        no_executable,
+        invalid_executable: struct { path: []const u8 },
+        read_error: struct { path: []const u8, err: (Io.Dir.ReadFileError || Io.File.SeekError) },
+
+        pub fn format(diag: DynamicLinker, w: *Io.Writer) Io.Writer.Error!void {
+            switch (diag) {
+                .no_executable => try w.writeAll("could not find a dynamically-linked executable"),
+                .invalid_executable => |e| try w.print("failed to parse executable {q}", .{e.path}),
+                .read_error => |e| try w.print("failed to read executable {q}: {t}", .{ e.path, e.err }),
+            }
+        }
+    };
+
+    pub const LibcVersion = union(enum) {
+        not_found,
+
+        pub fn format(diag: LibcVersion, w: *Io.Writer) Io.Writer.Error!void {
+            switch (diag) {
+                .not_found => try w.writeAll("could not determine the libc version"),
+            }
+        }
+    };
+
+    pub const AndroidApiLevel = union(enum) {
+        spawn_failed: std.process.SpawnError,
+        read_error: Io.File.Reader.Error,
+        wait_failed: std.process.Child.WaitError,
+        bad_term: if (std.process.can_spawn) std.process.Child.Term else noreturn,
+        invalid_output: struct { output: []const u8 },
+
+        pub fn format(diag: AndroidApiLevel, w: *Io.Writer) Io.Writer.Error!void {
+            switch (diag) {
+                .spawn_failed => |e| try w.print("failed to spawn {q}: {t}", .{ android_getprop_path, e }),
+                .read_error => |e| try w.print("failed to read output of {q}: {t}", .{ android_getprop_path, e }),
+                .wait_failed => |e| try w.print("failed to wait for {q}: {t}", .{ android_getprop_path, e }),
+                .bad_term => |e| try w.print("{q} {f}", .{ android_getprop_path, e }),
+                .invalid_output => |e| try w.print("{q} printed invalid API level {q}", .{ android_getprop_path, e.output }),
+            }
+        }
+    };
+
+    pub fn isEmpty(self: *const ResolveTargetDiagnostics) bool {
+        return self.os_version == null and
+            self.dynamic_linker == null and
+            self.libc_version == null and
+            self.android_api_level == null;
+    }
+
+    pub fn fmt(
+        self: *const ResolveTargetDiagnostics,
+        query: *const Target.Query,
+        err: ?ResolveTargetError,
+    ) Formatter {
+        return .{
+            .query = query,
+            .diags = self,
+            .err = err,
+        };
+    }
+
+    pub const Formatter = struct {
+        query: *const Target.Query,
+        diags: *const ResolveTargetDiagnostics,
+        err: ?ResolveTargetError,
+
+        pub fn format(self: *const @This(), w: *std.Io.Writer) std.Io.Writer.Error!void {
+            const q = std.fmt.alt(self.query, .printZigTriple);
+            var sep: []const u8 = "";
+
+            if (self.err) |e| {
+                try w.print("unable to resolve target {f}: {t}", .{ q, e });
+                sep = "\n";
+            }
+
+            if (self.diags.os_version) |d| {
+                try w.print("{s}unable to detect OS version for {f}: {f}", .{ sep, q, d });
+                sep = "\n";
+            }
+            if (self.diags.dynamic_linker) |d| {
+                try w.print("{s}unable to detect ABI and dynamic linker for {f}: {f}", .{ sep, q, d });
+                sep = "\n";
+            }
+            if (self.diags.libc_version) |d| {
+                try w.print("{s}unable to detect libc version for {f}: {f}", .{ sep, q, d });
+                sep = "\n";
+            }
+            if (self.diags.android_api_level) |d| {
+                try w.print("{s}unable to detect Android API level for {f}: {f}", .{ sep, q, d });
+                sep = "\n";
+            }
+        }
+    };
+
+    /// Log the diagnostics with `std.log.warn`. Should only be used when
+    /// `resolveTargetQuery` succeeds.
+    pub fn log(
+        self: *const ResolveTargetDiagnostics,
+        query: *const Target.Query,
+    ) void {
+        std.log.warn("{f}", .{self.fmt(query, null)});
+    }
+
+    /// Log the error and diagnostics with `std.log.err`, and then terminate the
+    /// process with exit code 1.
+    pub fn fatal(
+        self: *const ResolveTargetDiagnostics,
+        query: *const Target.Query,
+        err: ResolveTargetError,
+    ) noreturn {
+        std.process.fatal("{f}", .{self.fmt(query, err)});
+    }
+};
 
 /// Given a `Target.Query`, which specifies in detail which parts of the
 /// target should be detected natively, which should be standard or default,
 /// and which are provided explicitly, this function resolves the native
 /// components by detecting the native system, and then resolves
 /// standard/default parts relative to that.
-pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target {
+pub fn resolveTargetQuery(
+    io: Io,
+    /// Used to allocate memory for `diags` data.
+    arena: mem.Allocator,
+    query: Target.Query,
+    diags: *ResolveTargetDiagnostics,
+) ResolveTargetError!Target {
     // Until https://github.com/ziglang/zig/issues/4592 is implemented (support detecting the
     // native CPU architecture as being different than the current target), we use this:
     const query_cpu_arch = query.cpu_arch orelse builtin.cpu.arch;
@@ -260,7 +414,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                 } else |err| switch (err) {
                     error.Overflow,
                     error.InvalidVersion,
-                    => {},
+                    => diags.os_version = .{ .invalid_version = .{ .version = try arena.dupe(u8, release) } },
                 }
             },
             .windows => {
@@ -268,7 +422,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                 os.version_range.windows.min = detected_version;
                 os.version_range.windows.max = detected_version;
             },
-            .macos => try darwin.macos.detect(io, &os),
+            .macos => try darwin.macos.detect(io, &os, diags),
             .freebsd, .netbsd, .dragonfly => v: {
                 const key = switch (builtin.target.os.tag) {
                     .freebsd => "kern.osreldate",
@@ -281,10 +435,17 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                 switch (posix.errno(posix.system.sysctlbyname(key, &value, &len, null, 0))) {
                     .SUCCESS => {},
                     .FAULT => unreachable,
-                    .PERM => unreachable, // only when setting values,
-                    .NOMEM => unreachable, // memory already on the stack
-                    .NOENT => unreachable, // constant, known good value
-                    else => break :v,
+                    .INVAL => unreachable,
+                    .NOMEM => unreachable,
+                    .NOTDIR => unreachable,
+                    .ISDIR => unreachable,
+                    .OPNOTSUPP => unreachable,
+                    .NOENT => unreachable,
+                    .PERM => unreachable,
+                    else => |e| {
+                        diags.os_version = .{ .sysctl_failed = e };
+                        break :v;
+                    },
                 }
 
                 switch (builtin.target.os.tag) {
@@ -340,15 +501,25 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                 // consider that sysctl result includes null-termination
                 var len: usize = buf.len + 1;
 
-                posix.sysctl(&mib, &buf, &len, null, 0) catch |err| switch (err) {
-                    error.NameTooLong => unreachable, // constant, known good value
-                    error.PermissionDenied => unreachable, // only when setting values,
-                    error.SystemResources => unreachable, // memory already on the stack
-                    error.UnknownName => unreachable, // constant, known good value
-                    error.Unexpected => break :v,
-                };
+                switch (posix.errno(posix.system.sysctl(&mib, mib.len, &buf, &len, null, 0))) {
+                    .SUCCESS => {},
+                    .FAULT => unreachable,
+                    .INVAL => unreachable,
+                    .NOMEM => unreachable,
+                    .NOENT => unreachable,
+                    .NXIO => unreachable,
+                    .NOTDIR => unreachable,
+                    .OPNOTSUPP => unreachable,
+                    .PERM => unreachable,
+                    .SRCH => unreachable,
+                    else => |e| {
+                        diags.os_version = .{ .sysctl_failed = e };
+                        break :v;
+                    },
+                }
 
-                if (Target.Query.parseVersion(buf[0 .. len - 1 :0])) |ver| {
+                const release = buf[0 .. len - 1 :0];
+                if (Target.Query.parseVersion(release)) |ver| {
                     assert(ver.build == null);
                     assert(ver.pre == null);
                     os.version_range.semver.min = ver;
@@ -356,7 +527,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
                 } else |err| switch (err) {
                     error.Overflow,
                     error.InvalidVersion,
-                    => {},
+                    => diags.os_version = .{ .invalid_version = .{ .version = try arena.dupe(u8, release) } },
                 }
             },
             else => {
@@ -406,32 +577,7 @@ pub fn resolveTargetQuery(io: Io, query: Target.Query) ResolveTargetError!Target
 
     const arch = if (maybe_cpu) |c| c.arch else query_cpu_arch;
 
-    var detected = detectAbiAndDynamicLinker(io, arch, os, query) catch |err| switch (err) {
-        error.OutOfMemory,
-        error.SystemResources,
-        error.SystemFdQuotaExceeded,
-        error.ProcessFdQuotaExceeded,
-        error.ResourceLimitReached,
-        error.Canceled,
-        => |e| return e,
-
-        error.LockViolation => unreachable, // Windows-only
-
-        error.WouldBlock,
-        error.ConnectionResetByPeer,
-        error.NotOpenForReading,
-        error.SocketUnconnected,
-        error.AccessDenied,
-        error.IsDir,
-        error.InputOutput,
-        error.Unexpected,
-
-        error.UnableToOpenElfFile,
-        error.UnhelpfulFile,
-        error.InvalidElfFile,
-        error.RelativeShebang,
-        => defaultAbiAndDynamicLinker(arch, os, query),
-    };
+    var detected = try detectAbiAndDynamicLinker(io, arch, os, query, arena, diags);
 
     // It's possible that we detect the native ABI, but fail to detect the OS version or were told
     // to use the default OS version range. In that case, while we can't determine the exact native
@@ -854,10 +1000,9 @@ const AbiAndDynamicLinkerFromFileError = error{
     EndOfStream,
     NameTooLong,
     Unexpected,
-    Canceled,
     StaticElfFile,
     InvalidElfFile,
-};
+} || Io.Cancelable;
 
 fn abiAndDynamicLinkerFromFile(
     file_reader: *Io.File.Reader,
@@ -866,6 +1011,7 @@ fn abiAndDynamicLinkerFromFile(
     os: Target.Os,
     ld_info_list: []const LdInfo,
     query: Target.Query,
+    diags: *ResolveTargetDiagnostics,
 ) AbiAndDynamicLinkerFromFileError!DetectedTarget {
     assert(query.abi == null); // See the early exit in `detectAbiAndDynamicLinker`.
 
@@ -1024,6 +1170,8 @@ fn abiAndDynamicLinkerFromFile(
 
             return result;
         }
+
+        diags.libc_version = .not_found;
     }
 
     return result;
@@ -1060,9 +1208,8 @@ const GlibcVerError = error{
     SystemResources,
     ProcessFdQuotaExceeded,
     SystemFdQuotaExceeded,
-    Canceled,
     GLibCNotFound,
-};
+} || Io.Cancelable;
 
 fn findRunPath(
     file_reader: *Io.File.Reader,
@@ -1289,7 +1436,14 @@ const DetectedTarget = struct {
 /// answer to these questions, or if there is a shebang line, then it chases the referenced
 /// file recursively. If that does not provide the answer, then the function falls back to
 /// defaults.
-fn detectAbiAndDynamicLinker(io: Io, arch: Target.Cpu.Arch, os: Target.Os, query: Target.Query) !DetectedTarget {
+fn detectAbiAndDynamicLinker(
+    io: Io,
+    arch: Target.Cpu.Arch,
+    os: Target.Os,
+    query: Target.Query,
+    arena: mem.Allocator,
+    diags: *ResolveTargetDiagnostics,
+) ResolveTargetError!DetectedTarget {
     const native_os_uses_elf = comptime Target.ObjectFormat.default(builtin.target.os.tag, builtin.target.cpu.arch) == .elf;
     const native_ld_needs_abi = comptime Target.DynamicLinker.kind(builtin.target.os.tag) == .arch_os_abi;
     if (!native_os_uses_elf or !native_ld_needs_abi or query.os_tag != null or query.abi != null) {
@@ -1346,183 +1500,165 @@ fn detectAbiAndDynamicLinker(io: Io, arch: Target.Cpu.Arch, os: Target.Os, query
     var file_reader_buffer: [4096]u8 = undefined;
     comptime assert(file_reader_buffer.len >= max_shebang_line_size);
 
-    // Best case scenario: the executable is dynamically linked, and we can iterate
-    // over our own shared objects and find a dynamic linker.
-    const header = elf_file: {
-        // This block looks for a shebang line in "/usr/bin/env". If it finds
-        // one, then instead of using "/usr/bin/env" as the ELF file to examine,
-        // it uses the file it references instead, doing the same logic
-        // recursively in case it finds another shebang line.
+    // Since /usr/bin/env is hard-coded into the shebang line of many
+    // portable scripts, it's a reasonably reliable path to start with.
+    var file_name: []const u8 = "/usr/bin/env";
+    // Interpreter paths from shebang lines are copied here so that `file_name` remains valid
+    // when `file_reader_buffer` is reused.
+    var file_name_buffer: [file_reader_buffer.len]u8 = undefined;
+    var following_shebang = false;
 
-        // Since /usr/bin/env is hard-coded into the shebang line of many
-        // portable scripts, it's a reasonably reliable path to start with.
-        var file_name: []const u8 = "/usr/bin/env";
+    const failure: union(enum) {
+        no_executable,
+        invalid_executable,
+        read_error: (Io.Dir.ReadFileError || Io.File.SeekError),
+    } = failure: {
+        // Best case scenario: the executable is dynamically linked, and we can iterate
+        // over our own shared objects and find a dynamic linker.
+        const header = elf_file: {
+            // This block looks for a shebang line in "/usr/bin/env". If it finds
+            // one, then instead of using "/usr/bin/env" as the ELF file to examine,
+            // it uses the file it references instead, doing the same logic
+            // recursively in case it finds another shebang line.
+            while (true) {
+                const file = Io.Dir.openFileAbsolute(io, file_name, .{}) catch |err| switch (err) {
+                    error.FileNotFound => {
+                        if (following_shebang) break :failure .{ .read_error = error.FileNotFound };
+                        if (builtin.target.os.tag == .linux and mem.eql(u8, file_name, "/usr/bin/env")) {
+                            // Android does not have a /usr directory, so try again
+                            file_name = "/system/bin/env";
+                            continue;
+                        }
+                        break :failure .no_executable;
+                    },
+                    else => |e| break :failure .{ .read_error = e },
+                };
+                var is_elf_file = false;
+                defer if (!is_elf_file) file.close(io);
 
-        while (true) {
-            const file = Io.Dir.openFileAbsolute(io, file_name, .{}) catch |err| switch (err) {
-                error.SystemResources,
-                error.SystemFdQuotaExceeded,
-                error.ProcessFdQuotaExceeded,
-                error.Canceled,
-                => |e| return e,
+                file_reader = .init(file, io, &file_reader_buffer);
 
-                error.FileNotFound => if (builtin.target.os.tag == .linux and mem.eql(u8, file_name, "/usr/bin/env")) {
-                    // Android does not have a /usr directory, so try again
-                    file_name = "/system/bin/env";
-                    continue;
-                } else return error.UnableToOpenElfFile,
+                const header = elf.Header.read(&file_reader.interface) catch |hdr_err| switch (hdr_err) {
+                    error.EndOfStream,
+                    error.InvalidElfMagic,
+                    => {
+                        const shebang_line = file_reader.interface.takeSentinel('\n') catch |err| switch (err) {
+                            error.ReadFailed => break :failure .{ .read_error = file_reader.err.? },
+                            // It's neither an ELF file nor file with shebang line.
+                            error.EndOfStream,
+                            error.StreamTooLong,
+                            => break :failure .invalid_executable,
+                        };
+                        if (!mem.startsWith(u8, shebang_line, "#!")) break :failure .invalid_executable;
+                        // We detected shebang, now parse entire line.
 
-                error.PipeBusy,
-                error.NetworkNotFound,
-                error.AntivirusInterference,
-                => unreachable, // Windows-only
+                        // Trim leading "#!", spaces and tabs.
+                        const trimmed_line = mem.trimStart(u8, shebang_line[2..], &.{ ' ', '\t' });
 
-                error.NoSpaceLeft,
-                error.NameTooLong,
-                error.PathAlreadyExists,
-                error.BadPathName,
-                error.FileLocksUnsupported,
-                error.FileBusy,
-                error.IsDir,
-                error.NotDir,
-                error.AccessDenied,
-                error.PermissionDenied,
-                error.NoDevice,
-                error.FileTooBig,
-                error.SymLinkLoop,
-                error.WouldBlock,
-                error.DeviceBusy,
-                error.ReadOnlyFileSystem,
-                error.Unexpected,
-                => return error.UnableToOpenElfFile,
-            };
-            var is_elf_file = false;
-            defer if (!is_elf_file) file.close(io);
+                        // This line can have:
+                        // * Interpreter path only,
+                        // * Interpreter path and arguments, all separated by space, tab or NUL character.
+                        // And optionally newline at the end.
+                        const path_maybe_args = mem.trimEnd(u8, trimmed_line, "\n");
 
-            file_reader = .init(file, io, &file_reader_buffer);
-            file_name = undefined; // it aliases file_reader_buffer
+                        // Separate path and args.
+                        const path_end = mem.findAny(u8, path_maybe_args, &.{ ' ', '\t', 0 }) orelse path_maybe_args.len;
+                        const unvalidated_path = path_maybe_args[0..path_end];
+                        if (!fs.path.isAbsolute(unvalidated_path)) break :failure .invalid_executable;
+                        @memcpy(file_name_buffer[0..unvalidated_path.len], unvalidated_path);
+                        file_name = file_name_buffer[0..unvalidated_path.len];
+                        following_shebang = true;
+                        continue;
+                    },
 
-            const header = elf.Header.read(&file_reader.interface) catch |hdr_err| switch (hdr_err) {
-                error.EndOfStream,
-                error.InvalidElfMagic,
-                => {
-                    const shebang_line = file_reader.interface.takeSentinel('\n') catch |err| switch (err) {
-                        error.ReadFailed => return file_reader.err.?,
-                        // It's neither an ELF file nor file with shebang line.
-                        error.EndOfStream,
-                        error.StreamTooLong,
-                        => return error.UnhelpfulFile,
-                    };
-                    if (!mem.startsWith(u8, shebang_line, "#!")) return error.UnhelpfulFile;
-                    // We detected shebang, now parse entire line.
+                    error.InvalidElfVersion,
+                    error.InvalidElfClass,
+                    error.InvalidElfEndian,
+                    => break :failure .invalid_executable,
 
-                    // Trim leading "#!", spaces and tabs.
-                    const trimmed_line = mem.trimStart(u8, shebang_line[2..], &.{ ' ', '\t' });
+                    error.ReadFailed => break :failure .{ .read_error = file_reader.err.? },
+                };
+                is_elf_file = true;
+                break :elf_file header;
+            }
+        };
+        defer file_reader.file.close(io);
 
-                    // This line can have:
-                    // * Interpreter path only,
-                    // * Interpreter path and arguments, all separated by space, tab or NUL character.
-                    // And optionally newline at the end.
-                    const path_maybe_args = mem.trimEnd(u8, trimmed_line, "\n");
+        var result = abiAndDynamicLinkerFromFile(&file_reader, &header, arch, os, ld_info_list, query, diags) catch |err| switch (err) {
+            error.SystemResources,
+            error.SystemFdQuotaExceeded,
+            error.ProcessFdQuotaExceeded,
+            error.Canceled,
+            => |e| return e,
 
-                    // Separate path and args.
-                    const path_end = mem.findAny(u8, path_maybe_args, &.{ ' ', '\t', 0 }) orelse path_maybe_args.len;
-                    const unvalidated_path = path_maybe_args[0..path_end];
-                    file_name = if (fs.path.isAbsolute(unvalidated_path)) unvalidated_path else return error.RelativeShebang;
-                    continue;
-                },
+            error.ReadFailed => break :failure .{ .read_error = file_reader.err.? },
 
-                error.InvalidElfVersion,
-                error.InvalidElfClass,
-                error.InvalidElfEndian,
-                => return error.InvalidElfFile,
+            error.Unseekable,
+            error.AccessDenied,
+            error.Unexpected,
+            => |e| break :failure .{ .read_error = e },
 
-                error.ReadFailed => return file_reader.err.?,
-            };
-            is_elf_file = true;
-            break :elf_file header;
+            error.EndOfStream,
+            error.NameTooLong,
+            error.InvalidElfFile,
+            => break :failure .invalid_executable,
+
+            error.StaticElfFile => break :failure .no_executable,
+        };
+
+        if (builtin.target.os.tag == .linux and result.abi.isAndroid() and query.android_api_level == null) {
+            if (try detectAndroidApiLevel(io, arena, diags)) |api_level| {
+                result.os.version_range.linux.android = api_level;
+            }
         }
-    };
-    defer file_reader.file.close(io);
 
-    var result = abiAndDynamicLinkerFromFile(&file_reader, &header, arch, os, ld_info_list, query) catch |err| switch (err) {
-        error.SystemResources,
-        error.SystemFdQuotaExceeded,
-        error.ProcessFdQuotaExceeded,
-        error.Canceled,
-        => |e| return e,
-
-        error.ReadFailed => return file_reader.err.?,
-
-        error.Unseekable,
-        error.AccessDenied,
-        error.EndOfStream,
-        error.NameTooLong,
-        error.Unexpected,
-
-        error.StaticElfFile,
-        error.InvalidElfFile,
-        => return defaultAbiAndDynamicLinker(arch, os, query),
+        return result;
     };
 
-    if (builtin.target.os.tag == .linux and result.abi.isAndroid() and query.android_api_level == null) {
-        if (detectAndroidApiLevel(io)) |api_level| {
-            result.os.version_range.linux.android = api_level;
-        } else |err| switch (err) {
-            error.ProcessAlreadyExec,
-            error.InvalidUserId,
-            error.InvalidProcessGroupId,
-            // Windows-only
-            error.InvalidWtf8,
-            error.InvalidBatchScriptArg,
-            error.UnrecognizedVolume,
-            error.InvalidName,
+    diags.dynamic_linker = switch (failure) {
+        .no_executable => .no_executable,
+        .invalid_executable => .{ .invalid_executable = .{ .path = try arena.dupe(u8, file_name) } },
+        .read_error => |err| switch (err) {
+            error.SystemResources,
+            error.SystemFdQuotaExceeded,
+            error.ProcessFdQuotaExceeded,
+            error.Canceled,
+            => |e| return e,
+
             error.PipeBusy,
             error.NetworkNotFound,
             error.AntivirusInterference,
             error.LockViolation,
-            => unreachable,
+            => unreachable, // Windows-only
 
-            error.OutOfMemory,
-            error.SystemResources,
-            error.SystemFdQuotaExceeded,
-            error.ProcessFdQuotaExceeded,
-            error.ResourceLimitReached,
-            error.Canceled,
-            => |e| return e,
-
-            error.InputOutput,
+            error.FileNotFound,
+            error.NoSpaceLeft,
+            error.NameTooLong,
+            error.PathAlreadyExists,
+            error.BadPathName,
+            error.FileLocksUnsupported,
+            error.FileBusy,
             error.IsDir,
+            error.NotDir,
+            error.AccessDenied,
+            error.PermissionDenied,
+            error.NoDevice,
+            error.FileTooBig,
+            error.SymLinkLoop,
+            error.WouldBlock,
+            error.DeviceBusy,
+            error.ReadOnlyFileSystem,
+            error.InputOutput,
             error.ConnectionResetByPeer,
             error.NotOpenForReading,
             error.SocketUnconnected,
-            error.WouldBlock,
-            error.AccessDenied,
-            error.FileTooBig,
-            error.NoSpaceLeft,
-            error.DeviceBusy,
-            error.PermissionDenied,
-            error.NoDevice,
-            error.FileBusy,
-            error.PathAlreadyExists,
-            error.SymLinkLoop,
-            error.FileNotFound,
-            error.NotDir,
-            error.ReadOnlyFileSystem,
-            error.NameTooLong,
-            error.BadPathName,
-            error.FileLocksUnsupported,
-            error.OperationUnsupported,
-            error.FileSystem,
-            error.InvalidExe,
+            error.Unseekable,
             error.Unexpected,
+            => |e| .{ .read_error = .{ .path = try arena.dupe(u8, file_name), .err = e } },
+        },
+    };
 
-            error.ApiLevelQueryFailed,
-            => {},
-        }
-    }
-
-    return result;
+    return defaultAbiAndDynamicLinker(arch, os, query);
 }
 
 fn defaultAbiAndDynamicLinker(arch: Target.Cpu.Arch, os: Target.Os, query: Target.Query) DetectedTarget {
@@ -1539,35 +1675,123 @@ const LdInfo = struct {
     abi: Target.Abi,
 };
 
-fn detectAndroidApiLevel(io: Io) !u32 {
+const android_getprop_path = "/system/bin/getprop";
+
+fn detectAndroidApiLevel(
+    io: Io,
+    arena: mem.Allocator,
+    diags: *ResolveTargetDiagnostics,
+) ResolveTargetError!?u32 {
     comptime if (builtin.os.tag != .linux) unreachable;
 
-    var child = try std.process.spawn(io, .{
+    var child = std.process.spawn(io, .{
         .argv = &.{
-            "/system/bin/getprop",
+            android_getprop_path,
             "ro.build.version.sdk",
         },
         .stdin = .ignore,
         .stdout = .pipe,
         .stderr = .ignore,
-    });
-    errdefer child.kill(io);
+    }) catch |err| switch (err) {
+        error.ProcessAlreadyExec,
+        error.InvalidUserId,
+        error.InvalidProcessGroupId,
+        => unreachable,
+
+        error.InvalidWtf8,
+        error.InvalidBatchScriptArg,
+        error.UnrecognizedVolume,
+        error.InvalidName,
+        error.PipeBusy,
+        error.NetworkNotFound,
+        error.AntivirusInterference,
+        => unreachable, // Windows-only
+
+        error.OutOfMemory,
+        error.SystemResources,
+        error.SystemFdQuotaExceeded,
+        error.ProcessFdQuotaExceeded,
+        error.ResourceLimitReached,
+        error.Canceled,
+        => |e| return e,
+
+        error.IsDir,
+        error.WouldBlock,
+        error.AccessDenied,
+        error.FileTooBig,
+        error.NoSpaceLeft,
+        error.DeviceBusy,
+        error.PermissionDenied,
+        error.NoDevice,
+        error.FileBusy,
+        error.PathAlreadyExists,
+        error.SymLinkLoop,
+        error.FileNotFound,
+        error.NotDir,
+        error.ReadOnlyFileSystem,
+        error.NameTooLong,
+        error.BadPathName,
+        error.FileLocksUnsupported,
+        error.OperationUnsupported,
+        error.FileSystem,
+        error.InvalidExe,
+        error.Unexpected,
+        => |e| {
+            diags.android_api_level = .{ .spawn_failed = e };
+            return null;
+        },
+    };
+    defer child.kill(io);
 
     // PROP_VALUE_MAX is 92, output is value + newline.
     // Currently API levels are two-digit numbers, but we want to make sure we never read a partial value.
     var stdout_buf: [92 + 1]u8 = undefined;
     var reader = child.stdout.?.readerStreaming(io, &.{});
     const n = reader.interface.readSliceShort(&stdout_buf) catch |err| switch (err) {
-        error.ReadFailed => return reader.err.?,
+        error.ReadFailed => switch (reader.err.?) {
+            error.LockViolation => unreachable, // Windows-only
+
+            error.SystemResources,
+            error.Canceled,
+            => |e| return e,
+
+            error.InputOutput,
+            error.IsDir,
+            error.AccessDenied,
+            error.WouldBlock,
+            error.ConnectionResetByPeer,
+            error.NotOpenForReading,
+            error.SocketUnconnected,
+            error.Unexpected,
+            => |e| {
+                diags.android_api_level = .{ .read_error = e };
+                return null;
+            },
+        },
     };
 
-    switch (try child.wait(io)) {
-        .exited => |code| if (code != 0) return error.ApiLevelQueryFailed,
-        .signal, .stopped, .unknown => return error.ApiLevelQueryFailed,
+    const term = child.wait(io) catch |err| switch (err) {
+        error.Canceled => |e| return e,
+        error.Unexpected => |e| {
+            diags.android_api_level = .{ .wait_failed = e };
+            return null;
+        },
+    };
+
+    if (!term.eql(.success)) {
+        diags.android_api_level = .{ .bad_term = term };
+        return null;
     }
 
-    const result = mem.trimEnd(u8, stdout_buf[0..n], "\n");
-    return std.fmt.parseInt(u32, result, 10) catch error.ApiLevelQueryFailed;
+    const output = mem.trimEnd(u8, stdout_buf[0..n], "\n");
+    return std.fmt.parseInt(u32, output, 10) catch |err| switch (err) {
+        error.Overflow,
+        error.InvalidCharacter,
+        => {
+            diags.android_api_level = .{ .invalid_output = .{ .output = try arena.dupe(u8, output) } };
+            return null;
+        },
+    };
 }
 
 test {
