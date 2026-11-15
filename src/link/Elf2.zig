@@ -85,8 +85,8 @@ shndx: struct {
 dynamic: struct {
     flags: u32,
     flags_1: u32,
-    rpath: String(.dynstr),
-    soname: String(.dynstr),
+    rpath: Section.Merge.Entry.Ref(.dynstr),
+    soname: Section.Merge.Entry.Ref(.dynstr),
 },
 symtab: std.ArrayList(Symbol),
 globals: std.ArrayList(Symbol.Global),
@@ -161,10 +161,6 @@ init_array_priorities: *InitFiniPriorities,
 /// Arena-allocated.
 fini_array_priorities: *InitFiniPriorities,
 
-shstrtab: StringTable,
-strtab: StringTable,
-dynstr: StringTable,
-
 /// Indices map 1--1 to indices into the actual `.got` section.
 ///
 /// Value is the output relocation in `.rela.dyn` for the GOT entry.
@@ -183,7 +179,7 @@ plt_first_reloc: Reloc.Index,
 /// The `.eh_frame_hdr` section contains zero or more symbol relocations starting at this index.
 eh_frame_hdr_first_reloc: Reloc.Index,
 
-needed: std.array_hash_map.Auto(String(.dynstr), void),
+needed: std.array_hash_map.Auto(Section.Merge.Entry.Ref(.dynstr), void),
 inputs: std.ArrayList(Input),
 input_pending_index: u32,
 input_sections: std.ArrayList(Input.Section),
@@ -213,7 +209,7 @@ got_relocs: std.array_hash_map.Auto(Reloc.Index, void),
 /// Set of relocations which must be re-applied if the size of the TLS segment changes.
 tls_size_relocs: std.array_hash_map.Auto(Reloc.Index, void),
 /// Index matches the index into `shdrs`. Like `shdrs`, this map excludes `SHN_UNDEF`.
-section_by_name: std.array_hash_map.Auto(String(.shstrtab), void),
+section_by_name: std.array_hash_map.Auto(Section.Merge.Entry.Ref(.shstrtab), void),
 /// Key is a global symbol which has been moved to a new index in the symbol table. Any relocation
 /// entries which target that symbol must be updated to reference the correct symbol index.
 ///
@@ -955,16 +951,16 @@ const Section = struct {
             };
         }
 
-        fn name(shndx: Index, elf: *const Elf) String(.shstrtab) {
-            return switch (elf.shdrPtr(shndx)) {
-                inline else => |shdr| @fromBackingInt(elf.targetLoad(&shdr.name)),
-            };
+        fn name(shndx: Index, elf: *const Elf) Section.Merge.Entry.Ref(.shstrtab) {
+            return .{ .entry = @fromBackingInt(switch (elf.shdrPtr(shndx)) {
+                inline else => |shdr| elf.targetLoad(&shdr.name),
+            }) };
         }
 
         fn rename(shndx: Index, elf: *Elf, new_name: []const u8) Error!void {
-            const shstrtab_entry = try elf.string(.shstrtab, new_name);
+            const name_ref: Section.Merge.Entry.Ref(.shstrtab) = try .fromSlice(.@"1", new_name, elf);
             switch (elf.shdrPtr(shndx)) {
-                inline else => |shdr| elf.targetStore(&shdr.name, @backingInt(shstrtab_entry)),
+                inline else => |shdr| elf.targetStore(&shdr.name, @backingInt(name_ref)),
             }
         }
 
@@ -1286,86 +1282,170 @@ const Section = struct {
             elf: *const Elf,
             shndx: Section.Index,
 
-            pub fn eql(adapter: Adapter, lhs_key: Key, rhs_key: Key, rhs_index: usize) bool {
-                const rhs_msi: Merge.Index = @fromBackingInt(@intCast(rhs_index));
+            pub fn eql(
+                adapter: Section.Merge.Adapter,
+                lhs_key: Section.Merge.Key,
+                rhs_key: Section.Merge.Key,
+                rhs_index: usize,
+            ) bool {
+                const rhs_msi: Section.Merge.Index = @fromBackingInt(@intCast(rhs_index));
                 return lhs_key == rhs_key and adapter.shndx == rhs_msi.shndx(adapter.elf);
             }
 
-            pub fn hash(adapter: Adapter, key: Key) u32 {
+            pub fn hash(adapter: Section.Merge.Adapter, key: Section.Merge.Key) u32 {
                 return @truncate(std.hash.Wyhash.hash(@backingInt(key), @ptrCast(&adapter.shndx)));
             }
         };
 
-        const Key = bitpack struct(u8) {
-            entry_size_minus_one: u7,
+        const Key = bitpack struct(u4) {
+            log2_entry_size: u3,
             kind: Kind,
 
             const Kind = enum(u1) { cst, str };
 
-            fn get(entry_size: u64, kind: Kind) ?Key {
+            const strtab: Key = .{ .log2_entry_size = 0, .kind = .str };
+
+            fn get(entry_size: u64, kind: Kind) ?Section.Merge.Key {
                 if (entry_size == 0) return null;
-                return .{
-                    .entry_size_minus_one = std.math.cast(u7, entry_size - 1) orelse return null,
+                const key: Section.Merge.Key = .{
+                    .log2_entry_size = std.math.log2_int(
+                        u8,
+                        std.math.cast(u8, entry_size) orelse return null,
+                    ),
                     .kind = kind,
+                };
+                return if (key.entrySize() == entry_size) key else null;
+            }
+
+            fn entrySize(key: Section.Merge.Key) u8 {
+                return @as(u8, 1) << key.log2_entry_size;
+            }
+        };
+
+        const Entry = enum(u32) {
+            empty = 0,
+            null = std.math.maxInt(u32),
+            _,
+
+            fn slice(mse: Entry, msi: Section.Merge.Index, elf: *const Elf) []const u8 {
+                const merge_key = msi.key(elf);
+                const entry_size = merge_key.entrySize();
+                const entry = msi.ptr(elf).node.sliceConst(&elf.mf)[@backingInt(mse)..];
+                return switch (merge_key.kind) {
+                    .cst => entry[0..entry_size],
+                    .str => {
+                        var len: u32 = 0;
+                        while (true) : (len += entry_size)
+                            if (std.mem.allEqual(u8, entry[len..][0..entry_size], 0))
+                                return entry[0..len];
+                    },
                 };
             }
 
-            fn entrySize(key: Key) u8 {
-                return @as(u8, key.entry_size_minus_one) + 1;
-            }
-        };
+            fn Ref(comptime msi: Section.Merge.Index) type {
+                return bitpack struct(u32) {
+                    entry: Entry,
 
-        const EntryAdapter = struct {
-            key: Key,
-            slice: []const u8,
+                    const empty: @This() = .{ .entry = .empty };
+                    const @"null": @This() = .{ .entry = .null };
 
-            pub fn eql(
-                adapter: EntryAdapter,
-                lhs_key: []const u8,
-                rhs_key: u32,
-                rhs_index: usize,
-            ) bool {
-                _ = rhs_index;
-                return std.mem.startsWith(u8, adapter.slice[rhs_key..], lhs_key) and
-                    switch (adapter.key.kind) {
-                        .cst => true,
-                        .str => std.mem.allEqual(
-                            u8,
-                            adapter.slice[rhs_key + lhs_key.len ..][0..adapter.key.entrySize()],
-                            0,
-                        ),
-                    };
+                    fn fromString(entry: []const u8, elf: *Elf) Error!@This() {
+                        return fromSlice(.@"1", entry, elf);
+                    }
+                    fn fromStringAssumeCapacity(entry: []const u8, elf: *const Elf) @This() {
+                        return fromSliceAssumeCapacity(.@"1", entry, elf);
+                    }
+
+                    fn fromSlice(need_align: Alignment, entry: []const u8, elf: *Elf) Error!@This() {
+                        try msi.ensureAdditionalCapacity(need_align, entry.len, elf);
+                        return fromSliceAssumeCapacity(need_align, entry, elf);
+                    }
+                    fn fromSliceAssumeCapacity(
+                        need_align: Alignment,
+                        entry: []const u8,
+                        elf: *const Elf,
+                    ) @This() {
+                        return .{ .entry = msi.getOrPutEntryAssumeCapacity(need_align, entry, elf) };
+                    }
+
+                    fn slice(mse_ref: @This(), elf: *const Elf) []const u8 {
+                        return mse_ref.entry.slice(msi, elf);
+                    }
+                };
             }
 
-            pub fn hash(_: EntryAdapter, key: []const u8) u32 {
-                return std.array_hash_map.hashString(key);
-            }
+            const Adapter = struct {
+                key: Section.Merge.Key,
+                slice: []const u8,
+
+                pub fn eql(
+                    adapter: Section.Merge.Entry.Adapter,
+                    lhs_key: []const u8,
+                    rhs_key: u32,
+                    rhs_index: usize,
+                ) bool {
+                    _ = rhs_index;
+                    return std.mem.startsWith(u8, adapter.slice[rhs_key..], lhs_key) and
+                        switch (adapter.key.kind) {
+                            .cst => true,
+                            .str => std.mem.allEqual(
+                                u8,
+                                adapter.slice[rhs_key + lhs_key.len ..][0..adapter.key.entrySize()],
+                                0,
+                            ),
+                        };
+                }
+
+                pub fn hash(_: Section.Merge.Entry.Adapter, key: []const u8) u32 {
+                    return std.array_hash_map.hashString(key);
+                }
+            };
         };
 
         const Index = enum(u32) {
+            shstrtab,
+            strtab,
+            dynstr,
             _,
 
-            fn key(msi: Merge.Index, elf: *const Elf) Key {
+            fn key(msi: Section.Merge.Index, elf: *const Elf) Section.Merge.Key {
                 return elf.merge_sections.keys()[@backingInt(msi)];
             }
 
-            fn ptr(msi: Merge.Index, elf: *const Elf) *Merge {
+            fn ptr(msi: Section.Merge.Index, elf: *const Elf) *Section.Merge {
                 return &elf.merge_sections.values()[@backingInt(msi)];
             }
 
-            fn shndx(msi: Merge.Index, elf: *const Elf) Section.Index {
+            fn shndx(msi: Section.Merge.Index, elf: *const Elf) Section.Index {
                 return elf.getNodeShndx(msi.ptr(elf).node);
             }
 
-            fn entryOffset(
-                msi: Merge.Index,
-                entry: []const u8,
+            fn ensureAdditionalCapacity(
+                msi: Section.Merge.Index,
                 need_align: Alignment,
+                entry_len: usize,
                 elf: *Elf,
-            ) Error!u32 {
+            ) Error!void {
                 const gpa = elf.base.comp.gpa;
-                const merge = msi.ptr(elf);
                 const merge_key = msi.key(elf);
+                const merge = msi.ptr(elf);
+                try merge.entry_map.ensureUnusedCapacity(gpa, 1);
+                try merge.free_list.ensureUnusedCapacity(gpa, 1);
+                try merge.node.ensureMinimumSize(gpa, &elf.mf, merge.free_list.items[0] +
+                    need_align.toByteUnits() - 1 + entry_len + switch (merge_key.kind) {
+                    .cst => 0,
+                    .str => merge_key.entrySize(),
+                });
+            }
+
+            fn getOrPutEntryAssumeCapacity(
+                msi: Section.Merge.Index,
+                need_align: Alignment,
+                entry: []const u8,
+                elf: *const Elf,
+            ) Entry {
+                const merge_key = msi.key(elf);
+                const merge = msi.ptr(elf);
                 const entry_size = merge_key.entrySize();
                 switch (merge_key.kind) {
                     .cst => assert(entry.len == entry_size),
@@ -1378,14 +1458,16 @@ const Section = struct {
                     },
                 }
 
-                const entry_gop = try merge.entry_map.getOrPutAdapted(gpa, entry, EntryAdapter{
-                    .key = merge_key,
-                    .slice = merge.node.sliceConst(&elf.mf),
-                });
+                const entry_gop = merge.entry_map.getOrPutAssumeCapacityAdapted(
+                    entry,
+                    Section.Merge.Entry.Adapter{
+                        .key = merge_key,
+                        .slice = merge.node.sliceConst(&elf.mf),
+                    },
+                );
                 if (entry_gop.found_existing and need_align.check(entry_gop.key_ptr.*))
-                    return entry_gop.key_ptr.*;
+                    return @fromBackingInt(entry_gop.key_ptr.*);
                 errdefer _ = merge.entry_map.pop().?;
-                try merge.free_list.ensureUnusedCapacity(gpa, 1);
 
                 const old_end = merge.free_list.items[0];
                 var free_index = merge.free_list.items.len;
@@ -1398,25 +1480,27 @@ const Section = struct {
                         .cst => 0,
                         .str => entry_size,
                     });
-                    const slice = switch (free_index) {
-                        0 => slice: {
-                            try merge.node.ensureMinimumSize(gpa, &elf.mf, next_offset);
-                            const slice = merge.node.slice(&elf.mf);
+                    const slice = merge.node.slice(&elf.mf);
+                    switch (free_index) {
+                        0 => {
                             @memset(slice[free_offset..offset], 0);
-                            break :slice slice;
-                        },
-                        else => slice: {
-                            const slice = merge.node.slice(&elf.mf);
-                            if (offset >= old_end or !std.mem.allEqual(u8, switch (merge_key.kind) {
-                                .cst => slice[offset..][0..entry_size],
-                                .str => slice[offset - entry_size ..][0 .. entry_size * 2],
-                            }, 0)) {
-                                if (!free_offset_is_free) _ = merge.free_list.swapRemove(free_index);
-                                continue;
+                            switch (elf.getNode(merge.node.parent(&elf.mf).unwrap().?)) {
+                                else => unreachable,
+                                .section => {},
+                                .section_manual_size,
+                                => |parent_shndx| switch (elf.shdrPtr(parent_shndx)) {
+                                    inline else => |shdr| elf.targetStore(&shdr.size, next_offset),
+                                },
                             }
-                            break :slice slice;
                         },
-                    };
+                        else => if (offset >= old_end or !std.mem.allEqual(u8, switch (merge_key.kind) {
+                            .cst => slice[offset..][0..entry_size],
+                            .str => slice[offset - entry_size ..][0 .. entry_size * 2],
+                        }, 0)) {
+                            if (!free_offset_is_free) _ = merge.free_list.swapRemove(free_index);
+                            continue;
+                        },
+                    }
 
                     entry_gop.key_ptr.* = offset;
                     @memcpy(slice[offset..][0..entry.len], entry);
@@ -1432,15 +1516,78 @@ const Section = struct {
                         if (free_offset_is_free) merge.free_list.appendAssumeCapacity(free_offset);
                     } else if (!free_offset_is_free) _ = merge.free_list.swapRemove(free_index);
 
-                    return offset;
+                    return @fromBackingInt(offset);
                 }
             }
         };
 
-        fn deinit(merge: *Merge, gpa: std.mem.Allocator) void {
+        fn deinit(merge: *Section.Merge, gpa: std.mem.Allocator) void {
             merge.entry_map.deinit(gpa);
             merge.free_list.deinit(gpa);
             merge.* = undefined;
+        }
+
+        fn getOrCreateAssumeCapacity(
+            shndx: Section.Index,
+            merge_key: Section.Merge.Key,
+            need_align: Alignment,
+            elf: *Elf,
+        ) Error!Section.Merge.Index {
+            const gpa = elf.base.comp.gpa;
+            const entry_size = merge_key.entrySize();
+
+            const merge_gop = elf.merge_sections.getOrPutAssumeCapacityAdapted(
+                merge_key,
+                Section.Merge.Adapter{ .elf = elf, .shndx = shndx },
+            );
+            const msi: Section.Merge.Index = @fromBackingInt(@intCast(merge_gop.index));
+            if (merge_gop.found_existing) {
+                const merge_ni = merge_gop.value_ptr.node;
+                if (need_align.compare(.gt, merge_ni.alignment(&elf.mf)))
+                    try merge_ni.realign(gpa, &elf.mf, need_align);
+                return msi;
+            }
+            errdefer _ = elf.merge_sections.pop().?;
+
+            merge_gop.key_ptr.* = merge_key;
+            merge_gop.value_ptr.* = .{
+                .node = undefined,
+                // The section vaddr is initially 0, because the symbol
+                // addresses are zero-based. This will eventually be updated
+                // by `flushMoved`.
+                .vaddr = 0,
+                .entry_map = .empty,
+                .free_list = .empty,
+                .first_symbol = .null,
+                .first_target_reloc = .none,
+            };
+            errdefer merge_gop.value_ptr.deinit(gpa);
+            try merge_gop.value_ptr.entry_map.ensureUnusedCapacity(gpa, 1);
+            try merge_gop.value_ptr.free_list.ensureUnusedCapacity(gpa, 1);
+
+            merge_gop.value_ptr.node = elf.addNodeAssumeCapacity(
+                try shndx.node(elf).addFloatingChild(gpa, &elf.mf, .{
+                    .size = need_align.forward(entry_size),
+                    .alignment = need_align,
+                    .moved = true,
+                }),
+                .{ .merge_section = msi },
+            );
+            errdefer comptime unreachable;
+
+            const slice = merge_gop.value_ptr.node.slice(&elf.mf);
+            @memset(slice[0..entry_size], 0);
+            const entry_gop = merge_gop.value_ptr.entry_map.getOrPutAssumeCapacityAdapted(
+                slice[0..switch (merge_key.kind) {
+                    .cst => entry_size,
+                    .str => 0,
+                }],
+                Section.Merge.Entry.Adapter{ .key = merge_key, .slice = slice },
+            );
+            assert(!entry_gop.found_existing);
+            entry_gop.key_ptr.* = 0;
+            merge_gop.value_ptr.free_list.appendAssumeCapacity(entry_size);
+            return msi;
         }
     };
 };
@@ -3273,7 +3420,7 @@ const DsoGlobals = struct {
         /// `.none` if the symbol is unversioned.
         version: DsoGlobals.String.Optional,
         type: std.elf.STT,
-        soname: Elf.String(.dynstr),
+        soname: Section.Merge.Entry.Ref(.dynstr),
         size: u64,
         /// This is usually unnecessary, but if a symbol is given a copy relocation (`R_*_COPY`) and
         /// so becomes a part of the executable's address space despite being defined by a different
@@ -3413,10 +3560,11 @@ fn ensureDynsymHashCapacity(elf: *Elf, max_dynsym_count: u32) Error!void {
             chains[0] = 0;
             for (1..cur_dynsym_count, chains[1..]) |dynsym_index_usize, *chain| {
                 const dynsym_index: u32 = @intCast(dynsym_index_usize);
-                const dynsym_name: String(.dynstr) = switch (elf.dynsymPtr(dynsym_index)) {
-                    inline else => |sym| @fromBackingInt(elf.targetLoad(&sym.name)),
-                };
-                const b = std.elf.hash.calculate(dynsym_name.slice(elf)) % buckets.len;
+                const dynsym_name_ref: Section.Merge.Entry.Ref(.dynstr) =
+                    @fromBackingInt(switch (elf.dynsymPtr(dynsym_index)) {
+                        inline else => |sym| elf.targetLoad(&sym.name),
+                    });
+                const b = std.elf.hash.calculate(dynsym_name_ref.slice(elf)) % buckets.len;
                 // Make this symbol the head of that bucket, and chain to the old head.
                 chain.* = buckets[b];
                 elf.targetStore(&buckets[b], dynsym_index);
@@ -3456,10 +3604,11 @@ fn populateDynsymHashEntry(elf: *Elf, dynsym_index: u32) void {
             const buckets: []info.Int() = trailing[0..@intCast(elf.targetLoad(&header.nbucket))];
             const chains: []info.Int() = trailing[@intCast(elf.targetLoad(&header.nbucket))..][0..@intCast(elf.targetLoad(&header.nchain))];
 
-            const dynsym_name: String(.dynstr) = switch (elf.dynsymPtr(dynsym_index)) {
-                inline else => |sym| @fromBackingInt(elf.targetLoad(&sym.name)),
-            };
-            const b = std.elf.hash.calculate(dynsym_name.slice(elf)) % buckets.len;
+            const dynsym_name_ref: Section.Merge.Entry.Ref(.dynstr) =
+                @fromBackingInt(switch (elf.dynsymPtr(dynsym_index)) {
+                    inline else => |sym| elf.targetLoad(&sym.name),
+                });
+            const b = std.elf.hash.calculate(dynsym_name_ref.slice(elf)) % buckets.len;
             // Make this symbol the head of that bucket, and chain to the old head.
             chains[dynsym_index] = buckets[b];
             elf.targetStore(&buckets[b], dynsym_index);
@@ -3497,10 +3646,11 @@ fn clearDynsymHashEntry(elf: *Elf, dynsym_index: u32) void {
             const buckets: []info.Int() = trailing[0..@intCast(elf.targetLoad(&header.nbucket))];
             const chains: []info.Int() = trailing[@intCast(elf.targetLoad(&header.nbucket))..][0..@intCast(elf.targetLoad(&header.nchain))];
 
-            const dynsym_name: String(.dynstr) = switch (elf.dynsymPtr(dynsym_index)) {
-                inline else => |sym| @fromBackingInt(elf.targetLoad(&sym.name)),
-            };
-            const b = std.elf.hash.calculate(dynsym_name.slice(elf)) % buckets.len;
+            const dynsym_name_ref: Section.Merge.Entry.Ref(.dynstr) =
+                @fromBackingInt(switch (elf.dynsymPtr(dynsym_index)) {
+                    inline else => |sym| elf.targetLoad(&sym.name),
+                });
+            const b = std.elf.hash.calculate(dynsym_name_ref.slice(elf)) % buckets.len;
 
             const next_dynsym_index = elf.targetLoad(&chains[dynsym_index]);
             elf.targetStore(&chains[dynsym_index], 0);
@@ -3551,7 +3701,7 @@ fn addLocalSymbol(elf: *Elf, opts: AddLocalSymbolOptions) Error!Symbol.LocalInde
         inline else => |shdr, class| elf.targetLoad(&shdr.size) + @sizeOf(class.ElfN().Sym),
     });
 
-    const name = try elf.string(.strtab, opts.name);
+    const name_ref: Section.Merge.Entry.Ref(.strtab) = try .fromString(opts.name, elf);
 
     switch (elf.shdrPtr(.symtab)) {
         inline else => |shdr, class| {
@@ -3598,7 +3748,7 @@ fn addLocalSymbol(elf: *Elf, opts: AddLocalSymbolOptions) Error!Symbol.LocalInde
                 .next_sibling = .null,
             };
             target_sym.* = .{
-                .name = @backingInt(name),
+                .name = @backingInt(name_ref),
                 .value = @intCast(opts.value),
                 .size = @intCast(opts.size),
                 .info = .{ .type = opts.type, .bind = .LOCAL },
@@ -3676,9 +3826,9 @@ fn addGlobalSymbol(elf: *Elf, opts: Symbol.Global.AddOptions) (error{
             if (!default_gop.found_existing) {
                 // This symbol is becoming a default version.
                 default_gop.key_ptr.* = gsi;
-                const new_strtab_name = try elf.string(.strtab, opts.name);
+                const name_ref: Section.Merge.Entry.Ref(.strtab) = try .fromString(opts.name, elf);
                 switch (elf.symPtr(gsi.ptr(elf).symtab_index)) {
-                    inline else => |sym| elf.targetStore(&sym.name, @backingInt(new_strtab_name)),
+                    inline else => |sym| elf.targetStore(&sym.name, @backingInt(name_ref)),
                 }
                 force_apply_relocs = true;
             } else if (default_gop.key_ptr.* != gsi) {
@@ -3808,7 +3958,7 @@ fn addGlobalSymbol(elf: *Elf, opts: Symbol.Global.AddOptions) (error{
     assert(elf.globals.items.len == @backingInt(gsi));
     assert(elf.globals.addOneAssumeCapacity() == gsi.ptr(elf)); // populated later
 
-    const strtab_name = try elf.string(.strtab, opts.name);
+    const name_ref: Section.Merge.Entry.Ref(.strtab) = try .fromString(opts.name, elf);
 
     // Create a symbol in a default state: SHN_UNDEF STB_WEAK STV_DEFAULT. After that we'll populate
     // the correct values using `mergeGlobalSymbolVisibility` and `setGlobalSymbolValue`.
@@ -3828,7 +3978,7 @@ fn addGlobalSymbol(elf: *Elf, opts: Symbol.Global.AddOptions) (error{
             // ...then populate the newly-valid symbol pointer
             const sym = @field(elf.symPtr(sym_index), @tagName(class));
             sym.* = .{
-                .name = @backingInt(strtab_name),
+                .name = @backingInt(name_ref),
                 .value = 0,
                 .size = 0,
                 .info = .{ .type = .NOTYPE, .bind = .WEAK },
@@ -4097,11 +4247,10 @@ fn updateGlobalDynamic(elf: *Elf, orig_gsi: Symbol.Global.Index, force_apply_rel
         try elf.shndx.gnu_version.node(elf).ensureMinimumSize(gpa, &elf.mf, need_dynsym_len * 2);
         try elf.ensureDynsymHashCapacity(need_dynsym_len);
 
-        const dynstr_name: String(.dynstr) = name: {
-            // Explicitly reserve space first because that reservation could invalidate the name slice.
-            try elf.ensureAdditionalStringCapacity(.dynstr, gsi.name(elf).len);
-            break :name elf.stringAssumeCapacity(.dynstr, gsi.name(elf));
-        };
+        // Explicitly reserve space first because that reservation could invalidate the name slice.
+        try Section.Merge.Index.dynstr.ensureAdditionalCapacity(.@"1", gsi.name(elf).len, elf);
+        const name_ref: Section.Merge.Entry.Ref(.dynstr) =
+            .fromStringAssumeCapacity(gsi.name(elf), elf);
 
         const dynsym_index: u32 = switch (elf.shdrPtr(elf.shndx.dynsym)) {
             inline else => |shdr, class| new_dynsym_index: {
@@ -4119,7 +4268,7 @@ fn updateGlobalDynamic(elf: *Elf, orig_gsi: Symbol.Global.Index, force_apply_rel
 
                 // Populate the symbol name (the other fields are set later).
                 const sym = @field(elf.dynsymPtr(dynsym_index), @tagName(class));
-                elf.targetStore(&sym.name, @backingInt(dynstr_name));
+                elf.targetStore(&sym.name, @backingInt(name_ref));
 
                 break :new_dynsym_index dynsym_index;
             },
@@ -4337,13 +4486,12 @@ fn updateGlobalDynamic(elf: *Elf, orig_gsi: Symbol.Global.Index, force_apply_rel
         const dynsym_versym: std.elf.Versym = versym: {
             // If there's a definition, just use the version in the symbol name.
             if (gsi.defined(elf)) {
-                if (gsi.version(elf)) |orig_version_slice| {
+                if (gsi.version(elf)) |version| {
                     // We want to add the version to dynstr, but we need to explicitly reserve space
                     // first because that reservation could invalidate the version slice.
-                    try elf.ensureAdditionalStringCapacity(.dynstr, orig_version_slice.len);
-                    const version_dynstr = elf.stringAssumeCapacity(.dynstr, gsi.version(elf).?);
+                    try Section.Merge.Index.dynstr.ensureAdditionalCapacity(.@"1", version.len, elf);
                     break :versym .{
-                        .VERSION = try elf.verdefId(version_dynstr),
+                        .VERSION = try elf.verdefId(.fromStringAssumeCapacity(gsi.version(elf).?, elf)),
                         .HIDDEN = !gsi.isDefaultDefinition(elf),
                     };
                 }
@@ -4352,13 +4500,13 @@ fn updateGlobalDynamic(elf: *Elf, orig_gsi: Symbol.Global.Index, force_apply_rel
 
             // ...but if it's undefined, we need to consult the matching input DSO global.
             if (maybe_dso_global) |dso_global| {
-                if (dso_global.version.unwrap()) |version| {
-                    const version_dynstr = try elf.string(.dynstr, version.slice(&elf.dso_globals));
-                    break :versym .{
-                        .VERSION = try elf.verneedId(dso_global.soname, version_dynstr),
-                        .HIDDEN = false,
-                    };
-                }
+                if (dso_global.version.unwrap()) |version| break :versym .{
+                    .VERSION = try elf.verneedId(
+                        dso_global.soname,
+                        try .fromString(version.slice(&elf.dso_globals), elf),
+                    ),
+                    .HIDDEN = false,
+                };
             }
 
             // Otherwise, use `.LOCAL`, unless we emitted a copy relocation or canonical PLT entry,
@@ -4823,10 +4971,10 @@ const Symbol = struct {
                 return gsi.ptr(elf).symtab_index.shndx(elf) != .UNDEF;
             }
 
-            fn rawName(gsi: Symbol.Global.Index, elf: *const Elf) String(.strtab) {
-                return switch (elf.symPtr(gsi.ptr(elf).symtab_index)) {
-                    inline else => |sym| @fromBackingInt(elf.targetLoad(&sym.name)),
-                };
+            fn rawName(gsi: Symbol.Global.Index, elf: *const Elf) Section.Merge.Entry.Ref(.strtab) {
+                return @fromBackingInt(switch (elf.symPtr(gsi.ptr(elf).symtab_index)) {
+                    inline else => |sym| elf.targetLoad(&sym.name),
+                });
             }
             fn name(gsi: Symbol.Global.Index, elf: *const Elf) []const u8 {
                 return parseVersionedSymbolName(gsi.rawName(elf).slice(elf)).name;
@@ -5308,10 +5456,10 @@ fn globalByName(elf: *const Elf, name: Symbol.Global.VersionedName) ?Symbol.Glob
     return @fromBackingInt(@intCast(index_raw));
 }
 fn globalBySym(elf: *Elf, sym_index: Symbol.Index) Symbol.Global.Index {
-    const raw_name: String(.strtab) = switch (elf.symPtr(sym_index)) {
-        inline else => |sym| @fromBackingInt(elf.targetLoad(&sym.name)),
-    };
-    const name = parseVersionedSymbolName(raw_name.slice(elf));
+    const name_ref: Section.Merge.Entry.Ref(.strtab) = @fromBackingInt(switch (elf.symPtr(sym_index)) {
+        inline else => |sym| elf.targetLoad(&sym.name),
+    });
+    const name = parseVersionedSymbolName(name_ref.slice(elf));
     return elf.globalByName(.{ .name = name.name, .version = name.version }).?;
 }
 fn globalByDynsym(elf: *Elf, dynsym_index: u32) Symbol.Global.Index {
@@ -5323,10 +5471,11 @@ fn globalByDynsym(elf: *Elf, dynsym_index: u32) Symbol.Global.Index {
     }
     // For all other symbols, we can just take the name of the dynamic symbol table entry, and look
     // up the global with that name.
-    const name: String(.dynstr) = switch (elf.dynsymPtr(dynsym_index)) {
-        inline else => |dynsym| @fromBackingInt(elf.targetLoad(&dynsym.name)),
-    };
-    const gsi = elf.globalByName(.{ .name = name.slice(elf), .version = null }).?;
+    const name_ref: Section.Merge.Entry.Ref(.dynstr) =
+        @fromBackingInt(switch (elf.dynsymPtr(dynsym_index)) {
+            inline else => |dynsym| elf.targetLoad(&dynsym.name),
+        });
+    const gsi = elf.globalByName(.{ .name = name_ref.slice(elf), .version = null }).?;
     assert(gsi.ownedDynsymIndex(elf) == dynsym_index);
     return gsi;
 }
@@ -5542,115 +5691,6 @@ pub fn uavSymbol(
     return umi.zav(elf).symbol().id().toTypeErased();
 }
 
-const StringSection = enum {
-    shstrtab,
-    strtab,
-    dynstr,
-    fn shndx(s: StringSection, elf: *const Elf) Section.Index {
-        return switch (s) {
-            .strtab => .strtab,
-            .shstrtab => .shstrtab,
-            .dynstr => elf.shndx.dynstr,
-        };
-    }
-};
-fn String(section: StringSection) type {
-    return enum(u32) {
-        empty = 0,
-        _,
-
-        fn slice(str: @This(), elf: *const Elf) [:0]const u8 {
-            const section_node = section.shndx(elf).node(elf);
-            const overlong = section_node.sliceConst(&elf.mf)[@backingInt(str)..];
-            return overlong[0..std.mem.findScalar(u8, overlong, 0).? :0];
-        }
-    };
-}
-fn string(elf: *Elf, comptime section: StringSection, key: []const u8) Error!String(section) {
-    if (key.len == 0) {
-        // Special case to allow calls from `initHeaders` before the strtab is initialized.
-        return .empty;
-    }
-    const st: *StringTable = &@field(elf, @tagName(section));
-    try st.ensureAdditionalCapacity(elf, section.shndx(elf), key.len);
-    return @fromBackingInt(st.getAssumeCapacity(elf, section.shndx(elf), key));
-}
-fn ensureAdditionalStringCapacity(elf: *Elf, comptime section: StringSection, string_len: usize) Error!void {
-    const st: *StringTable = &@field(elf, @tagName(section));
-    try st.ensureAdditionalCapacity(elf, section.shndx(elf), string_len);
-}
-fn stringAssumeCapacity(elf: *Elf, comptime section: StringSection, key: []const u8) String(section) {
-    const st: *StringTable = &@field(elf, @tagName(section));
-    return @fromBackingInt(st.getAssumeCapacity(elf, section.shndx(elf), key));
-}
-/// Like `string`, but asserts that the string is already in `section`.
-fn stringExisting(elf: *Elf, comptime section: StringSection, key: []const u8) String(section) {
-    const st: *StringTable = &@field(elf, @tagName(section));
-    return @fromBackingInt(st.getExisting(elf, section.shndx(elf), key));
-}
-
-const StringTable = struct {
-    map: std.array_hash_map.Custom(u32, void, void, true),
-
-    const Adapter = struct {
-        slice: []const u8,
-
-        pub fn eql(adapter: Adapter, lhs_key: []const u8, rhs_key: u32, rhs_index: usize) bool {
-            _ = rhs_index;
-            return std.mem.startsWith(u8, adapter.slice[rhs_key..], lhs_key) and
-                adapter.slice[rhs_key + lhs_key.len] == 0;
-        }
-
-        pub fn hash(_: Adapter, key: []const u8) u32 {
-            assert(std.mem.findScalar(u8, key, 0) == null);
-            return std.array_hash_map.hashString(key);
-        }
-    };
-
-    fn getExisting(st: *StringTable, elf: *Elf, shndx: Section.Index, key: []const u8) u32 {
-        if (key.len == 0) return 0;
-        const slice_const = shndx.node(elf).sliceConst(&elf.mf);
-        const adapter: StringTable.Adapter = .{ .slice = slice_const };
-        return st.map.getKeyAdapted(key, adapter).?;
-    }
-
-    fn ensureAdditionalCapacity(st: *StringTable, elf: *Elf, shndx: Section.Index, string_len: usize) Error!void {
-        const gpa = elf.base.comp.gpa;
-        const ni = shndx.node(elf);
-        try st.map.ensureUnusedCapacity(gpa, 1);
-        const size: u64 = switch (elf.shdrPtr(shndx)) {
-            inline else => |shdr| elf.targetLoad(&shdr.size),
-        };
-        try ni.ensureMinimumSize(gpa, &elf.mf, size + string_len + 1);
-    }
-
-    fn getAssumeCapacity(st: *StringTable, elf: *Elf, shndx: Section.Index, key: []const u8) u32 {
-        // If we are in `initHeaders` the strtab might not be initalized yet, so we need to special
-        // case the empty string.
-        if (key.len == 0) return 0;
-
-        const ni = shndx.node(elf);
-        const slice_const = ni.sliceConst(&elf.mf);
-        const gop = st.map.getOrPutAssumeCapacityAdapted(
-            key,
-            StringTable.Adapter{ .slice = slice_const },
-        );
-        if (gop.found_existing) return gop.key_ptr.*;
-        const offset: u32 = switch (elf.shdrPtr(shndx)) {
-            inline else => |shdr| offset: {
-                const old_size = elf.targetLoad(&shdr.size);
-                elf.targetStore(&shdr.size, @intCast(old_size + key.len + 1));
-                break :offset @intCast(old_size);
-            },
-        };
-        const slice = ni.slice(&elf.mf)[offset..];
-        @memcpy(slice[0..key.len], key);
-        slice[key.len] = 0;
-        gop.key_ptr.* = offset;
-        return offset;
-    }
-};
-
 pub fn open(
     arena: std.mem.Allocator,
     comp: *Compilation,
@@ -5826,9 +5866,6 @@ fn create(
         .init_array_priorities = try .create(arena),
         .fini_array_priorities = try .create(arena),
 
-        .shstrtab = .{ .map = .empty },
-        .strtab = .{ .map = .empty },
-        .dynstr = .{ .map = .empty },
         .got = .empty,
         .plt = .empty,
         .plt_first_reloc = .none,
@@ -5913,9 +5950,6 @@ pub fn deinit(elf: *Elf) void {
     elf.dso_globals.string_bytes.deinit(gpa);
     elf.dso_globals.symbols.deinit(gpa);
     elf.dso_globals.default_sym_vers.deinit(gpa);
-    elf.shstrtab.map.deinit(gpa);
-    elf.strtab.map.deinit(gpa);
-    elf.dynstr.map.deinit(gpa);
     elf.got.deinit(gpa);
     elf.plt.deinit(gpa);
     elf.needed.deinit(gpa);
@@ -6127,6 +6161,7 @@ fn initHeaders(
         3 + // `.elf`, `.ehdr`, and `.shdr` nodes
         (shnum - 1 - nobits_shnum) + // -1 because the SHN_UNDEF shdr does not have a `.section` node
         (phnum -| 1) + // -1 because the GNU_STACK phdr does not have a `.segment` node
+        2 + @intFromBool(have_dynamic) + // .shstrtab, .strtab, .dynstr
         @intFromBool(have_eh_frame and @"type" != .REL); // eh_frame_footer
 
     try elf.nodes.ensureTotalCapacity(gpa, expected_nodes_len);
@@ -6134,6 +6169,7 @@ fn initHeaders(
     try elf.phdrs.resize(gpa, phnum);
     try elf.symtab.ensureTotalCapacity(gpa, 1);
     try elf.section_first_target_reloc.ensureUnusedCapacity(gpa, 3); // .got_plt, .eh_frame, .got
+    try elf.merge_sections.ensureUnusedCapacity(gpa, @as(usize, 2) + @intFromBool(have_dynamic)); // .shstrtab, .strtab, .dynstr
     try elf.section_by_name.ensureUnusedCapacity(gpa, shnum - 1); // -1 to exclude SHN_UNDEF
 
     if (is_archive) {
@@ -6512,7 +6548,7 @@ fn initHeaders(
 
             const sh_undef: *ElfN.Shdr = @ptrCast(@alignCast(elf.ni.shdr.slice(&elf.mf)));
             sh_undef.* = .{
-                .name = @backingInt(String(.shstrtab).empty),
+                .name = @backingInt(Section.Merge.Entry.Ref(.shstrtab).empty),
                 .type = .NULL,
                 .flags = .{ .shf = .{} },
                 .addr = 0,
@@ -6541,7 +6577,7 @@ fn initHeaders(
             }));
             const symtab_null = @field(elf.symPtr(.null), @tagName(ct_class));
             symtab_null.* = .{
-                .name = @backingInt(String(.strtab).empty),
+                .name = @backingInt(Section.Merge.Entry.Ref(.strtab).empty),
                 .value = 0,
                 .size = 0,
                 .info = .{ .type = .NOTYPE, .bind = .LOCAL },
@@ -6561,7 +6597,7 @@ fn initHeaders(
         .node_align = node_block_align,
         .manual_size = true,
     }));
-    Section.Index.shstrtab.node(elf).slice(&elf.mf)[0] = 0;
+    assert(.shstrtab == try Section.Merge.getOrCreateAssumeCapacity(.shstrtab, .strtab, .@"1", elf));
 
     try Section.Index.symtab.rename(elf, ".symtab");
     try Section.Index.shstrtab.rename(elf, ".shstrtab");
@@ -6574,7 +6610,7 @@ fn initHeaders(
         .node_align = node_block_align,
         .manual_size = true,
     }));
-    Section.Index.strtab.node(elf).slice(&elf.mf)[0] = 0;
+    assert(.strtab == try Section.Merge.getOrCreateAssumeCapacity(.strtab, .strtab, .@"1", elf));
     switch (elf.shdrPtr(.symtab)) {
         inline else => |shdr| elf.targetStore(&shdr.link, @backingInt(Section.Index.strtab)),
     }
@@ -6710,7 +6746,8 @@ fn initHeaders(
                 .node_align = node_block_align,
                 .manual_size = true,
             });
-            dynstr_shndx.node(elf).slice(&elf.mf)[0] = 0;
+            assert(.dynstr ==
+                try Section.Merge.getOrCreateAssumeCapacity(dynstr_shndx, .strtab, .@"1", elf));
             elf.shndx.dynstr = dynstr_shndx;
 
             switch (class) {
@@ -6731,7 +6768,7 @@ fn initHeaders(
                     });
                     const dynsym_null = @field(elf.dynsymPtr(0), @tagName(ct_class));
                     dynsym_null.* = .{
-                        .name = @backingInt(String(.dynstr).empty),
+                        .name = @backingInt(Section.Merge.Entry.Ref(.dynstr).empty),
                         .value = 0,
                         .size = 0,
                         .info = .{ .type = .NOTYPE, .bind = .LOCAL },
@@ -6805,6 +6842,8 @@ fn initHeaders(
             });
             {
                 const base_version_name: []const u8 = elf.options.soname orelse comp.root_name;
+                const base_version_name_ref: Section.Merge.Entry.Ref(.dynstr) =
+                    try .fromString(base_version_name, elf);
                 const entry_ptr = &elf.verdefSlice()[0];
                 entry_ptr.* = .{
                     .def = .{
@@ -6817,7 +6856,7 @@ fn initHeaders(
                         .next = 0,
                     },
                     .aux = .{
-                        .name = @backingInt(try elf.string(.dynstr, base_version_name)),
+                        .name = @backingInt(base_version_name_ref),
                         .next = 0,
                     },
                 };
@@ -7332,24 +7371,24 @@ fn initHeaders(
 
     if (have_dynamic) elf.dynamic = .{
         .flags = if (elf.options.z_now) std.elf.DF_BIND_NOW else 0,
-        .flags_1 = f: {
-            var f: u32 = 0;
-            if (elf.options.z_now) f |= std.elf.DF_1_NOW;
-            if (comp.config.output_mode == .Exe and comp.config.pie) f |= std.elf.DF_1_PIE;
-            break :f f;
+        .flags_1 = flags_1: {
+            var flags_1: u32 = 0;
+            if (elf.options.z_now) flags_1 |= std.elf.DF_1_NOW;
+            if (comp.config.output_mode == .Exe and comp.config.pie) flags_1 |= std.elf.DF_1_PIE;
+            break :flags_1 flags_1;
         },
-        .rpath = str: {
-            var buf: std.ArrayList(u8) = .empty;
-            defer buf.deinit(gpa);
-            for (elf.options.rpath_list, 0..) |path, i| {
-                if (i > 0) try buf.append(gpa, ':');
-                try buf.appendSlice(gpa, path);
+        .rpath = rpath: {
+            var rpath: std.ArrayList(u8) = .empty;
+            defer rpath.deinit(gpa);
+            for (elf.options.rpath_list, 0..) |path, rpath_index| {
+                if (rpath_index > 0) try rpath.append(gpa, ':');
+                try rpath.appendSlice(gpa, path);
             }
-            break :str try elf.string(.dynstr, buf.items);
+            break :rpath try .fromString(rpath.items, elf);
         },
-        .soname = str: {
-            const slice = elf.options.soname orelse break :str .empty;
-            break :str try elf.string(.dynstr, slice);
+        .soname = soname: {
+            const soname = elf.options.soname orelse break :soname .empty;
+            break :soname try .fromString(soname, elf);
         },
     };
 
@@ -8111,12 +8150,12 @@ fn mapInputSection(elf: *Elf, opts: struct {
                 },
             },
         };
-        const name_shstrtab = try elf.string(.shstrtab, name);
-        const gop = try elf.section_by_name.getOrPut(gpa, name_shstrtab);
+        const name_ref: Section.Merge.Entry.Ref(.shstrtab) = try .fromString(name, elf);
+        const gop = try elf.section_by_name.getOrPut(gpa, name_ref);
         if (gop.found_existing) {
             break :existing @fromBackingInt(@intCast(gop.index + 1)); // +1 to account for SHN_UDNEF
         }
-        errdefer assert(elf.section_by_name.pop().?.key == name_shstrtab);
+        errdefer assert(elf.section_by_name.pop().?.key == name_ref);
         const parent_node: MappedFile.Node.Index = parent: {
             if (!opts.flags.ALLOC) break :parent elf.ni.elf;
             if (opts.flags.EXECINSTR) break :parent elf.ni.text;
@@ -8636,7 +8675,7 @@ fn loadObject(
 
             const OffsetMap = struct {
                 entries: []const Entry,
-                const Entry = struct { input_offset: u32, output_offset: u32 };
+                const Entry = struct { input_offset: u32, output_offset: Section.Merge.Entry };
                 const FindEntryContext = struct {
                     input_offset: u32,
                     fn order(lhs: @This(), rhs: Entry) std.math.Order {
@@ -8648,7 +8687,7 @@ fn loadObject(
                         .input_offset = std.math.lossyCast(u32, input_offset),
                     }, FindEntryContext.order) - 1; // safe because index 0 is at offset 0 so never >rhs
                     const entry = &map.entries[entry_index];
-                    return input_offset - entry.input_offset + entry.output_offset;
+                    return input_offset - entry.input_offset + @backingInt(entry.output_offset);
                 }
             };
             const sections = try gpa.alloc(struct {
@@ -8844,8 +8883,6 @@ fn loadObject(
                             }
                         },
                         .PROGBITS, .X86_64_UNWIND => {
-                            const shndx_ni = shndx.node(elf);
-
                             const opts: struct {
                                 compression: Input.Section.Compression,
                                 addralign: u64,
@@ -8913,74 +8950,21 @@ fn loadObject(
                                     error.WriteFailed => unreachable,
                                 };
 
-                                const entry_size = merge_key.entrySize();
-                                const msi = msi: {
-                                    const merge_gop = try elf.merge_sections.getOrPutAdapted(
-                                        gpa,
-                                        merge_key,
-                                        Section.Merge.Adapter{ .elf = elf, .shndx = shndx },
-                                    );
-                                    const msi: Section.Merge.Index =
-                                        @fromBackingInt(@intCast(merge_gop.index));
-
-                                    if (merge_gop.found_existing) {
-                                        const merge_ni = merge_gop.value_ptr.node;
-                                        if (need_align.compare(.gt, merge_ni.alignment(&elf.mf)))
-                                            try merge_ni.realign(gpa, &elf.mf, need_align);
-                                        break :msi msi;
-                                    }
-                                    errdefer _ = elf.merge_sections.pop().?;
-
-                                    merge_gop.key_ptr.* = merge_key;
-                                    merge_gop.value_ptr.* = .{
-                                        .node = undefined,
-                                        // The section vaddr is initially 0, because the symbol
-                                        // addresses are zero-based. This will eventually be updated
-                                        // by `flushMoved`.
-                                        .vaddr = 0,
-                                        .entry_map = .empty,
-                                        .free_list = .empty,
-                                        .first_symbol = .null,
-                                        .first_target_reloc = .none,
-                                    };
-                                    errdefer merge_gop.value_ptr.deinit(gpa);
-                                    try merge_gop.value_ptr.entry_map.ensureUnusedCapacity(gpa, 1);
-                                    try merge_gop.value_ptr.free_list.ensureUnusedCapacity(gpa, 1);
-
-                                    merge_gop.value_ptr.node = elf.addNodeAssumeCapacity(
-                                        try shndx_ni.addFloatingChild(gpa, &elf.mf, .{
-                                            .size = need_align.forward(entry_size),
-                                            .alignment = need_align,
-                                            .moved = true,
-                                        }),
-                                        .{ .merge_section = msi },
-                                    );
-                                    errdefer comptime unreachable;
-
-                                    const slice = merge_gop.value_ptr.node.slice(&elf.mf);
-                                    @memset(slice[0..entry_size], 0);
-                                    const entry_gop =
-                                        merge_gop.value_ptr.entry_map.getOrPutAssumeCapacityAdapted(
-                                            slice[0..switch (merge_key.kind) {
-                                                .cst => entry_size,
-                                                .str => 0,
-                                            }],
-                                            Section.Merge.EntryAdapter{
-                                                .key = merge_key,
-                                                .slice = slice,
-                                            },
-                                        );
-                                    assert(!entry_gop.found_existing);
-                                    entry_gop.key_ptr.* = 0;
-                                    merge_gop.value_ptr.free_list.appendAssumeCapacity(entry_size);
-                                    break :msi msi;
-                                };
+                                try elf.merge_sections.ensureUnusedCapacity(gpa, 1);
+                                const msi = try Section.Merge.getOrCreateAssumeCapacity(
+                                    shndx,
+                                    merge_key,
+                                    need_align,
+                                    elf,
+                                );
 
                                 var offset_map: std.ArrayList(OffsetMap.Entry) = .empty;
                                 defer offset_map.deinit(gpa);
 
+                                const entry_size = merge_key.entrySize();
                                 var offset: u32 = 0;
                                 while (offset + entry_size <= w.buffer.len) {
+                                    const entry_align = need_align.offset(offset);
                                     const entry = switch (merge_key.kind) {
                                         .cst => w.buffer[offset..][0..entry_size],
                                         .str => entry: {
@@ -8995,11 +8979,12 @@ fn loadObject(
                                             break :entry w.buffer[offset..end];
                                         },
                                     };
+                                    try msi.ensureAdditionalCapacity(entry_align, entry.len, elf);
                                     try offset_map.append(gpa, .{
                                         .input_offset = offset,
-                                        .output_offset = try msi.entryOffset(
+                                        .output_offset = msi.getOrPutEntryAssumeCapacity(
+                                            entry_align,
                                             entry,
-                                            need_align.offset(offset),
                                             elf,
                                         ),
                                     });
@@ -9026,6 +9011,7 @@ fn loadObject(
                                 shndx != .data_rel_ro and
                                 shndx != elf.shndx.tdata;
 
+                            const shndx_ni = shndx.node(elf);
                             const add_node_opts: MappedFile.Node.AddOptions = .{
                                 .size = need_align.forward(opts.output_size),
                                 .alignment = need_align,
@@ -9815,7 +9801,7 @@ fn loadDso(
 
             // Find the DT_SONAME dynamic entry so that it can become our DT_NEEDED entry.
             try fr.seekTo(shdr.dynamic.offset);
-            const soname_slice: []const u8 = for (0..dynnum) |_| {
+            const soname: []const u8 = for (0..dynnum) |_| {
                 const tag = try r.takeInt(ElfN.Addr, target_endian);
                 const val = try r.takeInt(ElfN.Addr, target_endian);
                 if (tag == std.elf.DT_SONAME) {
@@ -9829,8 +9815,8 @@ fn loadDso(
                 .basename => std.fs.path.basename(path.sub_path),
                 .full_path => try path.toString(comp.arena),
             };
-            const soname = try elf.string(.dynstr, soname_slice);
-            try elf.needed.put(gpa, soname, {});
+            const soname_ref: Section.Merge.Entry.Ref(.dynstr) = try .fromString(soname, elf);
+            try elf.needed.put(gpa, soname_ref, {});
 
             const symbols_trace = tracy.traceNamed(@src(), "dso symbols");
             defer symbols_trace.end();
@@ -9905,7 +9891,7 @@ fn loadDso(
                             break :name @fromBackingInt(@intCast(name_str_off));
                         },
                         .version = maybe_version,
-                        .soname = soname,
+                        .soname = soname_ref,
                         .type = sym.info.type,
                         .size = sym.size,
                         .alignment = sym_align,
@@ -10497,8 +10483,9 @@ fn prepareDynamic(elf: *Elf) Error!void {
         comp.config.link_mode == .static and
         comp.config.pie);
 
-    const dynamic_len: u64 = elf.needed.count() + @intFromBool(elf.dynamic.soname != .empty) +
-        @intFromBool(elf.dynamic.rpath != .empty) +
+    const dynamic_len: u64 = elf.needed.count() +
+        @intFromBool(elf.dynamic.soname.entry != .empty) +
+        @intFromBool(elf.dynamic.rpath.entry != .empty) +
         @intFromBool(elf.dynamic.flags != 0) + @intFromBool(elf.dynamic.flags_1 != 0) +
         @as(usize, @intFromBool(elf.shndx.init_array != .UNDEF)) * 2 +
         @as(usize, @intFromBool(elf.shndx.fini_array != .UNDEF)) * 2 +
@@ -10545,11 +10532,11 @@ fn flushDynamic(elf: *Elf) void {
             }
             dynamic_index += elf.needed.count();
 
-            if (elf.dynamic.soname != .empty) {
+            if (elf.dynamic.soname.entry != .empty) {
                 dynamic_entries[dynamic_index] = .{ std.elf.DT_SONAME, @backingInt(elf.dynamic.soname) };
                 dynamic_index += 1;
             }
-            if (elf.dynamic.rpath != .empty) {
+            if (elf.dynamic.rpath.entry != .empty) {
                 dynamic_entries[dynamic_index] = .{ std.elf.DT_RUNPATH, @backingInt(elf.dynamic.rpath) };
                 dynamic_index += 1;
             }
@@ -10676,7 +10663,8 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
     }
     try elf.shdrs.ensureUnusedCapacity(gpa, 1);
 
-    const shstrtab_entry = try elf.string(.shstrtab, opts.name);
+    const name_ref: Section.Merge.Entry.Ref(.shstrtab) =
+        if (opts.name.len > 0) try .fromString(opts.name, elf) else .empty;
     const shndx: Section.Index, const new_shdr_size = shndx: switch (elf.ehdrPtr()) {
         inline else => |ehdr, class| {
             const shndx, const shnum = alloc_shndx: switch (elf.targetLoad(&ehdr.shnum)) {
@@ -10739,7 +10727,7 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
     switch (elf.shdrPtr(shndx)) {
         inline else => |shdr, class| {
             shdr.* = .{
-                .name = @backingInt(shstrtab_entry),
+                .name = @backingInt(name_ref),
                 .type = opts.type,
                 .flags = .{ .shf = opts.flags },
                 .addr = @intCast(addr),
@@ -13227,16 +13215,10 @@ fn flushResized(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!vo
                             reloc.ptr(elf).apply(elf);
                         }
                         for (elf.got.keys(), 0..) |got_key, got_index| switch (got_key) {
-                            .reserved,
-                            .symbol,
-                            .section,
-                            .tlsgd0,
-                            .tlsgd1,
-                            => {
+                            .reserved, .symbol, .section, .tlsgd0, .tlsgd1 => {
                                 @branchHint(.likely);
                                 continue;
                             },
-
                             .tpoff => elf.updateGotEntry(got_index),
                         };
                         try ni.childrenMoved(elf.base.comp.gpa, &elf.mf);
@@ -14184,21 +14166,25 @@ fn parseVersionedSymbolName(raw_name: []const u8) struct {
 
 const VerdefAdapter = struct {
     elf: *Elf,
-    pub fn eql(ctx: VerdefAdapter, lhs_name: String(.dynstr), _: void, rhs_index: usize) bool {
+    pub fn eql(
+        ctx: VerdefAdapter,
+        lhs_name: Section.Merge.Entry.Ref(.dynstr),
+        _: void,
+        rhs_index: usize,
+    ) bool {
         const elf = ctx.elf;
         const rhs_entry = &elf.verdefSlice()[rhs_index + 1];
-        const rhs_name: String(.dynstr) = @fromBackingInt(
-            elf.targetLoad(&rhs_entry.aux.name),
-        );
+        const rhs_name: Section.Merge.Entry.Ref(.dynstr) =
+            @fromBackingInt(elf.targetLoad(&rhs_entry.aux.name));
         return lhs_name == rhs_name;
     }
-    pub fn hash(ctx: VerdefAdapter, name: String(.dynstr)) u32 {
+    pub fn hash(ctx: VerdefAdapter, name: Section.Merge.Entry.Ref(.dynstr)) u32 {
         _ = ctx;
         return @truncate(std.hash.int(@backingInt(name)));
     }
 };
 
-fn verdefId(elf: *Elf, version: String(.dynstr)) Error!u15 {
+fn verdefId(elf: *Elf, version: Section.Merge.Entry.Ref(.dynstr)) Error!u15 {
     const gpa = elf.base.comp.gpa;
     const adapter: VerdefAdapter = .{ .elf = elf };
     try elf.shndx.gnu_version_d.node(elf).ensureMinimumSize(gpa, &elf.mf, (elf.verdef.count() + 2) * @sizeOf(VerdefEntry));
@@ -14256,11 +14242,11 @@ fn verdefId(elf: *Elf, version: String(.dynstr)) Error!u15 {
 
 const VerneedAdapter = struct {
     elf: *const Elf,
-    const Key = struct {
-        file: String(.dynstr),
-        /// If this is `null`, key refers to a `std.elf.Verneed` entry; otherwise it refers to a
+    const Key = extern struct {
+        file: Section.Merge.Entry.Ref(.dynstr),
+        /// If this is `.null`, key refers to a `std.elf.Verneed` entry; otherwise it refers to a
         /// `std.elf.Vernaux` entry.
-        version: ?String(.dynstr),
+        version: Section.Merge.Entry.Ref(.dynstr),
     };
     const StoredKey = struct {
         kind: enum(u8) { verneed, vernaux },
@@ -14274,40 +14260,35 @@ const VerneedAdapter = struct {
     pub fn eql(ctx: VerneedAdapter, lhs: Key, rhs_stored: StoredKey, rhs_index: usize) bool {
         const elf = ctx.elf;
 
-        const lhs_version = lhs.version orelse {
+        if (lhs.version.entry == .null) {
             if (rhs_stored.kind != .verneed) return false;
-            const rhs_file: String(.dynstr) = @fromBackingInt(elf.targetLoad(
+            const rhs_file: Section.Merge.Entry.Ref(.dynstr) = @fromBackingInt(elf.targetLoad(
                 &elf.verneedSlice()[rhs_index].verneed.file,
             ));
             return lhs.file == rhs_file;
-        };
+        }
 
         if (rhs_stored.kind != .vernaux) return false;
-        const rhs_file: String(.dynstr) = @fromBackingInt(elf.targetLoad(
+        const rhs_file: Section.Merge.Entry.Ref(.dynstr) = @fromBackingInt(elf.targetLoad(
             &elf.verneedSlice()[rhs_stored.last_or_verneed_index].verneed.file,
         ));
-        const rhs_version: String(.dynstr) = @fromBackingInt(elf.targetLoad(
+        const rhs_version: Section.Merge.Entry.Ref(.dynstr) = @fromBackingInt(elf.targetLoad(
             &elf.verneedSlice()[rhs_index].vernaux.name,
         ));
 
-        return lhs.file == rhs_file and lhs_version == rhs_version;
+        return lhs.file == rhs_file and lhs.version == rhs_version;
     }
     pub fn hash(ctx: VerneedAdapter, key: Key) u32 {
         _ = ctx;
-        const packed_key: bitpack struct(u65) {
-            file: String(.dynstr),
-            have_version: bool,
-            version: String(.dynstr),
-        } = .{
-            .file = key.file,
-            .have_version = key.version != null,
-            .version = key.version orelse .empty,
-        };
-        return @truncate(std.hash.int(@backingInt(packed_key)));
+        return @truncate(std.hash.Wyhash.hash(0, @ptrCast(&key)));
     }
 };
 
-fn verneedId(elf: *Elf, file: String(.dynstr), version: String(.dynstr)) Error!u15 {
+fn verneedId(
+    elf: *Elf,
+    file: Section.Merge.Entry.Ref(.dynstr),
+    version: Section.Merge.Entry.Ref(.dynstr),
+) Error!u15 {
     const gpa = elf.base.comp.gpa;
     const adapter: VerneedAdapter = .{ .elf = elf };
     try elf.shndx.gnu_version_r.node(elf).ensureMinimumSize(gpa, &elf.mf, (elf.verneed.count() + 2) * @sizeOf(VerneedEntry));
@@ -14322,7 +14303,7 @@ fn verneedId(elf: *Elf, file: String(.dynstr), version: String(.dynstr)) Error!u
 
     const file_gop = try elf.verneed.getOrPutAdapted(gpa, @as(VerneedAdapter.Key, .{
         .file = file,
-        .version = null,
+        .version = .null,
     }), adapter);
 
     const predicted_vernaux_index: u32 = @intCast(elf.verneed.count());
