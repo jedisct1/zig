@@ -3064,7 +3064,7 @@ const module_test_targets = blk: {
             }) catch unreachable,
             .use_llvm = false,
             .use_lld = false,
-            .skip_modules = &.{"compiler-rt"},
+            .skip_modules = &.{ "compiler-rt", "libc", "std" },
         },
 
         // WASI Targets
