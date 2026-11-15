@@ -247,7 +247,7 @@ input_prog_node: std.Progress.Node,
 
 const Error = link.Error || error{MappedFileIo};
 
-pub const Node = union(enum) {
+const Node = union(enum) {
     deleted,
 
     /// Only used when emitting a static library.
@@ -381,7 +381,7 @@ pub const Node = union(enum) {
         return @bitCast(ni);
     }
     /// In this linker implementation, `link.File.AtomId` is a type-erased `MappedFile.Node.Index`.
-    pub fn fromAtom(atom: link.File.AtomId) MappedFile.Node.Index {
+    fn fromAtom(atom: link.File.AtomId) MappedFile.Node.Index {
         return @bitCast(atom);
     }
 
@@ -868,7 +868,7 @@ const Section = struct {
         }
     };
 
-    pub const Index = enum(Tag) {
+    const Index = enum(Tag) {
         UNDEF = std.elf.SHN_UNDEF,
         LIVEPATCH = reserve(std.elf.SHN_LIVEPATCH),
         ABS = reserve(std.elf.SHN_ABS),
@@ -884,10 +884,10 @@ const Section = struct {
 
         _,
 
-        pub const Tag = u32;
+        const Tag = u32;
 
-        pub const LORESERVE: Index = .fromSection(std.elf.SHN_LORESERVE);
-        pub const HIRESERVE: Index = .fromSection(std.elf.SHN_HIRESERVE);
+        const LORESERVE: Index = .fromSection(std.elf.SHN_LORESERVE);
+        const HIRESERVE: Index = .fromSection(std.elf.SHN_HIRESERVE);
         comptime {
             assert(@backingInt(HIRESERVE) == std.math.maxInt(Tag));
         }
@@ -897,13 +897,13 @@ const Section = struct {
             return @as(Tag, std.math.maxInt(Tag) - std.elf.SHN_HIRESERVE) + sec;
         }
 
-        pub fn fromSection(sec: std.elf.Section) Index {
+        fn fromSection(sec: std.elf.Section) Index {
             return switch (sec) {
                 std.elf.SHN_UNDEF...std.elf.SHN_LORESERVE - 1 => @fromBackingInt(sec),
                 std.elf.SHN_LORESERVE...std.elf.SHN_HIRESERVE => @fromBackingInt(reserve(sec)),
             };
         }
-        pub fn toSection(shndx: Index) ?std.elf.Section {
+        fn toSection(shndx: Index) ?std.elf.Section {
             return switch (@backingInt(shndx)) {
                 std.elf.SHN_UNDEF...std.elf.SHN_LORESERVE - 1 => |sec| @intCast(sec),
                 std.elf.SHN_LORESERVE...reserve(std.elf.SHN_LORESERVE) - 1 => null,
@@ -1517,7 +1517,7 @@ const dwarf_relocs = struct {
     };
 };
 
-pub const MachineRelocType = union {
+const MachineRelocType = union {
     AARCH64: std.elf.R_AARCH64,
     LARCH: std.elf.R_LARCH,
     PPC64: std.elf.R_PPC64,
@@ -1525,7 +1525,7 @@ pub const MachineRelocType = union {
     SPARC: std.elf.R_SPARC,
     X86_64: std.elf.R_X86_64,
 
-    pub const Format = struct {
+    const Format = struct {
         rt: MachineRelocType,
         elf: *const Elf,
 
@@ -1541,11 +1541,11 @@ pub const MachineRelocType = union {
         }
     };
 
-    pub fn fmt(rt: MachineRelocType, elf: *const Elf) Format {
+    fn fmt(rt: MachineRelocType, elf: *const Elf) Format {
         return .{ .rt = rt, .elf = elf };
     }
 
-    pub fn none(elf: *const Elf) MachineRelocType {
+    fn none(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = .NONE },
             .LOONGARCH => .{ .LARCH = .NONE },
@@ -1555,7 +1555,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .NONE },
         };
     }
-    pub fn copy(elf: *const Elf) MachineRelocType {
+    fn copy(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = .COPY },
             .LOONGARCH => .{ .LARCH = .COPY },
@@ -1565,7 +1565,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .COPY },
         };
     }
-    pub fn relative(elf: *const Elf) MachineRelocType {
+    fn relative(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = .RELATIVE },
             .LOONGARCH => .{ .LARCH = .RELATIVE },
@@ -1575,7 +1575,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .RELATIVE },
         };
     }
-    pub fn jumpSlot(elf: *const Elf) MachineRelocType {
+    fn jumpSlot(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = .JUMP_SLOT },
             .LOONGARCH => .{ .LARCH = .JUMP_SLOT },
@@ -1585,7 +1585,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .JUMP_SLOT },
         };
     }
-    pub fn globDat(elf: *const Elf) MachineRelocType {
+    fn globDat(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = .GLOB_DAT },
             .LOONGARCH => .{ .LARCH = switch (elf.identClass()) {
@@ -1603,7 +1603,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .GLOB_DAT },
         };
     }
-    pub fn dtpMod(elf: *const Elf) MachineRelocType {
+    fn dtpMod(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = switch (elf.identClass()) {
                 .NONE, _ => unreachable,
@@ -1629,7 +1629,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .DTPMOD64 },
         };
     }
-    pub fn dtpOff(elf: *const Elf) MachineRelocType {
+    fn dtpOff(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = switch (elf.identClass()) {
                 .NONE, _ => unreachable,
@@ -1655,7 +1655,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .DTPOFF64 },
         };
     }
-    pub fn tpOff(elf: *const Elf) MachineRelocType {
+    fn tpOff(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = switch (elf.identClass()) {
                 .NONE, _ => unreachable,
@@ -1718,7 +1718,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .PC32 },
         };
     }
-    pub fn rel64(elf: *const Elf) MachineRelocType {
+    fn rel64(elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = .PREL64 },
             .LOONGARCH => unreachable,
@@ -1728,7 +1728,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .PC64 },
         };
     }
-    pub fn size32(elf: *const Elf) ?MachineRelocType {
+    fn size32(elf: *const Elf) ?MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64,
             .LOONGARCH,
@@ -1740,7 +1740,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = .SIZE32 },
         };
     }
-    pub fn size64(elf: *const Elf) ?MachineRelocType {
+    fn size64(elf: *const Elf) ?MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64,
             .LOONGARCH,
@@ -1753,7 +1753,7 @@ pub const MachineRelocType = union {
         };
     }
 
-    pub fn wrap(int: u32, elf: *const Elf) MachineRelocType {
+    fn wrap(int: u32, elf: *const Elf) MachineRelocType {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => .{ .AARCH64 = @fromBackingInt(int) },
             .LOONGARCH => .{ .LARCH = @fromBackingInt(int) },
@@ -1763,7 +1763,7 @@ pub const MachineRelocType = union {
             .X86_64 => .{ .X86_64 = @fromBackingInt(int) },
         };
     }
-    pub fn unwrap(rt: MachineRelocType, elf: *const Elf) u32 {
+    fn unwrap(rt: MachineRelocType, elf: *const Elf) u32 {
         return switch (elf.ehdrMachine()) {
             .AARCH64 => @backingInt(rt.AARCH64),
             .LOONGARCH => @backingInt(rt.LARCH),
@@ -1792,13 +1792,13 @@ const Reloc = struct {
     /// The target of the relocation.
     ///
     /// Precise meaning depends on `bits.@"type"`.
-    target_payload: Target.Payload,
+    target_payload: Reloc.Target.Payload,
     /// A signed constant used to compute the relocated value.
     ///
     /// Precise meaning depends on `bits.@"type"`.
-    addend: Addend,
+    addend: Reloc.Addend,
     bits: bitpack struct(u32) {
-        target_tag: Target.Tag,
+        target_tag: Reloc.Target.Tag,
         /// Specifies how to apply the relocation.
         ///
         /// When emitting a relocatable, this field is `.none`.
@@ -1839,16 +1839,16 @@ const Reloc = struct {
         section: Section.Index,
         node: MappedFile.Node.Index,
 
-        const @"null": Target = .{ .symbol = .null };
+        const @"null": Reloc.Target = .{ .symbol = .null };
 
-        const Tag = @typeInfo(Target).@"union".tag_type.?;
+        const Tag = @typeInfo(Reloc.Target).@"union".tag_type.?;
         const Payload = Payload: {
-            const info = @typeInfo(Target).@"union";
+            const info = @typeInfo(Reloc.Target).@"union";
             break :Payload @Union(.auto, null, info.field_names, info.field_types, &@splat(.{}));
         };
 
-        fn hasMoved(t: Target, elf: *const Elf) bool {
-            return switch (t) {
+        fn hasMoved(reloc_target: Reloc.Target, elf: *const Elf) bool {
+            return switch (reloc_target) {
                 .symbol => |sym_id| sym_id.hasMoved(elf),
                 .section => |shndx| if (shndx.ptr(elf).node.unwrap()) |node|
                     node.hasMoved(&elf.mf)
@@ -1858,8 +1858,8 @@ const Reloc = struct {
             };
         }
 
-        fn getOrCreateSymbol(t: Target, elf: *Elf) Error!Symbol.Id {
-            const shndx = switch (t) {
+        fn getOrCreateSymbol(reloc_target: Reloc.Target, elf: *Elf) Error!Symbol.Id {
+            const shndx = switch (reloc_target) {
                 .symbol => |sym_id| return sym_id,
                 .section => |shndx| shndx,
                 .node => |ni| elf.getNodeShndx(ni),
@@ -1867,8 +1867,8 @@ const Reloc = struct {
             return shndx.getOrCreateSymbol(elf);
         }
 
-        fn classifyValue(t: Target, elf: *const Elf) Symbol.ValueClass {
-            const shndx = switch (t) {
+        fn classifyValue(reloc_target: Reloc.Target, elf: *const Elf) Symbol.ValueClass {
+            const shndx = switch (reloc_target) {
                 .symbol => |sym_id| return sym_id.classifyValue(elf),
                 .section => |shndx| shndx,
                 .node => |ni| elf.getNodeShndx(ni),
@@ -1881,16 +1881,16 @@ const Reloc = struct {
             return .static;
         }
 
-        fn value(t: Target, elf: *const Elf) u64 {
-            return switch (t) {
+        fn value(reloc_target: Reloc.Target, elf: *const Elf) u64 {
+            return switch (reloc_target) {
                 .symbol => |sym_id| sym_id.value(elf),
                 .section => |shndx| shndx.vaddr(elf),
                 .node => |ni| elf.getNodeVAddr(ni),
             };
         }
 
-        fn pltEntry(t: Target, elf: *const Elf) ?PltEntry {
-            return switch (t) {
+        fn pltEntry(reloc_target: Reloc.Target, elf: *const Elf) ?PltEntry {
+            return switch (reloc_target) {
                 .symbol => |sym_id| switch (sym_id.unwrap()) {
                     .local => null,
                     .global => |gsi| gsi.pltEntry(elf),
@@ -1899,8 +1899,8 @@ const Reloc = struct {
             };
         }
 
-        fn firstReloc(t: Target, elf: *Elf) *Reloc.Index {
-            return switch (t) {
+        fn firstReloc(reloc_target: Reloc.Target, elf: *Elf) *Reloc.Index {
+            return switch (reloc_target) {
                 .symbol => |sym_id| &sym_id.index(elf).ptr(elf).first_target_reloc,
                 .section => |shndx| elf.section_first_target_reloc.getPtr(shndx).?,
                 .node => |ni| switch (elf.getNode(ni)) {
@@ -1944,43 +1944,44 @@ const Reloc = struct {
     /// "Simple" relocations are designed to cover the majority of cases. They can represent most
     /// relocations which either write 8-bit, 16-bit, 32-bit, or 64-bit integers, or which write one
     /// contiguous bit-field within such an integer (e.g. an instruction operand). For more details,
-    /// see `Simple`.
+    /// see `Reloc.Type.Simple`.
     ///
     /// "Special" relocations handle anything which does not fit into the above category, such as
     /// relocations which write multiple sequences of bits or which need to do unusual arithmetic on
     /// a symbol value. The representation is simply a big enum containing all of these exceptional
-    /// cases---see `Special`. This representation is in use when `Type.target == .special`.
+    /// cases---see `Reloc.Type.Special`. This representation is in use when
+    /// `Reloc.Type.target == .special`.
     const Type = bitpack struct(u18) {
         const none: Reloc.Type = .{ .target = .special, .action = .{ .special = .none } };
 
         /// Helper function for constructing a "simple" relocation type. This mainly exists to
         /// improve readability in the relocation lowering logic in `addRelocAssumeCapacity`.
-        fn simple(type_target: Reloc.Type.Target, action: Simple) Reloc.Type {
+        fn simple(type_target: Reloc.Type.Target, action: Reloc.Type.Simple) Reloc.Type {
             assert(type_target != .special);
             return .{ .target = type_target, .action = .{ .simple = action } };
         }
 
         /// Helper function for constructing a "special" relocation type. This mainly exists to
         /// improve readability in the relocation lowering logic in `addRelocAssumeCapacity`.
-        fn special(s: Special) Reloc.Type {
+        fn special(s: Reloc.Type.Special) Reloc.Type {
             return .{ .target = .special, .action = .{ .special = s } };
         }
 
-        /// See doc comment on `Target`.
+        /// See doc comment on `Reloc.Type.Target`.
         target: Reloc.Type.Target,
         /// If `target == .special`, the `special` field is used.
         ///
         /// Otherwise, the `.simple` field is used.
         action: bitpack union {
-            simple: Simple,
-            special: Special,
+            simple: Reloc.Type.Simple,
+            special: Reloc.Type.Special,
         },
 
         /// If a relocation is "special", indicates that using the value `.@"special"`.
         ///
-        /// Otherwise (for "simple" relocations), `Target` indicates the first step in computing the
-        /// relocation---whether we care about the target symbol's absolute address, its PC-relative
-        /// address, its PLT entry, etc.
+        /// Otherwise (for "simple" relocations), `Reloc.Type.Target` indicates the first step in
+        /// computing the relocation---whether we care about the target symbol's absolute address,
+        /// its PC-relative address, its PLT entry, etc.
         const Target = enum(u5) {
             /// This is a "special" relocation whose specific type is in the `action.special` field.
             special,
@@ -2029,8 +2030,9 @@ const Reloc = struct {
             gotoff_tlsgd,
         };
 
-        /// For a "simple" relocation, after the initial value is computed according to `Target`, a
-        /// `Simple` value communicates how to shift, truncate, and store that value into memory.
+        /// For a "simple" relocation, after the initial value is computed according to
+        /// `Reloc.Type.Target`, a `Reloc.Type.Simple` value communicates how to shift, truncate,
+        /// and store that value into memory.
         const Simple = bitpack struct(u13) {
             /// The field being written to, represented as a sequence of bits in a backing integer
             /// of 8, 16, 32, or 64 bits.
@@ -2052,7 +2054,7 @@ const Reloc = struct {
             /// This enum is not intended to be able to represent every possible bit field in the
             /// backing integer types. Instead, to keep `Reloc.Type` compact, fields are added to
             /// this enum only as needed. If the enum ever becomes full, some lesser-used tags can
-            /// have their handling moved into `Special` to free up space.
+            /// have their handling moved into `Reloc.Type.Special` to free up space.
             dest: enum(u6) {
                 @"8",
                 @"16",
@@ -2099,10 +2101,10 @@ const Reloc = struct {
                 signed,
             },
 
-            /// The relocation value (computed based on the `Target`) gets shifted to the right by
-            /// this amount. By default, the shifted-out bits can be anything, but tags ending in
-            /// "_exact" introduce a check that the shifted-out bits are all zeroes (an error is
-            /// emitted if not), similar to the behavior of `@shrExact`.
+            /// The relocation value (computed based on the `Reloc.Type.Target`) gets shifted to the
+            /// right by this amount. By default, the shifted-out bits can be anything, but tags
+            /// ending in "_exact" introduce a check that the shifted-out bits are all zeroes (an
+            /// error is emitted if not), similar to the behavior of `@shrExact`.
             shift: enum(u5) {
                 @"0",
                 @"2_exact",
@@ -2114,11 +2116,11 @@ const Reloc = struct {
                 @"52",
             },
 
-            /// Given a value (computed based on the `Target`), applies the shift and truncation
-            /// operations specified by `s`, then writes the result to the start of `dest_slice` as
-            /// specified by `s.dest`.
+            /// Given a value (computed based on the `Reloc.Type.Target`), applies the shift and
+            /// truncation operations specified by `s`, then writes the result to the start of
+            /// `dest_slice` as specified by `s.dest`.
             fn write(
-                s: Simple,
+                s: Reloc.Type.Simple,
                 val: u64,
                 dest_slice: []u8,
                 target_endian: std.lang.Endian,
@@ -2204,8 +2206,8 @@ const Reloc = struct {
         };
 
         /// Enum representing "special" relocation types, i.e. those which cannot be represented
-        /// just with `Target` and `Simple`. These relocations have completely custom handling in
-        /// the `Special.applyInner` function.
+        /// just with `Reloc.Type.Target` and `Reloc.Type.Simple`. These relocations have completely
+        /// custom handling in the `Reloc.Type.Special.applyInner` function.
         const Special = enum(u13) {
             none,
 
@@ -2228,10 +2230,10 @@ const Reloc = struct {
             sparc_got_op_hix22,
 
             fn applyInner(
-                s: Special,
+                s: Reloc.Type.Special,
                 elf: *Elf,
                 reloc_target: Reloc.Target,
-                reloc_addend: Addend,
+                reloc_addend: Reloc.Addend,
                 dest_vaddr: u64,
                 dest_slice: []u8,
             ) error{ RelocationMisaligned, RelocationOverflow }!void {
@@ -2956,10 +2958,10 @@ const Reloc = struct {
         }
     };
 
-    fn target(reloc: *const Reloc) Target {
+    fn target(reloc: *const Reloc) Reloc.Target {
         return switch (reloc.bits.target_tag) {
             inline else => |tag| @unionInit(
-                Target,
+                Reloc.Target,
                 @tagName(tag),
                 @field(reloc.target_payload, @tagName(tag)),
             ),
@@ -4710,24 +4712,25 @@ const Symbol = struct {
     /// If `node` is not `.none`, this list contains all symbols within that node.
     /// Otherwise if this is a bss/tbss symbol, this list contains all bss/tbss symbols.
     /// Otherwise this is `.null` for absolute and undefined symbols.
-    next_sibling: Id,
+    next_sibling: Symbol.Id,
 
     const Global = struct {
         status: bitpack struct(u8) {
             /// We cannot reliably recover this information from the symbol table, because symbols
             /// with visibility `STV_HIDDEN` are "demoted" to `STB_LOCAL` binding, yet we must still
             /// consider them strong or weak for the purposes of the link.
-            bind: Global.Bind,
+            bind: Symbol.Global.Bind,
             is_common: bool,
             /// Initially set to `false`. If a relocation is added which targets this symbol and
             /// wants it to have a statically-known value, this flag is set to signal to
             /// `updateGlobalDynamic` that it may need to create a copy relocation.
             want_static_value: bool,
-            /// Every entry in `.dynsym` is "owned" by exactly one `Global`. If this flag is set,
-            /// then `Global.dynsym_index` is non-zero and refers to a dynsym entry owned by this
-            /// global. Otherwise, if `Global.dynsym_index` is non-zero, this `Global` is an "alias"
-            /// of a default version of this symbol (e.g. 'foo' is an alias of 'foo@@version') and
-            /// `Global.dynsym_index` refers to that symbol's dynsym entry
+            /// Every entry in `.dynsym` is "owned" by exactly one `Symbol.Global`. If this flag is
+            /// set, then `Symbol.Global.dynsym_index` is non-zero and refers to a dynsym entry
+            /// owned by this global. Otherwise, if `Symbol.Global.dynsym_index` is non-zero, this
+            /// `Symbol.Global` is an "alias" of a default version of this symbol (e.g. 'foo' is an
+            /// alias of 'foo@@version') and `Symbol.Global.dynsym_index` refers to that symbol's
+            /// dynsym entry
             owns_dynsym: bool,
             any_static_target_relocs: bool,
             any_static_relative_target_relocs: bool,
@@ -4742,7 +4745,7 @@ const Symbol = struct {
 
         /// The previous entry in the same linked list as `Symbol.next_sibling`. This only exists
         /// for global symbols because local symbols never need to be removed.
-        prev_sibling: Id,
+        prev_sibling: Symbol.Id,
 
         /// The logical key of `Elf.globals_by_name`. Although versioned symbol names are stored in
         /// the form "foo@version" or "foo@@version" in the symbol table, it is generally convenient
@@ -4755,7 +4758,7 @@ const Symbol = struct {
                 elf: *const Elf,
                 pub fn eql(ctx: Adapter, lhs_key: VersionedName, _: void, rhs_index: usize) bool {
                     const elf = ctx.elf;
-                    const rhs_gsi: Global.Index = @fromBackingInt(@intCast(rhs_index));
+                    const rhs_gsi: Symbol.Global.Index = @fromBackingInt(@intCast(rhs_index));
 
                     if (!std.mem.eql(u8, lhs_key.name, rhs_gsi.name(elf))) return false;
 
@@ -4784,7 +4787,7 @@ const Symbol = struct {
             pub fn eql(
                 ctx: DefaultVersionAdapter,
                 lhs_name: []const u8,
-                rhs_gsi: Global.Index,
+                rhs_gsi: Symbol.Global.Index,
                 _: usize,
             ) bool {
                 const elf = ctx.elf;
@@ -4799,15 +4802,15 @@ const Symbol = struct {
         const Index = enum(u32) {
             _,
 
-            fn ptr(gsi: Global.Index, elf: *const Elf) *Global {
+            fn ptr(gsi: Symbol.Global.Index, elf: *const Elf) *Symbol.Global {
                 return &elf.globals.items[@backingInt(gsi)];
             }
 
-            fn id(gsi: Global.Index) Id {
+            fn id(gsi: Symbol.Global.Index) Symbol.Id {
                 return .{ .kind = .global, .raw = @intCast(@backingInt(gsi)) };
             }
 
-            fn pltEntry(gsi: Global.Index, elf: *const Elf) ?PltEntry {
+            fn pltEntry(gsi: Symbol.Global.Index, elf: *const Elf) ?PltEntry {
                 const plt_entry: PltEntry = @fromBackingInt(@intCast(
                     elf.plt.getIndex(gsi.resolveAlias(elf)) orelse return null,
                 ));
@@ -4816,26 +4819,26 @@ const Symbol = struct {
 
             /// Does not traverse aliases: if 'foo' is an alias for 'foo@@version', then `false`
             /// will be returned for 'foo', even though 'foo@@version' is defined.
-            fn defined(gsi: Global.Index, elf: *const Elf) bool {
+            fn defined(gsi: Symbol.Global.Index, elf: *const Elf) bool {
                 return gsi.ptr(elf).symtab_index.shndx(elf) != .UNDEF;
             }
 
-            fn rawName(gsi: Global.Index, elf: *const Elf) String(.strtab) {
+            fn rawName(gsi: Symbol.Global.Index, elf: *const Elf) String(.strtab) {
                 return switch (elf.symPtr(gsi.ptr(elf).symtab_index)) {
                     inline else => |sym| @fromBackingInt(elf.targetLoad(&sym.name)),
                 };
             }
-            fn name(gsi: Global.Index, elf: *const Elf) []const u8 {
+            fn name(gsi: Symbol.Global.Index, elf: *const Elf) []const u8 {
                 return parseVersionedSymbolName(gsi.rawName(elf).slice(elf)).name;
             }
-            fn version(gsi: Global.Index, elf: *const Elf) ?[]const u8 {
+            fn version(gsi: Symbol.Global.Index, elf: *const Elf) ?[]const u8 {
                 return parseVersionedSymbolName(gsi.rawName(elf).slice(elf)).version;
             }
-            fn isDefaultDefinition(gsi: Global.Index, elf: *const Elf) bool {
+            fn isDefaultDefinition(gsi: Symbol.Global.Index, elf: *const Elf) bool {
                 return parseVersionedSymbolName(gsi.rawName(elf).slice(elf)).is_default_version;
             }
 
-            fn dynsymIndex(gsi: Global.Index, elf: *const Elf) ?u32 {
+            fn dynsymIndex(gsi: Symbol.Global.Index, elf: *const Elf) ?u32 {
                 const dynsym_index = gsi.ptr(elf).dynsym_index;
                 if (dynsym_index == 0) {
                     return null;
@@ -4862,7 +4865,7 @@ const Symbol = struct {
             ///
             /// See also `findAliaser`, which maps in the opposite direction, i.e. given a global,
             /// returns all globals which alias it.
-            fn resolveAlias(gsi: Global.Index, elf: *const Elf) Global.Index {
+            fn resolveAlias(gsi: Symbol.Global.Index, elf: *const Elf) Symbol.Global.Index {
                 if (elf.ehdrType() == .REL) {
                     // It's too early to combine 'foo@@v' with 'foo'---let the final static linker
                     // invocation do that.
@@ -4874,10 +4877,10 @@ const Symbol = struct {
                     return gsi;
                 }
 
-                const default_gsi: Global.Index = default_gsi: {
+                const default_gsi: Symbol.Global.Index = default_gsi: {
                     if (elf.default_version_globals.getIndexAdapted(
                         gsi.name(elf),
-                        @as(Global.DefaultVersionAdapter, .{ .elf = elf }),
+                        @as(Symbol.Global.DefaultVersionAdapter, .{ .elf = elf }),
                     )) |index| {
                         break :default_gsi elf.default_version_globals.keys()[index];
                     }
@@ -4918,7 +4921,7 @@ const Symbol = struct {
             /// Effectively the opposite of `resolveAlias`; given a global symbol, returns the index
             /// of the single other global which aliases it, if any. The signature of this function
             /// implies that each global may have at most one global which is an alias for it.
-            fn findAliaser(gsi: Global.Index, elf: *Elf) ?Global.Index {
+            fn findAliaser(gsi: Symbol.Global.Index, elf: *Elf) ?Symbol.Global.Index {
                 if (gsi.version(elf) == null) {
                     return null;
                 }
@@ -4937,8 +4940,8 @@ const Symbol = struct {
 
             /// Like `dynsymIndex`, except also returns `null` if `gsi` is the unversioned alias for
             /// a default symbol version. This means that for each dynsym entry, there is exactly
-            /// one `Global` which will return that dynsym index here.
-            fn ownedDynsymIndex(gsi: Global.Index, elf: *Elf) ?u32 {
+            /// one `Symbol.Global` which will return that dynsym index here.
+            fn ownedDynsymIndex(gsi: Symbol.Global.Index, elf: *Elf) ?u32 {
                 if (gsi.ptr(elf).status.owns_dynsym) {
                     const dynsym_index = gsi.ptr(elf).dynsym_index;
                     assert(dynsym_index != 0);
@@ -4952,7 +4955,7 @@ const Symbol = struct {
             ///
             /// Returns `true` if any relocations were updated, in which case relocations targeting
             /// `gsi` must be re-applied by the caller.
-            fn updateDynamicTargetRelocs(gsi: Global.Index, elf: *Elf) Error!bool {
+            fn updateDynamicTargetRelocs(gsi: Symbol.Global.Index, elf: *Elf) Error!bool {
                 const trace = tracy.trace(@src());
                 defer trace.end();
 
@@ -5001,10 +5004,10 @@ const Symbol = struct {
                 none = std.math.maxInt(u32),
                 _,
 
-                fn wrap(gsi: Global.Index) Global.Index.Optional {
+                fn wrap(gsi: Symbol.Global.Index) Symbol.Global.Index.Optional {
                     return @bitCast(gsi);
                 }
-                fn unwrap(ogsi: Global.Index.Optional) ?Global.Index {
+                fn unwrap(ogsi: Symbol.Global.Index.Optional) ?Symbol.Global.Index {
                     return switch (ogsi) {
                         .none => null,
                         _ => @bitCast(ogsi),
@@ -5022,7 +5025,7 @@ const Symbol = struct {
             value: u64,
             size: u64,
             type: std.elf.STT,
-            bind: Global.Bind,
+            bind: Symbol.Global.Bind,
             visibility: std.elf.STV,
             shndx: Section.Index,
         };
@@ -5031,9 +5034,9 @@ const Symbol = struct {
     /// An index directly into the symtab. These values are not stable (global symbols are sometimes
     /// moved to new locations in the symtab) and therefore should only be used ephemerally.
     ///
-    /// Local symbols *do* have stable indices into the symtab; see `LocalIndex`.
+    /// Local symbols *do* have stable indices into the symtab; see `Symbol.LocalIndex`.
     ///
-    /// For a stable reference to an arbitrary symbol, see `Id`.
+    /// For a stable reference to an arbitrary symbol, see `Symbol.Id`.
     const Index = enum(u32) {
         null = 0,
         _,
@@ -5055,7 +5058,7 @@ const Symbol = struct {
         }
 
         /// Returns the head of the linked list of symbols containing this symbol.
-        fn firstSibling(symbol: Symbol.Index, elf: *const Elf) ?*Id {
+        fn firstSibling(symbol: Symbol.Index, elf: *const Elf) ?*Symbol.Id {
             const symbol_ptr = symbol.ptr(elf);
             const parent_shndx = parent_shndx: {
                 const symbol_ni = symbol_ptr.node.unwrap() orelse switch (symbol.shndx(elf)) {
@@ -5086,9 +5089,9 @@ const Symbol = struct {
         }
     };
 
-    /// A `LocalIndex` is a raw index into the symtab like `Index`, but it guarantees that the
-    /// symbol in question has STB_LOCAL binding, which guarantees that its symtab index is stable
-    /// so can be stored long-term without needing to be updated
+    /// A `Symbol.LocalIndex` is a raw index into the symtab like `Symbol.Index`, but it guarantees
+    /// that the symbol in question has STB_LOCAL binding, which guarantees that its symtab index is
+    /// stable so can be stored long-term without needing to be updated
     ///
     /// This is because symbols which have STB_LOCAL binding in the output file gain fixed symtab
     /// indices, thanks to a combination of a few factors:
@@ -5100,11 +5103,11 @@ const Symbol = struct {
         null = 0,
         _,
 
-        fn index(lsi: LocalIndex) Index {
+        fn index(lsi: Symbol.LocalIndex) Symbol.Index {
             return @bitCast(lsi);
         }
 
-        fn id(lsi: LocalIndex) Id {
+        fn id(lsi: Symbol.LocalIndex) Symbol.Id {
             return .{ .kind = .local, .raw = @intCast(@backingInt(lsi)) };
         }
     };
@@ -5114,7 +5117,7 @@ const Symbol = struct {
         kind: enum(u1) { local, global },
         raw: u31,
 
-        const @"null" = LocalIndex.null.id();
+        const @"null" = Symbol.LocalIndex.null.id();
 
         fn unwrap(symbol: Symbol.Id) union(enum) {
             local: Symbol.LocalIndex,
@@ -5126,7 +5129,7 @@ const Symbol = struct {
             };
         }
 
-        pub fn toTypeErased(symbol: Symbol.Id) link.File.SymbolId {
+        fn toTypeErased(symbol: Symbol.Id) link.File.SymbolId {
             return @bitCast(symbol);
         }
         pub fn fromTypeErased(symbol: link.File.SymbolId) Symbol.Id {
@@ -5232,7 +5235,7 @@ const Symbol = struct {
             return false;
         }
 
-        fn classifyValue(symbol: Symbol.Id, elf: *const Elf) ValueClass {
+        fn classifyValue(symbol: Symbol.Id, elf: *const Elf) Symbol.ValueClass {
             const comp = elf.base.comp;
 
             const resolved_sym = symbol.resolveAlias(elf);
@@ -8843,15 +8846,6 @@ fn loadObject(
                         .PROGBITS, .X86_64_UNWIND => {
                             const shndx_ni = shndx.node(elf);
 
-                            // For well-known sections, we know that it's fine to have e.g. random
-                            // padding, so there's no need to make the sections fixed. For custom
-                            // sections, however, we do want fixed nodes to avoid padding.
-                            const header_node = shndx != .text and
-                                shndx != .rodata and
-                                shndx != .data and
-                                shndx != .data_rel_ro and
-                                shndx != elf.shndx.tdata;
-
                             const opts: struct {
                                 compression: Input.Section.Compression,
                                 addralign: u64,
@@ -8953,31 +8947,12 @@ fn loadObject(
                                     try merge_gop.value_ptr.entry_map.ensureUnusedCapacity(gpa, 1);
                                     try merge_gop.value_ptr.free_list.ensureUnusedCapacity(gpa, 1);
 
-                                    const add_node_opts: MappedFile.Node.AddOptions = .{
-                                        .size = need_align.forward(entry_size),
-                                        .alignment = need_align,
-                                        .moved = true, // see assert at end of `Input.Section.flush`
-                                    };
                                     merge_gop.value_ptr.node = elf.addNodeAssumeCapacity(
-                                        if (header_node) try shndx_ni.addHeaderChildAfter(
-                                            gpa,
-                                            &elf.mf,
-                                            after: {
-                                                var node_it = shndx_ni.last(&elf.mf);
-                                                while (node_it.unwrap()) |ni| : ({
-                                                    node_it = ni.prev(&elf.mf);
-                                                }) switch (ni.position(&elf.mf)) {
-                                                    .header => break :after .wrap(ni), // last header
-                                                    .footer, .floating => {},
-                                                };
-                                                break :after .none;
-                                            },
-                                            add_node_opts,
-                                        ) else try shndx_ni.addFloatingChild(
-                                            gpa,
-                                            &elf.mf,
-                                            add_node_opts,
-                                        ),
+                                        try shndx_ni.addFloatingChild(gpa, &elf.mf, .{
+                                            .size = need_align.forward(entry_size),
+                                            .alignment = need_align,
+                                            .moved = true,
+                                        }),
                                         .{ .merge_section = msi },
                                     );
                                     errdefer comptime unreachable;
@@ -9042,6 +9017,15 @@ fn loadObject(
                                 continue;
                             }
 
+                            // For well-known sections, we know that it's fine to have e.g. random
+                            // padding, so there's no need to make the sections fixed. For custom
+                            // sections, however, we do want fixed nodes to avoid padding.
+                            const use_header_node = shndx != .text and
+                                shndx != .rodata and
+                                shndx != .data and
+                                shndx != .data_rel_ro and
+                                shndx != elf.shndx.tdata;
+
                             const add_node_opts: MappedFile.Node.AddOptions = .{
                                 .size = need_align.forward(opts.output_size),
                                 .alignment = need_align,
@@ -9051,7 +9035,7 @@ fn loadObject(
                                 elf.input_sections.items.len,
                             ));
                             const ni = elf.addNodeAssumeCapacity(
-                                if (header_node) try shndx_ni.addHeaderChildAfter(
+                                if (use_header_node) try shndx_ni.addHeaderChildAfter(
                                     gpa,
                                     &elf.mf,
                                     after: {
@@ -14067,7 +14051,7 @@ pub fn dump(elf: *Elf, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
     return .disabled;
 }
 
-pub fn printNode(
+fn printNode(
     elf: *Elf,
     w: *Io.Writer,
     ni: MappedFile.Node.Index,
