@@ -1334,10 +1334,10 @@ const Section = struct {
                 return switch (merge_key.kind) {
                     .cst => entry[0..entry_size],
                     .str => {
-                        var len: u32 = 0;
-                        while (true) : (len += entry_size)
-                            if (std.mem.allEqual(u8, entry[len..][0..entry_size], 0))
-                                return entry[0..len];
+                        var end: u32 = 0;
+                        while (true) : (end += entry_size)
+                            if (std.mem.allEqual(u8, entry[end..][0..entry_size], 0))
+                                return entry[0..end];
                     },
                 };
             }
@@ -8570,11 +8570,7 @@ fn loadObject(
     log.debug("loadObject({f}{f})", .{ path.fmtEscapeString(), fmtMemberString(member) });
     elf.checkInputIdent(path, r) catch |err| switch (err) {
         else => |e| return e,
-        error.BadMagic => return diags.failParse(
-            path,
-            "bad ELF magic",
-            .{},
-        ),
+        error.BadMagic => return diags.failParse(path, "bad ELF magic", .{}),
     };
 
     const input = try elf.inputs.addOne(gpa);
@@ -8667,9 +8663,20 @@ fn loadObject(
             if (ehdr.type != .REL) return diags.failParse(path, "unsupported object type", .{});
             if (ehdr.machine != elf.ehdrMachine().toElf())
                 return diags.failParse(path, "bad machine", .{});
-            if (ehdr.shoff == 0 or ehdr.shnum <= 1) return;
-            if (ehdr.shoff + @as(u64, ehdr.shentsize) * @as(u64, ehdr.shnum) > fl.size)
-                return diags.failParse(path, "bad section header location", .{});
+            if (ehdr.shoff == 0) return diags.failParse(path, "missing section headers", .{});
+            try fr.seekTo(fl.offset + ehdr.shoff);
+            const shnum = std.math.cast(usize, switch (ehdr.shnum) {
+                0 => shnum: {
+                    if (ehdr.shoff + @sizeOf(ElfN.Shdr) > fl.size) return error.EndOfStream;
+                    const null_shdr = try r.peekStruct(ElfN.Shdr, target_endian);
+                    break :shnum null_shdr.size;
+                },
+                1...std.elf.SHN_LORESERVE - 1 => |shnum| shnum,
+                std.elf.SHN_LORESERVE...std.elf.SHN_HIRESERVE => return,
+            }) orelse return error.OutOfMemory;
+            if (shnum <= 1) return;
+            if (ehdr.shoff + @as(u64, ehdr.shentsize) * @as(u64, shnum) > fl.size)
+                return error.EndOfStream;
             if (ehdr.shentsize < @sizeOf(ElfN.Shdr))
                 return diags.failParse(path, "unsupported shentsize", .{});
 
@@ -8690,7 +8697,7 @@ fn loadObject(
                     return input_offset - entry.input_offset + @backingInt(entry.output_offset);
                 }
             };
-            const sections = try gpa.alloc(struct {
+            const InputSection = struct {
                 shdr: ElfN.Shdr,
                 placement: union(enum) {
                     none,
@@ -8704,7 +8711,8 @@ fn loadObject(
                         offset: u64,
                     },
                 },
-            }, ehdr.shnum);
+            };
+            const sections = try gpa.alloc(InputSection, shnum);
             defer {
                 for (sections) |section| switch (section.placement) {
                     else => {},
@@ -8713,7 +8721,6 @@ fn loadObject(
                 gpa.free(sections);
             }
 
-            try fr.seekTo(fl.offset + ehdr.shoff);
             for (sections) |*section| {
                 section.* = .{
                     .shdr = try r.peekStruct(ElfN.Shdr, target_endian),
@@ -8727,9 +8734,15 @@ fn loadObject(
                 }
             }
             const shstrtab = shstrtab: {
-                if (ehdr.shstrndx == std.elf.SHN_UNDEF or ehdr.shstrndx >= ehdr.shnum)
-                    return diags.failParse(path, "missing section names", .{});
-                const shdr = &sections[ehdr.shstrndx].shdr;
+                const shstrndx = switch (ehdr.shstrndx) {
+                    std.elf.SHN_UNDEF,
+                    std.elf.SHN_LORESERVE...std.elf.SHN_HIRESERVE - 1,
+                    => return diags.failParse(path, "missing section names", .{}),
+                    std.elf.SHN_UNDEF + 1...std.elf.SHN_LORESERVE - 1 => |shndx| shndx,
+                    std.elf.SHN_XINDEX => sections[0].shdr.link,
+                };
+                if (shstrndx >= shnum) return diags.failParse(path, "missing section names", .{});
+                const shdr = &sections[shstrndx].shdr;
                 if (shdr.type != .STRTAB) return diags.failParse(path, "invalid shstrtab type", .{});
                 const shstrtab = try gpa.alloc(u8, @intCast(shdr.size));
                 errdefer gpa.free(shstrtab);
@@ -8739,8 +8752,8 @@ fn loadObject(
             };
             defer gpa.free(shstrtab);
 
-            try elf.nodes.ensureUnusedCapacity(gpa, ehdr.shnum - 1);
-            try elf.input_sections.ensureUnusedCapacity(gpa, ehdr.shnum - 1);
+            try elf.nodes.ensureUnusedCapacity(gpa, shnum - 1);
+            try elf.input_sections.ensureUnusedCapacity(gpa, shnum - 1);
 
             {
                 const sections_trace = tracy.traceNamed(@src(), "scan input sections");
@@ -8992,7 +9005,6 @@ fn loadObject(
                                         .cst => 0,
                                         .str => entry_size,
                                     });
-                                    continue;
                                 }
 
                                 section.placement = .{ .merge = .{
@@ -9146,27 +9158,72 @@ fn loadObject(
             }) = .empty;
             defer symmap.deinit(gpa);
 
-            const maybe_symtab_shndx: ?usize = for (sections[1..], 1..) |*symtab, symtab_shndx| {
-                if (symtab.shdr.type == .SYMTAB) break symtab_shndx;
-            } else null;
+            const symtab_shndx, const symtab_xindices: []const u32 = symtab: {
+                var symtab_shndx: u32 = std.elf.SHN_UNDEF;
+                var symtab_shndx_section: ?*const InputSection = null;
+                for (sections[1..], 1..) |*section, shndx| switch (section.shdr.type) {
+                    else => {},
+                    .SYMTAB => {
+                        if (symtab_shndx == std.elf.SHN_UNDEF) symtab_shndx = @intCast(shndx);
+                        if (symtab_shndx != shndx) return diags.failParse(
+                            path,
+                            "multiple SHT_SYMTAB sections",
+                            .{},
+                        );
+                    },
+                    .SYMTAB_SHNDX => {
+                        if (symtab_shndx == std.elf.SHN_UNDEF) {
+                            if (section.shdr.link == std.elf.SHN_UNDEF) continue;
+                            if (section.shdr.link >= shnum) continue;
+                            if (sections[section.shdr.link].shdr.type != .SYMTAB) continue;
+                            symtab_shndx = section.shdr.link;
+                        } else if (section.shdr.link != symtab_shndx) continue;
+                        if (symtab_shndx_section) |_| return diags.failParse(
+                            path,
+                            "multiple SHT_SYMTAB_SHNDX sections target the same SHT_SYMTAB section",
+                            .{},
+                        );
+                        symtab_shndx_section = section;
+                    },
+                };
+                if (symtab_shndx == std.elf.SHN_UNDEF) break :symtab .{ std.elf.SHN_UNDEF, &.{} };
+                const section = symtab_shndx_section orelse break :symtab .{ symtab_shndx, &.{} };
+                try fr.seekTo(fl.offset + section.shdr.offset);
+                if (section.shdr.entsize != @sizeOf(u32)) return diags.failParse(
+                    path,
+                    "unsupported symtab shndx entsize '{d}'",
+                    .{section.shdr.entsize},
+                );
+                const symnum = std.math.divExact(
+                    u32,
+                    @intCast(section.shdr.size),
+                    @intCast(section.shdr.entsize),
+                ) catch return diags.failParse(
+                    path,
+                    "symtab shndx section size (0x{x}) is not a multiple of entsize (0x{x})",
+                    .{ section.shdr.size, section.shdr.entsize },
+                );
+                break :symtab .{
+                    symtab_shndx,
+                    try r.readSliceEndianAlloc(gpa, u32, symnum, target_endian),
+                };
+            };
+            defer gpa.free(symtab_xindices);
 
-            if (maybe_symtab_shndx) |symtab_shndx| {
+            if (symtab_shndx != std.elf.SHN_UNDEF) {
                 const symtab = &sections[symtab_shndx];
 
                 const symbols_trace = tracy.traceNamed(@src(), "scan input symbols");
                 defer symbols_trace.end();
 
-                for (sections[symtab_shndx + 1 ..]) |*other_section| {
-                    if (other_section.shdr.type == .SYMTAB) {
-                        return diags.failParse(path, "multiple SHT_SYMTAB sections", .{});
-                    }
-                }
-
-                if (symtab.shdr.entsize < @sizeOf(ElfN.Sym))
-                    return diags.failParse(path, "unsupported symtab entsize", .{});
+                if (symtab.shdr.entsize < @sizeOf(ElfN.Sym)) return diags.failParse(
+                    path,
+                    "unsupported symtab entsize '{d}'",
+                    .{symtab.shdr.entsize},
+                );
 
                 const strtab = strtab: {
-                    if (symtab.shdr.link == std.elf.SHN_UNDEF or symtab.shdr.link >= ehdr.shnum)
+                    if (symtab.shdr.link == std.elf.SHN_UNDEF or symtab.shdr.link >= shnum)
                         return diags.failParse(path, "missing symbol names", .{});
                     const shdr = &sections[symtab.shdr.link].shdr;
                     if (shdr.type != .STRTAB)
@@ -9188,24 +9245,38 @@ fn loadObject(
                     "symtab section size (0x{x}) is not a multiple of entsize (0x{x})",
                     .{ symtab.shdr.size, symtab.shdr.entsize },
                 );
+                if (symtab_xindices.len > 0 and symtab_xindices.len != symnum) return diags.failParse(
+                    path,
+                    "symtab shndx count '{d}' does not match symtab count '{d}'",
+                    .{ symtab_xindices.len, symnum },
+                );
 
                 try symmap.resize(gpa, symnum -| 1); // -1 to exclude "null" symbol
                 try fr.seekTo(fl.offset + symtab.shdr.offset + symtab.shdr.entsize); // +entsize to skip "null" symbol
-                for (symmap.items) |*symbol| {
+                for (symmap.items, 1..) |*symbol, symndx| {
                     symbol.* = .{ .symbol = .null };
                     const input_symbol = try r.peekStruct(ElfN.Sym, target_endian);
                     try r.discardAll64(symtab.shdr.entsize);
 
-                    if (input_symbol.name >= strtab.len) {
-                        continue;
-                    }
+                    if (input_symbol.name >= strtab.len) return diags.failParse(
+                        path,
+                        "symbol '{d}' invalid name",
+                        .{symndx},
+                    );
 
-                    if (input_symbol.shndx >= ehdr.shnum and
-                        input_symbol.shndx != std.elf.SHN_ABS and
-                        input_symbol.shndx != std.elf.SHN_COMMON)
-                    {
-                        continue;
-                    }
+                    const input_shndx = switch (input_symbol.shndx) {
+                        std.elf.SHN_UNDEF...std.elf.SHN_LORESERVE - 1 => |shndx| shndx,
+                        std.elf.SHN_LORESERVE...std.elf.SHN_HIRESERVE - 1 => std.elf.SHN_UNDEF,
+                        std.elf.SHN_XINDEX => if (symtab_xindices.len > 0)
+                            symtab_xindices[symndx]
+                        else
+                            return diags.failParse(path, "missing symtab shndx table", .{}),
+                    };
+                    if (input_shndx >= shnum) return diags.failParse(
+                        path,
+                        "invalid symbol '{d}' shndx '{d}'",
+                        .{ symndx, input_symbol.shndx },
+                    );
 
                     const name = std.mem.sliceTo(strtab[input_symbol.name..], 0);
 
@@ -9229,7 +9300,7 @@ fn loadObject(
                                 );
                             },
                             else => {
-                                symbol.* = .{ .input_section = input_symbol.shndx };
+                                symbol.* = .{ .input_section = input_shndx };
                                 continue;
                             },
                         },
@@ -9302,7 +9373,7 @@ fn loadObject(
                         std.elf.SHN_ABS => .{ .none, .ABS, input_symbol.value },
 
                         else => sym: {
-                            const node, const value = switch (sections[input_symbol.shndx].placement) {
+                            const node, const value = switch (sections[input_shndx].placement) {
                                 .none => continue,
                                 .progbits => |isi| .{ isi.ptr(elf).node, input_symbol.value },
                                 .merge => |merge| .{
@@ -9394,13 +9465,10 @@ fn loadObject(
                         const relocs_trace = tracy.traceNamed(@src(), "input relocation section");
                         defer relocs_trace.end();
 
-                        const link_is_symtab: bool = if (maybe_symtab_shndx) |symtab_shndx| s: {
-                            break :s rel_sec.shdr.link == symtab_shndx;
-                        } else false;
-                        if (!link_is_symtab) {
+                        if (symtab_shndx == std.elf.SHN_UNDEF or rel_sec.shdr.link != symtab_shndx) {
                             return diags.failParse(path, "relocation section does not link to SHT_SYMTAB section", .{});
                         }
-                        if (rel_sec.shdr.info == std.elf.SHN_UNDEF or rel_sec.shdr.info >= ehdr.shnum) {
+                        if (rel_sec.shdr.info == std.elf.SHN_UNDEF or rel_sec.shdr.info >= shnum) {
                             return diags.failParse(
                                 path,
                                 "relocation section 'sh_info' refers to invalid section index '{d}'",
@@ -9606,8 +9674,18 @@ fn loadDso(
             if (ehdr.type != .DYN) return diags.failParse(path, "unsupported dso type", .{});
             if (ehdr.machine != elf.ehdrMachine().toElf())
                 return diags.failParse(path, "bad machine", .{});
+            if (ehdr.shoff == 0) return diags.failParse(path, "missing section headers", .{});
+            try fr.seekTo(ehdr.shoff);
+            const shnum = std.math.cast(usize, switch (ehdr.shnum) {
+                0 => shnum: {
+                    const null_shdr = try r.peekStruct(ElfN.Shdr, target_endian);
+                    break :shnum null_shdr.size;
+                },
+                1...std.elf.SHN_LORESERVE - 1 => |shnum| shnum,
+                std.elf.SHN_LORESERVE...std.elf.SHN_HIRESERVE => return,
+            }) orelse return error.OutOfMemory;
             // We're going to need to know the alignment of every section later.
-            const section_aligns = try gpa.alloc(Alignment, ehdr.shnum);
+            const section_aligns = try gpa.alloc(Alignment, shnum);
             defer gpa.free(section_aligns);
             const shdr: struct {
                 dynamic: ElfN.Shdr,
@@ -9616,7 +9694,6 @@ fn loadDso(
                 verdef: ?ElfN.Shdr,
                 versym: ?ElfN.Shdr,
             } = shdr: {
-                if (ehdr.shnum > 0) try fr.seekTo(ehdr.shoff);
                 const InputSh = struct {
                     shndx: u32,
                     sh: ElfN.Shdr,
@@ -9653,7 +9730,7 @@ fn loadDso(
                 };
 
                 const dynstr_shndx = dynamic.sh.link;
-                if (dynstr_shndx >= ehdr.shnum) {
+                if (dynstr_shndx >= shnum) {
                     return diags.failParse(path, "SHT_DYNAMIC section does not link to a valid section", .{});
                 }
                 try fr.seekTo(ehdr.shoff + dynstr_shndx * ehdr.shentsize);
@@ -9841,7 +9918,7 @@ fn loadDso(
                 }
 
                 if (sym.shndx == std.elf.SHN_UNDEF) continue;
-                if (sym.shndx >= ehdr.shnum) continue;
+                if (sym.shndx >= shnum) continue;
 
                 if (sym.name >= dynstr.len) {
                     return diags.failParse(path, "bad symbol name string", .{});
