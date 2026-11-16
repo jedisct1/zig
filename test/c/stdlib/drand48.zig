@@ -28,7 +28,7 @@ test "erand48" {
 test "jrand48" {
     if (builtin.target.os.tag == .windows) return; // no jrand48
 
-    if (builtin.target.os.tag == .openbsd) return error.SkipZigTest; // TODO
+    if (builtin.target.os.tag == .openbsd) return error.SkipZigTest; // TODO: https://marc.info/?l=openbsd-tech&m=179482954031905
 
     var xsubi: [3]c_ushort = .{ 25175, 11052, 45015 };
 
@@ -76,6 +76,9 @@ test "srand48" {
     try testing.expectEqual(1404534344, c.lrand48());
     try testing.expectEqual(1220337298, c.lrand48());
     try testing.expectEqual(107704692, c.lrand48());
+
+    if (builtin.target.os.tag == .openbsd) return error.SkipZigTest; // TODO: https://marc.info/?l=openbsd-tech&m=179482954031905
+
     try testing.expectEqual(-1148695706, c.mrand48());
     try testing.expectEqual(0.5300470938792223, c.drand48());
 }
@@ -88,6 +91,9 @@ test "seed48" {
     try testing.expectEqual(1404534344, c.lrand48());
     try testing.expectEqual(1220337298, c.lrand48());
     try testing.expectEqual(107704692, c.lrand48());
+
+    if (builtin.target.os.tag == .openbsd) return error.SkipZigTest; // TODO: https://marc.info/?l=openbsd-tech&m=179482954031905
+
     try testing.expectEqual(-1148695706, c.mrand48());
     try testing.expectEqual(0.5300470938792223, c.drand48());
 }
@@ -101,6 +107,9 @@ test "lcong48" {
     try testing.expectEqual(1404534344, c.lrand48());
     try testing.expectEqual(1220337298, c.lrand48());
     try testing.expectEqual(107704692, c.lrand48());
+
+    if (builtin.target.os.tag == .openbsd) return error.SkipZigTest; // TODO: https://marc.info/?l=openbsd-tech&m=179482954031905
+
     try testing.expectEqual(-1148695706, c.mrand48());
     try testing.expectEqual(0.5300470938792223, c.drand48());
 }
