@@ -71,9 +71,7 @@ shndx: struct {
     debug_frame: Section.Index,
     debug_info: Section.Index,
     debug_line: Section.Index,
-    debug_line_str: Section.Index,
     debug_rnglists: Section.Index,
-    debug_str: Section.Index,
     debug_str_offsets: Section.Index,
     bss: Section.Index,
     tbss: Section.Index,
@@ -227,6 +225,8 @@ entry_gsi: Symbol.Global.Index.Optional,
 dwarf: Dwarf,
 dwarf_shared: std.enums.EnumArray(Dwarf.SharedSection, dwarf_relocs.Shared),
 dwarf_addr: dwarf_relocs.Addr,
+debug_line_str_msi: Section.Merge.Index,
+debug_str_msi: Section.Merge.Index,
 dwarf_str_offsets: dwarf_relocs.StrOffsets,
 dwarf_units: []dwarf_relocs.Unit,
 dwarf_consts: std.array_hash_map.Auto(link.ConstPool.Index, dwarf_relocs.Const),
@@ -1438,7 +1438,7 @@ const Section = struct {
                 return elf.merge_sections.keys()[@backingInt(msi)];
             }
 
-            fn ptr(msi: Section.Merge.Index, elf: *const Elf) *Section.Merge {
+            pub fn ptr(msi: Section.Merge.Index, elf: *const Elf) *Section.Merge {
                 return &elf.merge_sections.values()[@backingInt(msi)];
             }
 
@@ -1446,7 +1446,7 @@ const Section = struct {
                 return elf.getNodeShndx(msi.ptr(elf).node);
             }
 
-            fn ensureAdditionalCapacity(
+            pub fn ensureAdditionalCapacity(
                 msi: Section.Merge.Index,
                 need_align: Alignment,
                 entry_len: usize,
@@ -1464,7 +1464,7 @@ const Section = struct {
                 });
             }
 
-            fn getOrPutEntryAssumeCapacity(
+            pub fn getOrPutEntryAssumeCapacity(
                 msi: Section.Merge.Index,
                 need_align: Alignment,
                 entry: []const u8,
@@ -5923,9 +5923,7 @@ fn create(
             .debug_frame = .UNDEF,
             .debug_info = .UNDEF,
             .debug_line = .UNDEF,
-            .debug_line_str = .UNDEF,
             .debug_rnglists = .UNDEF,
-            .debug_str = .UNDEF,
             .debug_str_offsets = .UNDEF,
             .bss = .UNDEF,
             .tbss = .UNDEF,
@@ -6006,6 +6004,8 @@ fn create(
             .relocs = .empty,
             .pending_reloc_index = 0,
         },
+        .debug_line_str_msi = undefined,
+        .debug_str_msi = undefined,
         .dwarf_str_offsets = .{
             .first_target_reloc = .none,
             .relocs = .empty,
@@ -6258,11 +6258,18 @@ fn initHeaders(
     const nobits_shnum: u32 =
         @as(u32, 1) + @intFromBool(comp.config.any_non_single_threaded);
 
+    const expected_merge_sections_len = @as(usize, 2) + // .shstrtab, .strtab
+        @intFromBool(have_dynamic) + // .dynstr
+        @as(usize, switch (comp.config.debug_format) {
+            .strip => 0,
+            .dwarf => 2, // .debug_line_str, .debug_str
+            .code_view, .nsdi => unreachable,
+        });
     const expected_nodes_len = @as(usize, if (is_archive) 3 else 0) + // .archive, .archive_header, .archive_elf_member_header
         3 + // `.elf`, `.ehdr`, and `.shdr` nodes
         (shnum - 1 - nobits_shnum) + // -1 because the SHN_UNDEF shdr does not have a `.section` node
         (phnum -| 1) + // -1 because the GNU_STACK phdr does not have a `.segment` node
-        2 + @intFromBool(have_dynamic) + // .shstrtab, .strtab, .dynstr
+        expected_merge_sections_len +
         @intFromBool(have_eh_frame and @"type" != .REL); // eh_frame_footer
 
     try elf.nodes.ensureTotalCapacity(gpa, expected_nodes_len);
@@ -6270,7 +6277,7 @@ fn initHeaders(
     try elf.phdrs.resize(gpa, phnum);
     try elf.symtab.ensureTotalCapacity(gpa, 1);
     try elf.section_first_target_reloc.ensureUnusedCapacity(gpa, 3); // .got_plt, .eh_frame, .got
-    try elf.merge_sections.ensureUnusedCapacity(gpa, @as(usize, 2) + @intFromBool(have_dynamic)); // .shstrtab, .strtab, .dynstr
+    try elf.merge_sections.ensureUnusedCapacity(gpa, expected_merge_sections_len);
     try elf.section_by_name.ensureUnusedCapacity(gpa, shnum - 1); // -1 to exclude SHN_UNDEF
 
     if (is_archive) {
@@ -7414,18 +7421,22 @@ fn initHeaders(
                 .name = ".debug_line",
                 .node_align = elf.mf.flags.block_size,
             });
-            elf.shndx.debug_line_str = try elf.addSection(elf.ni.elf, .{
+            const debug_line_str_shndx = try elf.addSection(elf.ni.elf, .{
                 .name = ".debug_line_str",
                 .flags = .{ .MERGE = true, .STRINGS = true },
             });
+            elf.debug_line_str_msi =
+                try Section.Merge.getOrCreateAssumeCapacity(debug_line_str_shndx, .strtab, .@"1", elf);
             elf.shndx.debug_rnglists = try elf.addSection(elf.ni.elf, .{
                 .name = ".debug_rnglists",
                 .node_align = elf.mf.flags.block_size,
             });
-            elf.shndx.debug_str = try elf.addSection(elf.ni.elf, .{
+            const debug_str_shndx = try elf.addSection(elf.ni.elf, .{
                 .name = ".debug_str",
                 .flags = .{ .MERGE = true, .STRINGS = true },
             });
+            elf.debug_str_msi =
+                try Section.Merge.getOrCreateAssumeCapacity(debug_str_shndx, .strtab, .@"1", elf);
             elf.shndx.debug_str_offsets = try elf.addSection(elf.ni.elf, .{
                 .name = ".debug_str_offsets",
                 .addralign = switch (elf.dwarf.format) {
@@ -10464,21 +10475,6 @@ fn prelinkInner(elf: *Elf) Error!void {
                 .{ .debug_shared = .debug_abbrev },
             )),
         }
-        switch (elf.shndx.debug_line_str) {
-            .UNDEF => {},
-            else => |debug_line_str_shndx| elf.dwarf.debug_line_str.ni =
-                .wrap(elf.addNodeAssumeCapacity(
-                    try debug_line_str_shndx.node(elf).addFloatingChild(gpa, &elf.mf, .{}),
-                    .{ .debug_shared = .debug_line_str },
-                )),
-        }
-        switch (elf.shndx.debug_str) {
-            .UNDEF => {},
-            else => |debug_str_shndx| elf.dwarf.debug_str.ni = .wrap(elf.addNodeAssumeCapacity(
-                try debug_str_shndx.node(elf).addFloatingChild(gpa, &elf.mf, .{}),
-                .{ .debug_shared = .debug_str },
-            )),
-        }
         switch (elf.shndx.debug_str_offsets) {
             .UNDEF => {},
             else => |debug_str_offsets_shndx| {
@@ -12655,13 +12651,14 @@ fn genPendingDebug(elf: *Elf, gpa: std.mem.Allocator) link.Error!void {
         for (first_ri..elf.relocs.items.len) |ri|
             relocs.appendAssumeCapacity(@fromBackingInt(@intCast(ri)));
     }
+    const debug_str_ni = elf.debug_str_msi.ptr(elf).node;
+    const debug_str_offsets_ni = elf.dwarf.debug_str_offsets.ni.unwrap().?;
     while (elf.dwarf.debug_str_offsets.map.count() - elf.dwarf.debug_str_offsets.pending_index > 0) {
-        const debug_str_offsets_ni = elf.dwarf.debug_str_offsets.ni.unwrap().?;
         var dso_nw: link.MappedFile.Node.Writer = undefined;
         debug_str_offsets_ni.writer(gpa, &elf.mf, &dso_nw);
         defer dso_nw.deinit();
         const first_ri = elf.relocs.items.len;
-        try elf.dwarf.genPendingDebugStrOffsets(&dso_nw);
+        try elf.dwarf.genPendingDebugStrOffsets(debug_str_ni, &dso_nw);
         const relocs = &elf.dwarf_str_offsets.relocs;
         try relocs.ensureUnusedCapacity(gpa, elf.relocs.items.len - first_ri);
         for (first_ri..elf.relocs.items.len) |ri|
