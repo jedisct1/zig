@@ -722,7 +722,7 @@ fn scanSections(
                     });
                 } else for (xindices, symtab, 0..) |xindex, *symbol, symbol_index| switch (symbol.shndx) {
                     .section => |shndx| switch (shndx) {
-                        else => if (xindex != std.elf.SHN_UNDEF) {
+                        else => if (xindex != 0) {
                             try d.warn("symbol table {q} symbol '{d}' references conflicting sections '{d}' and '{d}'", .{
                                 sections[section.link].name, symbol_index, fmtShndx(d, symbol.shndx), fmtShndx(d, .{ .xindex = xindex }),
                             });
@@ -911,6 +911,7 @@ fn scanSymtabShndxSection(
         .SYMTAB, .DYNSYM => {},
     }
 
+    try d.seekTo(section.offset);
     section.contents = .{ .symtab_shndx = try r.readSliceEndianAlloc(arena, u32, nsyms, endian) };
 }
 
@@ -1680,7 +1681,7 @@ fn dumpSections(
     defer row_it.deinit(d);
 
     try w.print("{d} section headers\n", .{d.fmtIntField(sections.len, .size)});
-    try w.print("  {[index]s: >5}  {[type]s: <13}  {[flags]s: ^12}  {[offset]s: ^10}  {[address]s: ^18}  {[size]s: ^18}  {[entsize]s: ^10}  {[addralign]s: ^10}  {[link]s: >6}  {[info]s: >6}  {[name]s}\n", .{
+    try w.print("  {[index]s: >10}  {[type]s: <13}  {[flags]s: ^12}  {[offset]s: ^10}  {[address]s: ^18}  {[size]s: ^18}  {[entsize]s: ^10}  {[addralign]s: ^10}  {[link]s: >10}  {[info]s: >10}  {[name]s}\n", .{
         .index = "index",
         .type = "type",
         .flags = "flags",
@@ -1695,7 +1696,7 @@ fn dumpSections(
     });
     while (row_it.next()) |shndx| {
         const section = &sections[shndx];
-        try w.print("  {d: >5}  {s: <13}  {f}  {x:0>8}  {x:0>16}  {x:0>16}  {x:0>8}  {x:0>8}  {d: >6}  {d: >6}  {s}\n", .{
+        try w.print("  {d: >10}  {s: <13}  {f}  {x:0>8}  {x:0>16}  {x:0>16}  {x:0>8}  {x:0>8}  {d: >10}  {d: >10}  {s}\n", .{
             d.fmtIntField(shndx, .index),
             sectionTypeString(section.type),
             fmtSectionFlags(d, section.flags),
@@ -1848,7 +1849,7 @@ fn dumpSymbols(
                     .type => symbolTypeString(symbol.type),
                     .bind => symbolBindString(symbol.bind),
                     .visibility => @tagName(symbol.visibility),
-                    .shndx => symbol.shndx.sectionIndex() orelse std.elf.SHN_UNDEF,
+                    .shndx => symbol.shndx.sectionIndex() orelse 0,
                     .is_undef => symbol.shndx.is(.UNDEF),
                     .is_abs => symbol.shndx.is(.ABS),
                     .is_common => symbol.shndx.is(.COMMON),
@@ -1876,7 +1877,7 @@ fn dumpSymbols(
             symbol_kind_str,
             symtab_section.name,
         });
-        try w.print("  {[index]s: >5}  {[type]s: <10}  {[bind]s: <10}  {[visibility]s: <10}  {[shndx]s: >11}  {[section]s: <14} {[value]s: ^18}  {[size]s: ^18}  {[name]s}\n", .{
+        try w.print("  {[index]s: >5}  {[type]s: <10}  {[bind]s: <10}  {[visibility]s: <10}  {[shndx]s: >10}  {[section]s: <14} {[value]s: ^18}  {[size]s: ^18}  {[name]s}\n", .{
             .index = "index",
             .type = "type",
             .bind = "bind",
@@ -1889,7 +1890,7 @@ fn dumpSymbols(
         });
         while (row_it.next()) |symbol_index| {
             const symbol = &symbols[symbol_index];
-            try w.print("  {d: >5}  {s: <10}  {s: <10}  {t: <10}  {d: >11}  {s: <14}  {x:0>16}  {x:0>16}  {s}\n", .{
+            try w.print("  {d: >5}  {s: <10}  {s: <10}  {t: <10}  {d: >10}  {s: <14}  {x:0>16}  {x:0>16}  {s}\n", .{
                 d.fmtIntField(symbol_index, .index),
                 symbolTypeString(symbol.type),
                 symbolBindString(symbol.bind),

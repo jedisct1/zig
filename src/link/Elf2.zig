@@ -81,6 +81,7 @@ shndx: struct {
     init_array: Section.Index,
     fini_array: Section.Index,
     preinit_array: Section.Index,
+    symtab_shndx: Section.Index,
 },
 dynamic: struct {
     flags: u32,
@@ -869,6 +870,7 @@ const Section = struct {
         LIVEPATCH = reserve(std.elf.SHN_LIVEPATCH),
         ABS = reserve(std.elf.SHN_ABS),
         COMMON = reserve(std.elf.SHN_COMMON),
+        XINDEX = reserve(std.elf.SHN_XINDEX),
 
         symtab = 1,
         shstrtab,
@@ -877,7 +879,6 @@ const Section = struct {
         text,
         data,
         data_rel_ro,
-
         _,
 
         const Tag = u32;
@@ -899,13 +900,38 @@ const Section = struct {
                 std.elf.SHN_LORESERVE...std.elf.SHN_HIRESERVE => @fromBackingInt(reserve(sec)),
             };
         }
-        fn toSection(shndx: Index) ?std.elf.Section {
+        fn toSection(shndx: Index, elf: *Elf) Error!std.elf.Section {
             return switch (@backingInt(shndx)) {
                 std.elf.SHN_UNDEF...std.elf.SHN_LORESERVE - 1 => |sec| @intCast(sec),
-                std.elf.SHN_LORESERVE...reserve(std.elf.SHN_LORESERVE) - 1 => null,
+                std.elf.SHN_LORESERVE...reserve(std.elf.SHN_LORESERVE) - 1 => {
+                    if (elf.shndx.symtab_shndx == .UNDEF) {
+                        @branchHint(.unlikely);
+                        const section_size = @sizeOf(u32) * elf.symtab.items.len;
+                        elf.shndx.symtab_shndx = try elf.addSection(elf.ni.elf, .{
+                            .name = ".symtab_shndx",
+                            .type = .SYMTAB_SHNDX,
+                            .size = section_size,
+                            .addralign = .@"4",
+                            .entsize = @sizeOf(u32),
+                            .node_align = elf.mf.flags.block_size,
+                            .link = Section.Index.symtab.toSectionIndex().?,
+                            .manual_size = true,
+                        });
+                        @memset(elf.shndx.symtab_shndx.node(elf).slice(&elf.mf)[0..section_size], 0);
+                    }
+                    return std.elf.SHN_XINDEX;
+                },
                 reserve(std.elf.SHN_LORESERVE)...reserve(std.elf.SHN_HIRESERVE) => |sec| @intCast(
                     sec - reserve(std.elf.SHN_LORESERVE) + std.elf.SHN_LORESERVE,
                 ),
+            };
+        }
+        fn toSectionIndex(shndx: Index) ?u32 {
+            return switch (@backingInt(shndx)) {
+                std.elf.SHN_UNDEF,
+                reserve(std.elf.SHN_LORESERVE)...reserve(std.elf.SHN_HIRESERVE),
+                => null,
+                std.elf.SHN_UNDEF + 1...reserve(std.elf.SHN_LORESERVE) - 1 => |sec| sec,
             };
         }
 
@@ -3694,34 +3720,60 @@ fn addLocalSymbol(elf: *Elf, opts: AddLocalSymbolOptions) Error!Symbol.LocalInde
     }});
 
     assert(opts.shndx != .UNDEF);
+    const shndx = try opts.shndx.toSection(elf);
 
     try elf.symtab.ensureUnusedCapacity(gpa, 1);
-    try elf.changed_symtab_index.ensureUnusedCapacity(gpa, 1);
-    try Section.Index.symtab.node(elf).ensureMinimumSize(gpa, &elf.mf, switch (elf.shdrPtr(.symtab)) {
-        inline else => |shdr, class| elf.targetLoad(&shdr.size) + @sizeOf(class.ElfN().Sym),
-    });
+    const new_symtab_len = elf.symtab.items.len + 1;
+    try elf.changed_symtab_index.ensureTotalCapacity(gpa, new_symtab_len);
+    try Section.Index.symtab.node(elf).ensureMinimumSize(
+        gpa,
+        &elf.mf,
+        @as(usize, switch (elf.identClass()) {
+            .NONE, _ => unreachable,
+            inline else => |class| @sizeOf(class.ElfN().Sym),
+        }) * new_symtab_len,
+    );
+    switch (elf.shndx.symtab_shndx) {
+        .UNDEF => {},
+        else => |symtab_shndx| try symtab_shndx.node(elf).ensureMinimumSize(
+            gpa,
+            &elf.mf,
+            @sizeOf(u32) * new_symtab_len,
+        ),
+    }
 
     const name_ref: Section.Merge.Entry.Ref(.strtab) = try .fromString(opts.name, elf);
 
+    const new_index: Symbol.Index = @fromBackingInt(@intCast(elf.symtab.items.len));
     switch (elf.shdrPtr(.symtab)) {
         inline else => |shdr, class| {
-            const ent_size = @sizeOf(class.ElfN().Sym);
+            const Sym = class.ElfN().Sym;
+            const old_size = @as(usize, @sizeOf(Sym)) * @backingInt(new_index);
+            assert(old_size == elf.targetLoad(&shdr.size));
+            const new_size = old_size + @sizeOf(Sym);
+            const maybe_symtab_shndx: ?[]u32 = switch (elf.shndx.symtab_shndx) {
+                .UNDEF => null,
+                else => |symtab_shndx| symtab_shndx: {
+                    const shndx_size_ptr = &@field(elf.shdrPtr(symtab_shndx), @tagName(class)).size;
+                    const shndx_old_size = @as(usize, @sizeOf(u32)) * @backingInt(new_index);
+                    assert(shndx_old_size == elf.targetLoad(shndx_size_ptr));
+                    const shndx_new_size = shndx_old_size + @sizeOf(u32);
+                    elf.targetStore(shndx_size_ptr, @intCast(shndx_new_size));
+                    break :symtab_shndx @ptrCast(@alignCast(
+                        symtab_shndx.node(elf).slice(&elf.mf)[0..shndx_new_size],
+                    ));
+                },
+            };
 
             // `shdr.info` stores the index of the first global symbol. We will replace it with our
             // new local symbol, and move the global symbol to a new index at the end of the symtab.
             const local_index: Symbol.LocalIndex = @fromBackingInt(elf.targetLoad(&shdr.info));
             const target_index = local_index.index();
 
-            const old_size = elf.targetLoad(&shdr.size);
-            const new_size = old_size + ent_size;
-
-            assert(elf.symtab.items.len == @divExact(old_size, ent_size));
-
             elf.targetStore(&shdr.info, @backingInt(target_index) + 1);
-            elf.targetStore(&shdr.size, new_size);
+            elf.targetStore(&shdr.size, @intCast(new_size));
 
-            const new_index: Symbol.Index = @fromBackingInt(@intCast(elf.symtab.items.len));
-            elf.symtab.appendAssumeCapacity(undefined);
+            _ = elf.symtab.addOneAssumeCapacity();
 
             const target_sym = @field(elf.symPtr(target_index), @tagName(class));
 
@@ -3729,6 +3781,8 @@ fn addLocalSymbol(elf: *Elf, opts: AddLocalSymbolOptions) Error!Symbol.LocalInde
                 // Move the global at `target_index` to `new_index`. First the symtab entry...
                 const new_sym = @field(elf.symPtr(new_index), @tagName(class));
                 new_sym.* = target_sym.*;
+                if (maybe_symtab_shndx) |symtab_shndx|
+                    symtab_shndx[@backingInt(new_index)] = symtab_shndx[@backingInt(target_index)];
                 // ...then the `elf.symtab` metadata...
                 new_index.ptr(elf).* = target_index.ptr(elf).*;
                 // ...then update the `elf.globals` tracking.
@@ -3753,11 +3807,18 @@ fn addLocalSymbol(elf: *Elf, opts: AddLocalSymbolOptions) Error!Symbol.LocalInde
                 .size = @intCast(opts.size),
                 .info = .{ .type = opts.type, .bind = .LOCAL },
                 .other = .{ .visibility = .DEFAULT },
-                .shndx = opts.shndx.toSection().?,
+                .shndx = shndx,
             };
             if (elf.targetEndian() != std.lang.Endian.native) {
-                std.mem.byteSwap(class.ElfN().Sym, target_sym);
+                std.mem.byteSwap(Sym, target_sym);
             }
+            if (maybe_symtab_shndx) |symtab_shndx| elf.targetStore(
+                &symtab_shndx[@backingInt(target_index)],
+                switch (shndx) {
+                    else => 0,
+                    std.elf.SHN_XINDEX => opts.shndx.toSectionIndex().?,
+                },
+            ) else assert(shndx != std.elf.SHN_XINDEX);
 
             if (target_index.firstSibling(elf)) |first_sibling| {
                 switch (first_sibling.unwrap()) {
@@ -3792,13 +3853,26 @@ fn addGlobalSymbol(elf: *Elf, opts: Symbol.Global.AddOptions) (error{
 
     const gpa = elf.base.comp.gpa;
 
-    try elf.symtab.ensureUnusedCapacity(gpa, 1);
+    const new_symtab_len = elf.symtab.items.len + 1;
+    try elf.symtab.ensureTotalCapacity(gpa, new_symtab_len);
     try elf.globals.ensureUnusedCapacity(gpa, 1);
     try elf.globals_by_name.ensureUnusedCapacity(gpa, 1);
-
-    try Section.Index.symtab.node(elf).ensureMinimumSize(gpa, &elf.mf, switch (elf.shdrPtr(.symtab)) {
-        inline else => |shdr, class| elf.targetLoad(&shdr.size) + @sizeOf(class.ElfN().Sym),
-    });
+    try Section.Index.symtab.node(elf).ensureMinimumSize(
+        gpa,
+        &elf.mf,
+        @as(usize, switch (elf.identClass()) {
+            .NONE, _ => unreachable,
+            inline else => |class| @sizeOf(class.ElfN().Sym),
+        }) * new_symtab_len,
+    );
+    switch (elf.shndx.symtab_shndx) {
+        .UNDEF => {},
+        else => |symtab_shndx| try symtab_shndx.node(elf).ensureMinimumSize(
+            gpa,
+            &elf.mf,
+            @sizeOf(u32) * new_symtab_len,
+        ),
+    }
 
     const name = parseVersionedSymbolName(opts.name);
 
@@ -3972,9 +4046,9 @@ fn addGlobalSymbol(elf: *Elf, opts: Symbol.Global.AddOptions) (error{
         inline else => |shdr, class| {
             const Sym = class.ElfN().Sym;
             // Increase the symtab size...
-            const old_size = elf.targetLoad(&shdr.size);
-            assert(old_size == @backingInt(sym_index) * @sizeOf(Sym));
-            elf.targetStore(&shdr.size, old_size + @sizeOf(Sym));
+            const old_size = @as(usize, @sizeOf(Sym)) * @backingInt(sym_index);
+            assert(old_size == elf.targetLoad(&shdr.size));
+            elf.targetStore(&shdr.size, @intCast(old_size + @sizeOf(Sym)));
             // ...then populate the newly-valid symbol pointer
             const sym = @field(elf.symPtr(sym_index), @tagName(class));
             sym.* = .{
@@ -3987,6 +4061,17 @@ fn addGlobalSymbol(elf: *Elf, opts: Symbol.Global.AddOptions) (error{
             };
             if (elf.targetEndian() != std.lang.Endian.native) {
                 std.mem.byteSwap(Sym, sym);
+            }
+            switch (elf.shndx.symtab_shndx) {
+                .UNDEF => {},
+                else => |symtab_shndx| {
+                    const shndx_size_ptr = &@field(elf.shdrPtr(symtab_shndx), @tagName(class)).size;
+                    const shndx_old_size = @as(usize, @sizeOf(u32)) * @backingInt(sym_index);
+                    assert(shndx_old_size == elf.targetLoad(shndx_size_ptr));
+                    const shndx_new_size = shndx_old_size + @sizeOf(u32);
+                    elf.targetStore(shndx_size_ptr, @intCast(shndx_new_size));
+                    @memset(symtab_shndx.node(elf).slice(&elf.mf)[shndx_old_size..shndx_new_size], 0);
+                },
             }
         },
     }
@@ -4395,6 +4480,7 @@ fn updateGlobalDynamic(elf: *Elf, orig_gsi: Symbol.Global.Index, force_apply_rel
             }
         },
         .copy_reloc => {
+            const bss_shndx = try elf.shndx.bss.toSection(elf);
             const dso_global = maybe_dso_global.?;
 
             try elf.shndx.bss.ensureAligned(elf, dso_global.alignment);
@@ -4456,7 +4542,7 @@ fn updateGlobalDynamic(elf: *Elf, orig_gsi: Symbol.Global.Index, force_apply_rel
             // table. We don't do it in the symtab, because if we did, `Symbol.Global.Index.defined`
             // would incorrectly believe there was actually a local definition.
             switch (elf.dynsymPtr(new_dynsym_index)) {
-                inline else => |dynsym| elf.targetStore(&dynsym.shndx, elf.shndx.bss.toSection().?),
+                inline else => |dynsym| elf.targetStore(&dynsym.shndx, bss_shndx),
             }
         },
         .canonical_plt => {
@@ -4557,6 +4643,7 @@ fn setGlobalSymbolValue(elf: *Elf, gsi: Symbol.Global.Index, new: struct {
     shndx: Section.Index,
     is_common: bool,
 }) Error!void {
+    const shndx = try new.shndx.toSection(elf);
     const global_ptr = gsi.ptr(elf);
     const symbol_ptr = global_ptr.symtab_index.ptr(elf);
 
@@ -4591,7 +4678,20 @@ fn setGlobalSymbolValue(elf: *Elf, gsi: Symbol.Global.Index, new: struct {
         inline else => |sym| {
             elf.targetStore(&sym.value, @intCast(new.value));
             if (new.size) |size| elf.targetStore(&sym.size, @intCast(size));
-            elf.targetStore(&sym.shndx, new.shndx.toSection().?);
+            elf.targetStore(&sym.shndx, shndx);
+            switch (elf.shndx.symtab_shndx) {
+                .UNDEF => assert(shndx != std.elf.SHN_XINDEX),
+                else => |symtab_shndx| elf.targetStore(
+                    @as(*u32, @ptrCast(@alignCast(
+                        symtab_shndx.node(elf).slice(&elf.mf)[@as(usize, @sizeOf(u32)) *
+                            @backingInt(global_ptr.symtab_index) ..][0..4],
+                    ))),
+                    switch (shndx) {
+                        else => 0,
+                        std.elf.SHN_XINDEX => new.shndx.toSectionIndex().?,
+                    },
+                ),
+            }
             if (new.type) |@"type"| {
                 const old_bind = elf.targetLoad(&sym.info).bind;
                 elf.targetStore(&sym.info, .{
@@ -5827,11 +5927,12 @@ fn create(
             .debug_rnglists = .UNDEF,
             .debug_str = .UNDEF,
             .debug_str_offsets = .UNDEF,
+            .bss = .UNDEF,
+            .tbss = .UNDEF,
             .init_array = .UNDEF,
             .fini_array = .UNDEF,
             .preinit_array = .UNDEF,
-            .bss = .UNDEF,
-            .tbss = .UNDEF,
+            .symtab_shndx = .UNDEF,
         },
         .dynamic = .{
             .flags = 0,
@@ -6417,7 +6518,7 @@ fn initHeaders(
                 // Any which end up non-empty will have their size populated (and their type set to
                 // `PT_LOAD`) by the segment virtual address space allocation logic.
                 const phdr: []ElfN.Phdr = @ptrCast(@alignCast(
-                    elf.ni.phdr.slice(&elf.mf)[0 .. phnum * @sizeOf(ElfN.Phdr)],
+                    elf.ni.phdr.slice(&elf.mf)[0 .. @as(usize, @sizeOf(ElfN.Phdr)) * phnum],
                 ));
 
                 phdr[phndx.phdr] = .{
@@ -6759,7 +6860,7 @@ fn initHeaders(
                         .type = .DYNSYM,
                         .flags = .{ .ALLOC = true },
                         .size = @sizeOf(Sym) * 1,
-                        .link = dynstr_shndx.toSection().?,
+                        .link = dynstr_shndx.toSectionIndex().?,
                         .info = 1,
                         .addralign = addr_align,
                         .entsize = @sizeOf(Sym),
@@ -6789,7 +6890,7 @@ fn initHeaders(
                 .name = ".rela.dyn",
                 .type = .RELA,
                 .flags = .{ .ALLOC = true },
-                .link = elf.shndx.dynsym.toSection().?,
+                .link = elf.shndx.dynsym.toSectionIndex().?,
                 .addralign = addr_align,
                 .entsize = rela_size,
                 .node_align = node_block_align,
@@ -6799,8 +6900,9 @@ fn initHeaders(
                 .name = ".rela.plt",
                 .type = .RELA,
                 .flags = .{ .ALLOC = true, .INFO_LINK = true },
-                .link = elf.shndx.dynsym.toSection().?,
-                .info = (if (plt.got_plt != null) elf.shndx.got_plt else elf.shndx.plt).toSection().?,
+                .link = elf.shndx.dynsym.toSectionIndex().?,
+                .info = (if (plt.got_plt != null) elf.shndx.got_plt else elf.shndx.plt)
+                    .toSectionIndex().?,
                 .addralign = addr_align,
                 .entsize = rela_size,
                 .node_align = node_block_align,
@@ -6810,7 +6912,7 @@ fn initHeaders(
                 .name = ".dynamic",
                 .type = .DYNAMIC,
                 .flags = .{ .ALLOC = true, .WRITE = true },
-                .link = dynstr_shndx.toSection().?,
+                .link = dynstr_shndx.toSectionIndex().?,
                 .entsize = @intCast(addr_align.toByteUnits() * 2),
                 .addralign = addr_align,
                 .manual_size = true,
@@ -6821,7 +6923,7 @@ fn initHeaders(
                 .type = .GNU_VERSYM,
                 .flags = .{ .ALLOC = true },
                 .size = @sizeOf(std.elf.Versym), // "null" dynsym entry
-                .link = elf.shndx.dynsym.toSection().?,
+                .link = elf.shndx.dynsym.toSectionIndex().?,
                 .addralign = .@"2",
                 .entsize = @sizeOf(std.elf.Versym),
                 .manual_size = true,
@@ -6832,7 +6934,7 @@ fn initHeaders(
                 .name = ".gnu.version_d",
                 .type = .GNU_VERDEF,
                 .flags = .{ .ALLOC = true },
-                .link = elf.shndx.dynstr.toSection().?,
+                .link = elf.shndx.dynstr.toSectionIndex().?,
                 // It's completely undocumented outside of source code, but `sh_info` for this
                 // section must hold the number of `Verdef` entries.
                 .info = 1,
@@ -6869,7 +6971,7 @@ fn initHeaders(
                 .name = ".gnu.version_r",
                 .type = .GNU_VERNEED,
                 .flags = .{ .ALLOC = true },
-                .link = elf.shndx.dynstr.toSection().?,
+                .link = elf.shndx.dynstr.toSectionIndex().?,
                 // It's completely undocumented outside of source code, but `sh_info` for this
                 // section must hold the number of `Verneed` entries.
                 .info = 0,
@@ -6884,7 +6986,7 @@ fn initHeaders(
                         .name = ".hash",
                         .type = .HASH,
                         .flags = .{ .ALLOC = true },
-                        .link = elf.shndx.dynsym.toSection().?,
+                        .link = elf.shndx.dynsym.toSectionIndex().?,
                         // It's unclear what value is correct for the alignment. binutils uses 8 everywhere,
                         // while lld uses 4 everywhere (but lld lacks support for the alpha/s390x special
                         // case). Matching the hash word (= entry) size seems like the actually sane choice,
@@ -7085,7 +7187,7 @@ fn initHeaders(
         switch (elf.shdrPtr(elf.shndx.got)) {
             inline else => |shdr, ct_class| {
                 const Addr = ct_class.ElfN().Addr;
-                assert(elf.targetLoad(&shdr.size) == elf.got.count() * @sizeOf(Addr));
+                assert(elf.targetLoad(&shdr.size) == @as(usize, @sizeOf(Addr)) * elf.got.count());
             },
         }
         if (elf.shndx.dynamic != .UNDEF) {
@@ -10740,8 +10842,6 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
     }
     try elf.shdrs.ensureUnusedCapacity(gpa, 1);
 
-    const name_ref: Section.Merge.Entry.Ref(.shstrtab) =
-        if (opts.name.len > 0) try .fromString(opts.name, elf) else .empty;
     const shndx: Section.Index, const new_shdr_size = shndx: switch (elf.ehdrPtr()) {
         inline else => |ehdr, class| {
             const shndx, const shnum = alloc_shndx: switch (elf.targetLoad(&ehdr.shnum)) {
@@ -10760,12 +10860,13 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
                 0 => {
                     const shnum_ptr = &@field(elf.shdrPtr(.UNDEF), @tagName(class)).size;
                     const shndx: u32 = @intCast(elf.targetLoad(shnum_ptr));
+                    if (shndx >= @backingInt(Section.Index.LORESERVE))
+                        return elf.base.comp.link_diags.fail("too many sections", .{});
                     const shnum = shndx + 1;
                     elf.targetStore(shnum_ptr, shnum);
                     break :alloc_shndx .{ shndx, shnum };
                 },
             };
-            assert(shndx < @backingInt(Section.Index.LORESERVE));
             break :shndx .{
                 @fromBackingInt(shndx),
                 @as(u64, elf.targetLoad(&ehdr.shentsize)) * @as(u64, shnum),
@@ -10773,6 +10874,8 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
         },
     };
     try elf.ni.shdr.ensureMinimumSize(gpa, &elf.mf, new_shdr_size);
+    const name_ref: Section.Merge.Entry.Ref(.shstrtab) =
+        if (opts.name.len > 0) try .fromString(opts.name, elf) else .empty;
     const parent_ni = switch (elf.ehdrType()) {
         .REL => elf.ni.elf,
         .EXEC, .DYN => segment_ni,
@@ -10842,8 +10945,8 @@ fn ensureUnusedRelocCapacity(elf: *Elf, node: MappedFile.Node.Index, len: usize)
                 const rela_shndx = try elf.addSection(elf.ni.elf, .{
                     .name = rela_name,
                     .type = .RELA,
-                    .link = @backingInt(Section.Index.symtab),
-                    .info = shndx.toSection().?,
+                    .link = Section.Index.symtab.toSectionIndex().?,
+                    .info = shndx.toSectionIndex().?,
                     .addralign = switch (class) {
                         .NONE, _ => unreachable,
                         .@"32" => .@"4",
