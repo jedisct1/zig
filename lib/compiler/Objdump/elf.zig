@@ -2465,44 +2465,48 @@ const FormatSectionFlags = struct {
     d: *const Objdump,
     shf: std.elf.SHF,
     pub fn format(ctx: FormatSectionFlags, w: *Io.Writer) Io.Writer.Error!void {
-        const d = ctx.d;
         const shf = ctx.shf;
 
-        var is_dim = false;
+        assert(w == ctx.d.w);
+        const term: Io.Terminal = .{ .writer = w, .mode = ctx.d.terminal_mode };
+        var style: Io.Terminal.Style = .reset;
 
         // The order in which we print flags does not match the field order. Instead, this order is
         // chosen to put the most important & common flags near the start, which in turn means the
         // key we print in `dumpSections` (which matches this order) is easier to understand.
-        try writeFlag(d, w, &is_dim, 'A', shf.ALLOC);
-        try writeFlag(d, w, &is_dim, 'W', shf.WRITE);
-        try writeFlag(d, w, &is_dim, 'X', shf.EXECINSTR);
-        try writeFlag(d, w, &is_dim, 'T', shf.TLS);
-        try writeFlag(d, w, &is_dim, 'M', shf.MERGE);
-        try writeFlag(d, w, &is_dim, 'S', shf.STRINGS);
-        try writeFlag(d, w, &is_dim, 'G', shf.GROUP);
-        try writeFlag(d, w, &is_dim, 'C', shf.COMPRESSED);
-        try writeFlag(d, w, &is_dim, 'I', shf.INFO_LINK);
-        try writeFlag(d, w, &is_dim, 'L', shf.LINK_ORDER);
-        try writeFlag(d, w, &is_dim, 'O', shf.OS_NONCONFORMING);
+        try writeFlag(term, &style, 'A', shf.ALLOC);
+        try writeFlag(term, &style, 'W', shf.WRITE);
+        try writeFlag(term, &style, 'X', shf.EXECINSTR);
+        try writeFlag(term, &style, 'T', shf.TLS);
+        try writeFlag(term, &style, 'M', shf.MERGE);
+        try writeFlag(term, &style, 'S', shf.STRINGS);
+        try writeFlag(term, &style, 'G', shf.GROUP);
+        try writeFlag(term, &style, 'C', shf.COMPRESSED);
+        try writeFlag(term, &style, 'I', shf.INFO_LINK);
+        try writeFlag(term, &style, 'L', shf.LINK_ORDER);
+        try writeFlag(term, &style, 'O', shf.OS_NONCONFORMING);
 
         const any_unknown = shf.unused3 != 0 or
             shf.unused12 != 0 or
             shf.OS.MASK != 0 or
             shf.PROC.MASK != 0;
 
-        try writeFlag(d, w, &is_dim, '?', any_unknown);
+        try writeFlag(term, &style, '?', any_unknown);
 
-        if (is_dim) try d.setColor(w, .reset);
+        try style.update(term, .reset);
     }
-    fn writeFlag(d: *const Objdump, w: *Io.Writer, is_dim: *bool, flag_char: u8, flag_set: bool) Io.Writer.Error!void {
+    fn writeFlag(
+        term: Io.Terminal,
+        style: *Io.Terminal.Style,
+        flag_char: u8,
+        flag_set: bool,
+    ) Io.Writer.Error!void {
         if (flag_set) {
-            if (is_dim.*) try d.setColor(w, .reset);
-            is_dim.* = false;
-            try w.writeByte(flag_char);
+            try style.update(term, .{ .weight = .default });
+            try term.writer.writeByte(flag_char);
         } else {
-            if (!is_dim.*) try d.setColor(w, .dim);
-            is_dim.* = true;
-            try w.writeByte('-');
+            try style.update(term, .{ .weight = .dim });
+            try term.writer.writeByte('-');
         }
     }
 };
@@ -2552,22 +2556,23 @@ const FormatPhdrFlags = struct {
     d: *const Objdump,
     pf: std.elf.PF,
     pub fn format(ctx: FormatPhdrFlags, w: *Io.Writer) Io.Writer.Error!void {
-        const d = ctx.d;
         const pf = ctx.pf;
 
-        var is_dim = false;
+        assert(w == ctx.d.w);
+        const term: Io.Terminal = .{ .writer = w, .mode = ctx.d.terminal_mode };
+        var style: Io.Terminal.Style = .reset;
 
-        try FormatSectionFlags.writeFlag(d, w, &is_dim, 'R', pf.R);
-        try FormatSectionFlags.writeFlag(d, w, &is_dim, 'W', pf.W);
-        try FormatSectionFlags.writeFlag(d, w, &is_dim, 'X', pf.X);
+        try FormatSectionFlags.writeFlag(term, &style, 'R', pf.R);
+        try FormatSectionFlags.writeFlag(term, &style, 'W', pf.W);
+        try FormatSectionFlags.writeFlag(term, &style, 'X', pf.X);
 
         const any_unknown = pf.unused3 != 0 or
             pf.OS.MASK != 0 or
             pf.PROC.MASK != 0;
 
-        try FormatSectionFlags.writeFlag(d, w, &is_dim, '?', any_unknown);
+        try FormatSectionFlags.writeFlag(term, &style, '?', any_unknown);
 
-        if (is_dim) try d.setColor(w, .reset);
+        try style.update(term, .reset);
     }
 };
 

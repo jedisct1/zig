@@ -39,17 +39,6 @@ pub fn reader(d: *const Objdump) *Io.Reader {
     }
 }
 
-/// Intended for use from `format` functions printing to `d.w`.
-pub fn setColor(d: *const Objdump, w: *Io.Writer, color: Io.Terminal.Color) Io.Writer.Error!void {
-    assert(w == d.w);
-    const term: Io.Terminal = .{ .writer = w, .mode = d.terminal_mode };
-    term.setColor(color) catch |err| switch (err) {
-        error.Unexpected => {},
-        error.Canceled => term.mode.windows_api.io.recancel(),
-        else => |e| return e,
-    };
-}
-
 pub fn logicalPos(d: *const Objdump) u64 {
     if (d.limited_reader) |lr| {
         return d.raw_file_reader.logicalPos() - lr.interface.bufferedLen() - d.seek_base;
@@ -158,6 +147,9 @@ pub const FormatIntField = struct {
     val: u64,
     kind: ?FieldKind,
     pub fn formatNumber(ctx: FormatIntField, w: *Io.Writer, number: std.fmt.Number) Io.Writer.Error!void {
+        assert(w == ctx.d.w);
+        const term: Io.Terminal = .{ .writer = w, .mode = ctx.d.terminal_mode };
+
         const prefix: []const u8 = switch (number.mode) {
             .decimal => "",
             .binary => "0b",
@@ -199,10 +191,10 @@ pub const FormatIntField = struct {
         };
 
         if (number.width) |width| {
-            try ctx.d.setColor(w, .dim);
+            try term.updateStyle(.{ .weight = .dim });
             try w.writeAll(prefix);
             try w.splatByteAll(fill_digit, width -| significant_digits.len);
-            try ctx.d.setColor(w, .reset);
+            try term.updateStyle(.{ .weight = .default });
             try w.writeAll(significant_digits);
         } else {
             assert(significant_digits.len > 0);
