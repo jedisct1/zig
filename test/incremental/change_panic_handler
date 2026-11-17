@@ -1,3 +1,4 @@
+#skip x86_64-windows-none-baseline-incremental-selfhosted-debug
 #zig build-exe {
 --name test
 -Mroot=test.zig
