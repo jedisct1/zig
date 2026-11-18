@@ -35,12 +35,9 @@ pub const Range = struct {
 };
 
 pub fn order(lhs: Version, rhs: Version) math.Order {
-    if (lhs.major < rhs.major) return .lt;
-    if (lhs.major > rhs.major) return .gt;
-    if (lhs.minor < rhs.minor) return .lt;
-    if (lhs.minor > rhs.minor) return .gt;
-    if (lhs.patch < rhs.patch) return .lt;
-    if (lhs.patch > rhs.patch) return .gt;
+    if (math.order(lhs.major, rhs.major).differ()) |o| return o;
+    if (math.order(lhs.minor, rhs.minor).differ()) |o| return o;
+    if (math.order(lhs.patch, rhs.patch).differ()) |o| return o;
     if (lhs.pre != null and rhs.pre == null) return .lt;
     if (lhs.pre == null and rhs.pre == null) return .eq;
     if (lhs.pre == null and rhs.pre != null) return .gt;
@@ -60,33 +57,26 @@ pub fn order(lhs: Version, rhs: Version) math.Order {
         const lid = next_lid.?; // Left identifier
         const rid = next_rid.?; // Right identifier
 
-        // Attempt to parse identifiers as numbers. Overflows are checked by parse.
-        const lnum: ?usize = std.fmt.parseUnsigned(usize, lid, 10) catch |err| switch (err) {
-            error.InvalidCharacter => null,
-            error.Overflow => unreachable,
-        };
-        const rnum: ?usize = std.fmt.parseUnsigned(usize, rid, 10) catch |err| switch (err) {
-            error.InvalidCharacter => null,
-            error.Overflow => unreachable,
-        };
+        const lnum = isAllDigits(lid);
+        const rnum = isAllDigits(rid);
 
         // Numeric identifiers always have lower precedence than non-numeric identifiers.
-        if (lnum != null and rnum == null) return .lt;
-        if (lnum == null and rnum != null) return .gt;
+        if (lnum and !rnum) return .lt;
+        if (!lnum and rnum) return .gt;
 
         // Identifiers consisting of only digits are compared numerically.
         // Identifiers with letters or hyphens are compared lexically in ASCII sort order.
-        if (lnum != null and rnum != null) {
-            if (lnum.? < rnum.?) return .lt;
-            if (lnum.? > rnum.?) return .gt;
-        } else {
-            const ord = mem.order(u8, lid, rid);
-            if (ord != .eq) return ord;
-        }
+        if (lnum and rnum) if (math.order(lid.len, rid.len).differ()) |o| return o;
+        if (mem.order(u8, lid, rid).differ()) |o| return o;
     }
 }
 
-pub fn parse(text: []const u8) !Version {
+fn isAllDigits(text: []const u8) bool {
+    for (text) |c| if (!ascii.isDigit(c)) return false;
+    return true;
+}
+
+pub fn parse(text: []const u8) error{ InvalidVersion, Overflow }!Version {
     // Parse the required major, minor, and patch numbers.
     const extra_index = mem.findAny(u8, text, "-+");
     const required = text[0..(extra_index orelse text.len)];
@@ -121,10 +111,7 @@ pub fn parse(text: []const u8) !Version {
             for (id) |c| if (!ascii.isAlphanumeric(c) and c != '-') return error.InvalidVersion;
 
             // Numeric identifiers MUST NOT include leading zeroes.
-            const is_num = for (id) |c| {
-                if (!ascii.isDigit(c)) break false;
-            } else true;
-            if (is_num) _ = try parseNum(id);
+            if (id[0] == '0' and id.len > 1 and isAllDigits(id)) return error.InvalidVersion;
         }
     }
 
@@ -199,6 +186,8 @@ test format {
         "1.0.0+0.build.1-rc.10000aaa-kk-0.1",
         "5.4.0-1018-raspi",
         "5.7.123",
+        "1.0.0-0.3.7",
+        "1.0.0-1111111111111111111111",
     }) |valid| try std.testing.expectFmt(valid, "{f}", .{try parse(valid)});
 
     // Invalid version strings should be rejected.
@@ -274,7 +263,7 @@ test format {
     if (parse(big_invalid)) |ver| std.debug.panic("expected error, found {f}", .{ver}) else |_| {}
 }
 
-test "precedence" {
+test order {
     // SemVer 2 spec 11.2 example: 1.0.0 < 2.0.0 < 2.1.0 < 2.1.1.
     try expect(order(try parse("1.0.0"), try parse("2.0.0")) == .lt);
     try expect(order(try parse("2.0.0"), try parse("2.1.0")) == .lt);
@@ -292,6 +281,14 @@ test "precedence" {
     try expect(order(try parse("1.0.0-beta.2"), try parse("1.0.0-beta.11")) == .lt);
     try expect(order(try parse("1.0.0-beta.11"), try parse("1.0.0-rc.1")) == .lt);
     try expect(order(try parse("1.0.0-rc.1"), try parse("1.0.0")) == .lt);
+}
+
+test "order with large pre number" {
+    const ones: Version = .{ .major = 1, .minor = 0, .patch = 0, .pre = "1111111111111111111111" };
+    const twos: Version = .{ .major = 1, .minor = 0, .patch = 0, .pre = "2222222222222222222222" };
+    try expect(order(ones, ones) == .eq);
+    try expect(order(ones, twos) == .lt);
+    try expect(order(twos, ones) == .gt);
 }
 
 test "zig_version" {
