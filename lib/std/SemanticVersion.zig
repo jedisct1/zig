@@ -2,8 +2,12 @@
 //!
 //! See: https://semver.org
 
-const std = @import("std");
 const Version = @This();
+
+const std = @import("std");
+const ascii = std.ascii;
+const math = std.math;
+const mem = std.mem;
 
 major: usize,
 minor: usize,
@@ -30,7 +34,7 @@ pub const Range = struct {
     }
 };
 
-pub fn order(lhs: Version, rhs: Version) std.math.Order {
+pub fn order(lhs: Version, rhs: Version) math.Order {
     if (lhs.major < rhs.major) return .lt;
     if (lhs.major > rhs.major) return .gt;
     if (lhs.minor < rhs.minor) return .lt;
@@ -42,8 +46,8 @@ pub fn order(lhs: Version, rhs: Version) std.math.Order {
     if (lhs.pre == null and rhs.pre != null) return .gt;
 
     // Iterate over pre-release identifiers until a difference is found.
-    var lhs_pre_it = std.mem.splitScalar(u8, lhs.pre.?, '.');
-    var rhs_pre_it = std.mem.splitScalar(u8, rhs.pre.?, '.');
+    var lhs_pre_it = mem.splitScalar(u8, lhs.pre.?, '.');
+    var rhs_pre_it = mem.splitScalar(u8, rhs.pre.?, '.');
     while (true) {
         const next_lid = lhs_pre_it.next();
         const next_rid = rhs_pre_it.next();
@@ -76,7 +80,7 @@ pub fn order(lhs: Version, rhs: Version) std.math.Order {
             if (lnum.? < rnum.?) return .lt;
             if (lnum.? > rnum.?) return .gt;
         } else {
-            const ord = std.mem.order(u8, lid, rid);
+            const ord = mem.order(u8, lid, rid);
             if (ord != .eq) return ord;
         }
     }
@@ -84,10 +88,10 @@ pub fn order(lhs: Version, rhs: Version) std.math.Order {
 
 pub fn parse(text: []const u8) !Version {
     // Parse the required major, minor, and patch numbers.
-    const extra_index = std.mem.findAny(u8, text, "-+");
+    const extra_index = mem.findAny(u8, text, "-+");
     const required = text[0..(extra_index orelse text.len)];
-    var it = std.mem.splitScalar(u8, required, '.');
-    var ver = Version{
+    var it = mem.splitScalar(u8, required, '.');
+    var ver: Version = .{
         .major = try parseNum(it.first()),
         .minor = try parseNum(it.next() orelse return error.InvalidVersion),
         .patch = try parseNum(it.next() orelse return error.InvalidVersion),
@@ -98,7 +102,7 @@ pub fn parse(text: []const u8) !Version {
     // Slice optional pre-release or build metadata components.
     const extra: []const u8 = text[extra_index.?..text.len];
     if (extra[0] == '-') {
-        const build_index = std.mem.findScalar(u8, extra, '+');
+        const build_index = mem.findScalar(u8, extra, '+');
         ver.pre = extra[1..(build_index orelse extra.len)];
         if (build_index) |idx| ver.build = extra[(idx + 1)..];
     } else {
@@ -108,17 +112,17 @@ pub fn parse(text: []const u8) !Version {
     // Check validity of optional pre-release identifiers.
     // See: https://semver.org/#spec-item-9
     if (ver.pre) |pre| {
-        it = std.mem.splitScalar(u8, pre, '.');
+        it = mem.splitScalar(u8, pre, '.');
         while (it.next()) |id| {
             // Identifiers MUST NOT be empty.
             if (id.len == 0) return error.InvalidVersion;
 
             // Identifiers MUST comprise only ASCII alphanumerics and hyphens [0-9A-Za-z-].
-            for (id) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return error.InvalidVersion;
+            for (id) |c| if (!ascii.isAlphanumeric(c) and c != '-') return error.InvalidVersion;
 
             // Numeric identifiers MUST NOT include leading zeroes.
             const is_num = for (id) |c| {
-                if (!std.ascii.isDigit(c)) break false;
+                if (!ascii.isDigit(c)) break false;
             } else true;
             if (is_num) _ = try parseNum(id);
         }
@@ -127,13 +131,13 @@ pub fn parse(text: []const u8) !Version {
     // Check validity of optional build metadata identifiers.
     // See: https://semver.org/#spec-item-10
     if (ver.build) |build| {
-        it = std.mem.splitScalar(u8, build, '.');
+        it = mem.splitScalar(u8, build, '.');
         while (it.next()) |id| {
             // Identifiers MUST NOT be empty.
             if (id.len == 0) return error.InvalidVersion;
 
             // Identifiers MUST comprise only ASCII alphanumerics and hyphens [0-9A-Za-z-].
-            for (id) |c| if (!std.ascii.isAlphanumeric(c) and c != '-') return error.InvalidVersion;
+            for (id) |c| if (!ascii.isAlphanumeric(c) and c != '-') return error.InvalidVersion;
         }
     }
 
