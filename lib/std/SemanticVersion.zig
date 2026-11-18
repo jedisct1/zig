@@ -9,11 +9,13 @@ const ascii = std.ascii;
 const math = std.math;
 const mem = std.mem;
 
-major: usize,
-minor: usize,
-patch: usize,
+major: Int,
+minor: Int,
+patch: Int,
 pre: ?[]const u8 = null,
 build: ?[]const u8 = null,
+
+const Int = usize;
 
 pub const Range = struct {
     min: Version,
@@ -82,9 +84,9 @@ pub fn parse(text: []const u8) error{ InvalidVersion, Overflow }!Version {
     const required = text[0..(extra_index orelse text.len)];
     var it = mem.splitScalar(u8, required, '.');
     var ver: Version = .{
-        .major = try parseNum(it.first()),
-        .minor = try parseNum(it.next() orelse return error.InvalidVersion),
-        .patch = try parseNum(it.next() orelse return error.InvalidVersion),
+        .major = try parseInt(it.first()),
+        .minor = try parseInt(it.next() orelse return error.InvalidVersion),
+        .patch = try parseInt(it.next() orelse return error.InvalidVersion),
     };
     if (it.next() != null) return error.InvalidVersion;
     if (extra_index == null) return ver;
@@ -131,11 +133,11 @@ pub fn parse(text: []const u8) error{ InvalidVersion, Overflow }!Version {
     return ver;
 }
 
-fn parseNum(text: []const u8) error{ InvalidVersion, Overflow }!usize {
+fn parseInt(text: []const u8) error{ InvalidVersion, Overflow }!Int {
     // Leading zeroes are not allowed.
     if (text.len > 1 and text[0] == '0') return error.InvalidVersion;
 
-    return std.fmt.parseUnsigned(usize, text, 10) catch |err| switch (err) {
+    return std.fmt.parseUnsigned(Int, text, 10) catch |err| switch (err) {
         error.InvalidCharacter => return error.InvalidVersion,
         error.Overflow => |e| return e,
     };
