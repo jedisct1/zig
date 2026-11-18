@@ -23671,7 +23671,7 @@ fn zirSelect(sema: *Sema, block: *Block, extended: Zir.Inst.Extended.InstData) C
         .vector, .array => pred_ty.arrayLen(zcu),
         else => return sema.fail(block, pred_src, "expected vector or array, found '{f}'", .{pred_ty.fmt(zcu)}),
     };
-    const vec_len: u32 = @intCast(try sema.usizeCast(block, pred_src, vec_len_u64));
+    const vec_len = try sema.u32Cast(block, pred_src, vec_len_u64);
 
     const bool_vec_ty = try pt.vectorType(.{
         .len = vec_len,
@@ -34519,6 +34519,12 @@ pub fn analyzeAsAddressSpace(
 fn usizeCast(sema: *Sema, block: *Block, src: LazySrcLoc, int: u64) CompileError!usize {
     if (@bitSizeOf(u64) <= @bitSizeOf(usize)) return int;
     return std.math.cast(usize, int) orelse return sema.fail(block, src, "expression produces integer value '{d}' which is too big for this compiler implementation to handle", .{int});
+}
+
+/// Used to convert a u64 value to a u32 value, emitting a compile error if the number
+/// is too big to fit.
+fn u32Cast(sema: *Sema, block: *Block, src: LazySrcLoc, int: u64) CompileError!u32 {
+    return std.math.cast(u32, int) orelse return sema.fail(block, src, "expression produces integer value '{d}' which is too big for this compiler implementation to handle", .{int});
 }
 
 /// Asserts that the layout of `union_ty` is already resolved.
