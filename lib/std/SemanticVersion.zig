@@ -291,10 +291,8 @@ test "precedence" {
 }
 
 test "zig_version" {
-    // An approximate Zig build that predates this test.
-    const older_version: Version = .{ .major = 0, .minor = 8, .patch = 0, .pre = "dev.874" };
-
     // Simulated compatibility check using Zig version.
-    const compatible = comptime @import("builtin").zig_version.order(older_version) == .gt;
+    const compatible = comptime @import("builtin").zig_version
+        .order(.{ .major = 0, .minor = 8, .patch = 0, .pre = "dev.874" }) == .gt;
     if (!compatible) @compileError("zig_version test failed");
 }
