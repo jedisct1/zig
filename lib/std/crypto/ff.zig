@@ -1410,11 +1410,59 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             return out;
         }
 
+        // With 66 limbs (4096 bits), the unrolled multiplication is about twice as slow on Apple Silicon.
+        const unroll_columns = builtin.zig_backend == .stage2_llvm and @bitSizeOf(Limb) == 64 and FeUint.max_limbs_count <= 40 and
+            (builtin.mode == .fast or builtin.mode == .safe);
+
         fn montgomeryLoop(self: *const Self, noalias d: *Fe, x: *const Fe, y: *const Fe) u1 {
             if (self.limbsCount() == FeUint.max_limbs_count) {
+                if (unroll_columns) {
+                    return if (x == y) montgomeryColumns(true, self, d, x, y) else montgomeryColumns(false, self, d, x, y);
+                }
                 return montgomeryLoopWithWidth(true, self, d, x, y);
             }
             return montgomeryLoopWithWidth(false, self, d, x, y);
+        }
+
+        inline fn wideProduct(x: Limb, y: Limb) u192 {
+            const wide = ct.mulWide(x, y);
+            return (@as(u192, wide.hi) << 64) | wide.lo;
+        }
+
+        // Fully unrolled version of montgomeryLoopWithWidth() that computes the result one column at a time.
+        // The low limbs of `d` hold the reduction factors until the result overwrites them.
+        fn montgomeryColumns(comptime squaring: bool, self: *const Self, noalias d: *Fe, x: *const Fe, y: *const Fe) u1 {
+            @setEvalBranchQuota(100_000);
+            const n = FeUint.max_limbs_count;
+            const a = x.v.limbs_buffer[0..n];
+            const b = y.v.limbs_buffer[0..n];
+            const m = self.v.limbs_buffer[0..n];
+            const r = d.v.limbs_buffer[0..n];
+
+            var acc: u192 = 0;
+            inline for (0..2 * n - 1) |k| {
+                const lo = comptime k -| (n - 1);
+                var p: u192 = 0;
+                if (squaring) {
+                    inline for (lo..(k + 1) / 2) |i| p +%= wideProduct(a[i], a[k - i]);
+                    p <<= 1;
+                    if (k % 2 == 0) p +%= wideProduct(a[k / 2], a[k / 2]);
+                } else {
+                    inline for (lo..k - lo + 1) |i| p +%= wideProduct(a[i], b[k - i]);
+                }
+                inline for (lo..@min(k, n)) |i| acc +%= wideProduct(r[i], m[k - i]);
+                acc +%= p;
+                if (k < n) {
+                    const f: TLimb = @truncate(@as(Limb, @truncate(acc)) *% self.m0inv);
+                    r[k] = f;
+                    acc +%= wideProduct(f, m[0]);
+                } else {
+                    r[k - n] = @as(TLimb, @truncate(acc));
+                }
+                acc >>= t_bits;
+            }
+            r[n - 1] = @as(TLimb, @truncate(acc));
+            return @truncate(acc >> t_bits);
         }
 
         fn montgomeryLoopWithWidth(comptime full_width: bool, self: *const Self, noalias d: *Fe, x: *const Fe, y: *const Fe) u1 {
