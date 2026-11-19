@@ -165,6 +165,15 @@ pub fn detect(
         try self.addIncludeDirFmt("/usr/include/{s}", .{triple});
         try self.addLibDirFmt("/usr/lib/{s}", .{triple});
 
+        // Exherbo puts sysroots under `/usr/<triple>`, with `/usr/host` being
+        // a symlink to the native `/usr/<triple>`.
+        //
+        // https://www.exherbo.org/docs/multiarch.html
+        if (native_target.os.tag == .linux) {
+            try self.addIncludeDir("/usr/host/include");
+            try self.addLibDir("/usr/host/lib");
+        }
+
         try self.addIncludeDir("/usr/include");
         try self.addLibDirFmt("/lib{d}", .{qual});
         try self.addLibDir("/lib");
