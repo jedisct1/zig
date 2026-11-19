@@ -547,7 +547,7 @@ pub const Node = extern struct {
             try mf.updates.ensureUnusedCapacity(gpa, 1);
             ni.resizedAssumeCapacity(mf);
         }
-        pub fn cleanResized(ni: Node.Index, mf: *MappedFile) bool {
+        pub fn cleanResized(ni: Node.Index, mf: *const MappedFile) bool {
             const node_resized = &ni.get(mf).flags.resized;
             defer node_resized.* = false;
             return node_resized.*;
@@ -570,7 +570,7 @@ pub const Node = extern struct {
             try mf.updates.ensureUnusedCapacity(gpa, 1);
             ni.nextMovedAssumeCapacity(mf);
         }
-        pub fn cleanNextMoved(ni: Node.Index, mf: *MappedFile) bool {
+        pub fn cleanNextMoved(ni: Node.Index, mf: *const MappedFile) bool {
             const node_next_moved = &ni.get(mf).flags.next_moved;
             defer node_next_moved.* = false;
             return node_next_moved.*;
@@ -590,7 +590,13 @@ pub const Node = extern struct {
             return ni.get(mf).flags.alignment;
         }
 
-        fn setLocation(ni: Node.Index, gpa: Allocator, mf: *MappedFile, offset: u64, size: u64) Allocator.Error!void {
+        fn setLocation(
+            ni: Node.Index,
+            gpa: Allocator,
+            mf: *MappedFile,
+            offset: u64,
+            size: u64,
+        ) Allocator.Error!void {
             try mf.large.ensureUnusedCapacity(gpa, 2);
             try mf.updates.ensureUnusedCapacity(gpa, 2);
             const node = ni.get(mf);
@@ -652,11 +658,6 @@ pub const Node = extern struct {
 
         pub fn slice(ni: Node.Index, mf: *const MappedFile) []u8 {
             const file_loc = ni.fileLocation(mf, true);
-            return mf.memory_map.memory[@intCast(file_loc.offset)..][0..@intCast(file_loc.size)];
-        }
-
-        pub fn slicePadding(ni: Node.Index, mf: *const MappedFile) []u8 {
-            const file_loc = ni.fileLocation(mf, false);
             return mf.memory_map.memory[@intCast(file_loc.offset)..][0..@intCast(file_loc.size)];
         }
 
@@ -2323,7 +2324,7 @@ fn realignNode(
     ni.get(mf).flags.alignment = new_align;
 }
 
-fn updateWriters(mf: *MappedFile) void {
+fn updateWriters(mf: *const MappedFile) void {
     var writers_it = mf.writers.first;
     while (writers_it) |writer_node| : (writers_it = writer_node.next) {
         const w: *Node.Writer = @fieldParentPtr("writer_node", writer_node);
@@ -2375,7 +2376,7 @@ fn moveRange(mf: *MappedFile, old_file_offset: u64, new_file_offset: u64, size: 
         try mf.zeroRange(new_file_offset + size, clear_size);
     }
 }
-fn zeroRange(mf: *MappedFile, file_offset: u64, size: u64) Error!void {
+pub fn zeroRange(mf: *MappedFile, file_offset: u64, size: u64) Error!void {
     const trace = tracy.trace(@src());
     defer trace.end();
     trace.addTextFmt("{Bi} (at 0x{X})", .{ size, file_offset });
