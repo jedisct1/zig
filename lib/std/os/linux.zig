@@ -1838,8 +1838,8 @@ pub fn preadv(fd: fd_t, iov: [*]const iovec, count: usize, offset: off_t) usize 
         // Kernel expects the offset is split into largest natural word-size.
         // See following link for detail:
         // https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=601cc11d054ae4b5e9b5babec3d8e4667a2cb9b5
-        @truncate(offset_u),
-        if (@sizeOf(syscall_arg_t) < @sizeOf(u64)) @truncate(offset_u >> 32) else 0,
+        @as(usize, @truncate(offset_u)),
+        if (@sizeOf(usize) < @sizeOf(u64)) @as(usize, @truncate(offset_u >> 32)) else 0,
     );
 }
 
@@ -1861,8 +1861,8 @@ pub fn preadv2(fd: fd_t, iov: [*]const iovec, count: usize, offset: off_t, flags
         @intFromPtr(iov),
         count,
         // See comments in preadv
-        @truncate(offset_u),
-        if (@sizeOf(syscall_arg_t) < @sizeOf(u64)) @truncate(offset_u >> 32) else 0,
+        @as(usize, @truncate(offset_u)),
+        if (@sizeOf(usize) < @sizeOf(u64)) @as(usize, @truncate(offset_u >> 32)) else 0,
         flags,
     );
 }
@@ -1926,8 +1926,8 @@ pub fn pwritev(fd: fd_t, iov: [*]const iovec_const, count: usize, offset: off_t)
         @intFromPtr(iov),
         count,
         // See comments in preadv
-        @truncate(offset_u),
-        if (@sizeOf(syscall_arg_t) < @sizeOf(u64)) @truncate(offset_u >> 32) else 0,
+        @as(usize, @truncate(offset_u)),
+        if (@sizeOf(usize) < @sizeOf(u64)) @as(usize, @truncate(offset_u >> 32)) else 0,
     );
 }
 
@@ -1949,8 +1949,8 @@ pub fn pwritev2(fd: fd_t, iov: [*]const iovec_const, count: usize, offset: off_t
         @intFromPtr(iov),
         count,
         // See comments in preadv
-        @truncate(offset_u),
-        if (@sizeOf(syscall_arg_t) < @sizeOf(u64)) @truncate(offset_u >> 32) else 0,
+        @as(usize, @truncate(offset_u)),
+        if (@sizeOf(usize) < @sizeOf(u64)) @as(usize, @truncate(offset_u >> 32)) else 0,
         flags,
     );
 }
