@@ -245,7 +245,7 @@ pub const Os = struct {
         win11_kr = 0x0A000013, //aka win11_26h1
         _,
 
-        /// Latest Windows version that the Zig Standard Library is aware of
+        /// Deprecated; to be removed in 0.19.0.
         pub const latest = WindowsVersion.win11_kr;
 
         /// Compared against build numbers reported by the runtime to distinguish win10 versions,
@@ -602,7 +602,7 @@ pub const Os = struct {
                 .windows => .{
                     .windows = .{
                         .min = .win10_rs5,
-                        .max = WindowsVersion.latest,
+                        .max = .win11_kr,
                     },
                 },
                 .uefi => .{
