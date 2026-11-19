@@ -2002,11 +2002,11 @@ test "modular inversion" {
         }
     }
 
-    const M = Modulus(2048);
-    const p = try Uint(2048).fromPrimitive(u1024, (1 << 1024) - 1);
-    const q = try Uint(2048).fromPrimitive(u1024, (1 << 1023) + 1);
+    const M = Modulus(4096);
+    const p = try Uint(4096).fromPrimitive(u2048, (1 << 2048) - 1);
+    const q = try Uint(4096).fromPrimitive(u2048, (1 << 2047) + 1);
     const odd = try M.fromProduct(p.normalize(), q.normalize());
-    const even = try M.fromPrimitiveWithOptions(u2048, math.maxInt(u2048) - 1, .{ .allow_even = true });
+    const even = try M.fromPrimitiveWithOptions(u4096, math.maxInt(u4096) - 1, .{ .allow_even = true });
     try testing.expect(odd.invert(odd.reduce(p)) == null);
     try testing.expect(even.invert(try M.Fe.fromPrimitive(u8, even, 2)) == null);
     for ([_]M{ odd, even }) |m| {
