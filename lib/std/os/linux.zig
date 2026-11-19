@@ -1821,6 +1821,15 @@ pub fn readv(fd: fd_t, iov: [*]const iovec, count: usize) usize {
 
 pub fn preadv(fd: fd_t, iov: [*]const iovec, count: usize, offset: off_t) usize {
     const offset_u: u64 = @bitCast(offset);
+    if (native_abi.isX32()) {
+        return syscall4(
+            .preadv,
+            @as(u32, @bitCast(fd)),
+            @intFromPtr(iov),
+            count,
+            offset_u,
+        );
+    }
     return syscall5(
         .preadv,
         @as(u32, @bitCast(fd)),
@@ -1836,6 +1845,16 @@ pub fn preadv(fd: fd_t, iov: [*]const iovec, count: usize, offset: off_t) usize 
 
 pub fn preadv2(fd: fd_t, iov: [*]const iovec, count: usize, offset: off_t, flags: kernel_rwf) usize {
     const offset_u: u64 = @bitCast(offset);
+    if (native_abi.isX32()) {
+        return syscall5(
+            .preadv2,
+            @as(u32, @bitCast(fd)),
+            @intFromPtr(iov),
+            count,
+            offset_u,
+            flags,
+        );
+    }
     return syscall6(
         .preadv2,
         @as(u32, @bitCast(fd)),
@@ -1892,6 +1911,15 @@ pub fn writev(fd: fd_t, iov: [*]const iovec_const, count: usize) usize {
 
 pub fn pwritev(fd: fd_t, iov: [*]const iovec_const, count: usize, offset: off_t) usize {
     const offset_u: u64 = @bitCast(offset);
+    if (native_abi.isX32()) {
+        return syscall4(
+            .pwritev,
+            @as(u32, @bitCast(fd)),
+            @intFromPtr(iov),
+            count,
+            offset_u,
+        );
+    }
     return syscall5(
         .pwritev,
         @as(u32, @bitCast(fd)),
@@ -1905,6 +1933,16 @@ pub fn pwritev(fd: fd_t, iov: [*]const iovec_const, count: usize, offset: off_t)
 
 pub fn pwritev2(fd: fd_t, iov: [*]const iovec_const, count: usize, offset: off_t, flags: kernel_rwf) usize {
     const offset_u: u64 = @bitCast(offset);
+    if (native_abi.isX32()) {
+        return syscall5(
+            .pwritev2,
+            @as(u32, @bitCast(fd)),
+            @intFromPtr(iov),
+            count,
+            offset_u,
+            flags,
+        );
+    }
     return syscall6(
         .pwritev2,
         @as(u32, @bitCast(fd)),
