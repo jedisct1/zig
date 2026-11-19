@@ -601,7 +601,7 @@ pub const Os = struct {
 
                 .windows => .{
                     .windows = .{
-                        .min = .win10,
+                        .min = .win10_rs5,
                         .max = WindowsVersion.latest,
                     },
                 },
