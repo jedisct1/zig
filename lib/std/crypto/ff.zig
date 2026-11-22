@@ -389,8 +389,8 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             return borrow;
         }
 
-        // Subtracts `bound` if needed; `x` with the extra high bit `top` must be below 2 * bound.
-        // Returns whether it subtracted.
+        // Subtracts `bound` if `x`, with the extra high bit `top`, is at least `bound`.
+        // When `top` is set, that value must be below 2 * bound. Returns whether it subtracted.
         fn reduceOnce(x: *Self, top: u1, bound: Self) bool {
             if (std.options.side_channels_mitigations == .none) {
                 const need_sub = timing_safe.eql(u1, top, @intFromBool(ct.limbsCmpLt(x.*, bound)));
