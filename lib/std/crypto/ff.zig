@@ -77,7 +77,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
         limbs_len: usize,
 
         /// Number of bytes required to serialize an integer.
-        pub const encoded_bytes = @divCeil(max_bits, 8);
+        pub const encoded_length = @divCeil(max_bits, 8);
 
         /// Constant slice of active limbs.
         fn limbsConst(self: *const Self) []const Limb {
@@ -440,7 +440,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
 }
 
 /// A field element.
-fn Fe_(comptime bits: comptime_int) type {
+fn FieldElement(comptime bits: comptime_int) type {
     return struct {
         const Self = @This();
 
@@ -453,10 +453,10 @@ fn Fe_(comptime bits: comptime_int) type {
         montgomery: bool = false,
 
         /// The maximum number of bytes required to encode a field element.
-        pub const encoded_bytes = FeUint.encoded_bytes;
+        pub const encoded_length = FeUint.encoded_length;
 
         // The number of active limbs to represent the field element.
-        fn limbs_count(self: Self) usize {
+        fn limbsCount(self: Self) usize {
             return self.v.limbs_len;
         }
 
@@ -493,7 +493,7 @@ fn Fe_(comptime bits: comptime_int) type {
         /// Decodes and reduces a byte string whose value is below 2^m.bits().
         pub fn fromBytesReduced(m: Modulus(bits), bytes: []const u8, comptime endian: Endian) OverflowError!Self {
             var fe = Self{ .v = FeUint.zero };
-            const m_limbs_count = m.limbs_count();
+            const m_limbs_count = m.limbsCount();
             const fe_limbs = fe.v.limbs()[0..m_limbs_count];
             var acc = decodeBytes(fe_limbs, bytes, endian);
 
@@ -616,7 +616,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         /// A field element, representing a value within the field defined by this modulus.
         /// Use elements only with the modulus that created them, even if another modulus has the same size.
-        pub const Fe = Fe_(max_bits);
+        pub const Fe = FieldElement(max_bits);
 
         const FeUint = Fe.FeUint;
 
@@ -640,13 +640,13 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         leading: usize,
 
         // Number of active limbs in the modulus.
-        fn limbs_count(self: Self) usize {
+        fn limbsCount(self: Self) usize {
             return self.v.limbs_len;
         }
 
         /// Actual size of the modulus, in bits.
         pub fn bits(self: Self) usize {
-            return self.limbs_count() * t_bits - self.leading;
+            return self.limbsCount() * t_bits - self.leading;
         }
 
         /// Returns the encoded length, in bytes.
@@ -817,15 +817,15 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         /// Rejects field elements that are not in the canonical form.
         pub fn rejectNonCanonical(self: Self, fe: Fe) error{NonCanonical}!void {
-            if (fe.limbs_count() != self.limbs_count() or ct.limbsCmpGeq(fe.v, self.v)) {
+            if (fe.limbsCount() != self.limbsCount() or ct.limbsCmpGeq(fe.v, self.v)) {
                 return error.NonCanonical;
             }
         }
 
         // Makes the number of active limbs in a field element match the one of the modulus.
         fn shrink(self: Self, fe: *Fe) OverflowError!void {
-            const new_len = self.limbs_count();
-            if (fe.limbs_count() < new_len) return error.Overflow;
+            const new_len = self.limbsCount();
+            if (fe.limbsCount() < new_len) return error.Overflow;
             var acc: Limb = 0;
             for (fe.v.limbsConst()[new_len..]) |limb| {
                 acc |= limb;
@@ -843,7 +843,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         // Computes R^2 for the Montgomery representation.
         fn computeRR(self: *Self, start: usize) void {
-            const n = self.limbs_count();
+            const n = self.limbsCount();
             var rr = self.zero;
 
             if (n < 3) {
@@ -892,7 +892,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             while (true) : (i -= 1) {
                 var carry: u1 = @truncate(math.shr(Limb, y, i));
                 var borrow: u1 = 0;
-                for (0..self.limbs_count()) |j| {
+                for (0..self.limbsCount()) |j| {
                     const l = timing_safe.select(Limb, .fromBool(need_sub), d_limbs[j], x_limbs[j]);
                     var res = (l << 1) + carry;
                     x_limbs[j] = @as(TLimb, @truncate(res));
@@ -1077,7 +1077,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             var coeff_d = self.one().v;
 
             comptime assert(FeUint.capacity_bits <= math.maxInt(usize) / 2);
-            const n = self.limbs_count();
+            const n = self.limbsCount();
 
             // Same algorithm as invertPublic(), but always run the same number of iterations and don't branch on secrets.
 
@@ -1165,9 +1165,9 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         /// Reduces an arbitrary `Uint`, converting it to a field element.
         pub fn reduce(self: Self, x: anytype) Fe {
-            assert(x.limbs_len >= self.limbs_count()); // Input must have at least as many active limbs as the modulus
+            assert(x.limbs_len >= self.limbsCount()); // Input must have at least as many active limbs as the modulus
             if (self.v.isOdd()) {
-                const n = self.limbs_count();
+                const n = self.limbsCount();
                 var acc = self.zero;
                 var k = (x.limbs_len - 1) / n;
                 while (true) : (k -= 1) {
@@ -1184,8 +1184,8 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             }
             var out = self.zero;
             var i = x.limbs_len - 1;
-            if (self.limbs_count() >= 2) {
-                const start = @min(i, self.limbs_count() - 2);
+            if (self.limbsCount() >= 2) {
+                const start = @min(i, self.limbsCount() - 2);
                 var j = start;
                 while (true) : (j -= 1) {
                     out.v.limbs()[j] = x.limbsConst()[i];
@@ -1201,7 +1201,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         }
 
         fn montgomeryLoop(self: *const Self, noalias d: *Fe, x: *const Fe, y: *const Fe) u1 {
-            if (self.limbs_count() == FeUint.max_limbs_count) {
+            if (self.limbsCount() == FeUint.max_limbs_count) {
                 return montgomeryLoopWithWidth(true, self, d, x, y);
             }
             return montgomeryLoopWithWidth(false, self, d, x, y);
@@ -1209,12 +1209,12 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         fn montgomeryLoopWithWidth(comptime full_width: bool, self: *const Self, noalias d: *Fe, x: *const Fe, y: *const Fe) u1 {
             assert(d != x and d != y);
-            assert(d.limbs_count() == x.limbs_count());
-            assert(d.limbs_count() == y.limbs_count());
-            assert(d.limbs_count() == self.limbs_count());
+            assert(d.limbsCount() == x.limbsCount());
+            assert(d.limbsCount() == y.limbsCount());
+            assert(d.limbsCount() == self.limbsCount());
             assert(self.v.isOdd());
 
-            const n = if (full_width) FeUint.max_limbs_count else self.limbs_count();
+            const n = if (full_width) FeUint.max_limbs_count else self.limbsCount();
             const a_limbs = x.v.limbs_buffer[0..n];
             const b_limbs = y.v.limbs_buffer[0..n];
             const d_limbs = d.v.limbs_buffer[0..n];
@@ -1258,8 +1258,8 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         fn montgomeryMul(self: Self, x: Fe, y: Fe) Fe {
             var d = self.zero;
-            assert(x.limbs_count() == self.limbs_count());
-            assert(y.limbs_count() == self.limbs_count());
+            assert(x.limbsCount() == self.limbsCount());
+            assert(y.limbsCount() == self.limbsCount());
             const overflow = self.montgomeryLoop(&d, &x, &y);
             _ = d.v.reduceOnce(overflow, self.v);
             d.montgomery = x.montgomery == y.montgomery;
@@ -1268,7 +1268,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         fn montgomerySq(self: Self, x: Fe) Fe {
             var d = self.zero;
-            assert(x.limbs_count() == self.limbs_count());
+            assert(x.limbsCount() == self.limbsCount());
             const overflow = self.montgomeryLoop(&d, &x, &x);
             _ = d.v.reduceOnce(overflow, self.v);
             d.montgomery = true;
@@ -1276,8 +1276,8 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         }
 
         fn plainMul(self: Self, x: Fe, y: Fe) Fe {
-            assert(x.limbs_count() == self.limbs_count());
-            assert(y.limbs_count() == self.limbs_count());
+            assert(x.limbsCount() == self.limbsCount());
+            assert(y.limbsCount() == self.limbsCount());
             return self.reduce(fullProduct(x.v.limbsConst(), y.v.limbsConst()));
         }
 
@@ -1289,14 +1289,14 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
             // Modulus parity is public; even moduli need plain arithmetic.
             if (!self.v.isOdd()) {
-                return self.powLadder(x, e, endian, public, false);
+                return self.powFixedWindow(x, e, endian, public, false);
             }
 
             var x_m = x;
             if (!x.montgomery) {
                 self.toMontgomery(&x_m) catch unreachable;
             }
-            var out = self.powLadder(x_m, e, endian, public, true);
+            var out = self.powFixedWindow(x_m, e, endian, public, true);
             if (!x.montgomery) {
                 self.fromMontgomery(&out) catch unreachable;
             }
@@ -1304,7 +1304,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         }
 
         // `x` and the result use the representation selected by `montgomery`; the exponent must be nonzero.
-        fn powLadder(self: Self, x: Fe, e: []const u8, endian: Endian, comptime public: bool, comptime montgomery: bool) Fe {
+        fn powFixedWindow(self: Self, x: Fe, e: []const u8, endian: Endian, comptime public: bool, comptime montgomery: bool) Fe {
             if (public and
                 (e.len < 3 or (e.len == 3 and e[if (endian == .big) 0 else 2] <= 0b1111)))
             {
@@ -1406,7 +1406,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             }
         }
 
-        const max_encoded_bytes = @divCeil(FeUint.capacity_bits, 8);
+        const max_encoded_length = @divCeil(FeUint.capacity_bits, 8);
 
         /// Returns x^e (mod m) in constant time.
         pub fn pow(self: Self, x: Fe, e: Fe) (NullExponentError || RepresentationError)!Fe {
@@ -1414,7 +1414,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
                 return error.UnexpectedRepresentation;
             }
 
-            var buf: [max_encoded_bytes]u8 = undefined;
+            var buf: [max_encoded_length]u8 = undefined;
             const len = self.encodedLen();
             e.toBytes(buf[0..len], native_endian) catch unreachable;
             return self.powWithEncodedExponent(x, buf[0..len], native_endian);
@@ -1426,7 +1426,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             if (e.montgomery) {
                 return error.UnexpectedRepresentation;
             }
-            var buf_: [max_encoded_bytes]u8 = undefined;
+            var buf_: [max_encoded_length]u8 = undefined;
             const buf = buf_[0..@divCeil(e.v.bitLenPublic(), 8)];
             e.toBytes(buf, .little) catch unreachable;
             return self.powWithEncodedPublicExponent(x, buf, .little);
