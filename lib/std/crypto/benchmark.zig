@@ -256,6 +256,41 @@ const kems = [_]Crypto{
     Crypto{ .ty = crypto.kem.kyber_d00.Kyber1024, .name = "kyber1024d00" },
 };
 
+const rsa = [_]Crypto{
+    Crypto{ .ty = crypto.sign.rsa.RsaPss(2048, crypto.hash.sha2.Sha256), .name = "rsa-pss-2048" },
+    Crypto{ .ty = crypto.sign.rsa.RsaPss(3072, crypto.hash.sha2.Sha256), .name = "rsa-pss-3072" },
+    Crypto{ .ty = crypto.sign.rsa.RsaPss(4096, crypto.hash.sha2.Sha256), .name = "rsa-pss-4096" },
+    Crypto{ .ty = crypto.kem.rsa.RsaKem(2048, crypto.hash.sha2.Sha256), .name = "rsa-kem-2048" },
+    Crypto{ .ty = crypto.kem.rsa.RsaKem(3072, crypto.hash.sha2.Sha256), .name = "rsa-kem-3072" },
+    Crypto{ .ty = crypto.kem.rsa.RsaKem(4096, crypto.hash.sha2.Sha256), .name = "rsa-kem-4096" },
+};
+
+// Returns the throughput of the secret-key operation (signing or decapsulation), then of the public-key one.
+pub fn benchmarkRsa(comptime Rsa: anytype, comptime count: comptime_int, io: std.Io) ![2]u64 {
+    const key_pair = try Rsa.KeyPair.generate(io);
+    const msg: [64]u8 = @splat(0);
+    const is_kem = @hasDecl(Rsa, "ciphertext_length");
+    const e = if (is_kem) key_pair.public_key.encaps(io) else try key_pair.sign(&msg, io);
+    var throughput: [2]u64 = undefined;
+    for (&throughput, 0..) |*t, op| {
+        const start = benchTime(io);
+        for (0..count) |_| {
+            if (op == 0) {
+                const r = if (is_kem) try key_pair.secret_key.decaps(&e.ciphertext, io) else try key_pair.sign(&msg, io);
+                mem.doNotOptimizeAway(&r);
+            } else if (is_kem) {
+                const r = key_pair.public_key.encaps(io);
+                mem.doNotOptimizeAway(&r);
+            } else {
+                try e.verify(&msg, key_pair.public_key);
+            }
+        }
+        const elapsed_s = @as(f64, @floatFromInt(benchTime(io) - start)) / time.ns_per_s;
+        t.* = @intFromFloat(count / elapsed_s);
+    }
+    return throughput;
+}
+
 pub fn benchmarkKem(comptime Kem: anytype, comptime kems_count: comptime_int, io: std.Io) !u64 {
     const key_pair = Kem.KeyPair.generate(io);
 
@@ -595,6 +630,15 @@ pub fn main(init: std.process.Init) !void {
         if (filter == null or std.mem.find(u8, E.name, filter.?) != null) {
             const throughput = try benchmarkBatchSignatureVerification(E.ty, mode(1000), io);
             try stdout.print("{s:>17}: {:10} verifications/s (batch)\n", .{ E.name, throughput });
+            try stdout.flush();
+        }
+    }
+
+    inline for (rsa) |E| {
+        if (filter == null or std.mem.find(u8, E.name, filter.?) != null) {
+            const throughput = try benchmarkRsa(E.ty, mode(200), io);
+            const ops: [2][]const u8 = if (@hasDecl(E.ty, "ciphertext_length")) .{ "decaps", "encaps" } else .{ "signatures", "verifications" };
+            try stdout.print("{s:>17}: {:10} {s}/s\n{s:>17}: {:10} {s}/s\n", .{ E.name, throughput[0], ops[0], E.name, throughput[1], ops[1] });
             try stdout.flush();
         }
     }

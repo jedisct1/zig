@@ -1,4 +1,4 @@
-/// MAC verification failed - The tag doesn't verify for the given ciphertext and secret key
+/// Authentication failed - The tag, or the ciphertext itself, doesn't verify for the given secret key
 pub const AuthenticationError = error{AuthenticationFailed};
 
 /// The requested output length is too long for the chosen algorithm

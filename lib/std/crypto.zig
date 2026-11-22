@@ -119,6 +119,7 @@ pub const kem = struct {
     pub const hybrid = @import("crypto/hybrid_kem.zig");
     pub const kyber_d00 = @import("crypto/ml_kem.zig").d00;
     pub const ml_kem = @import("crypto/ml_kem.zig").nist;
+    pub const rsa = @import("crypto/rsa/kem.zig");
 };
 
 /// Elliptic-curve arithmetic.
@@ -199,6 +200,7 @@ pub const sign = struct {
     pub const Ed25519 = @import("crypto/25519/ed25519.zig").Ed25519;
     pub const ecdsa = @import("crypto/ecdsa.zig");
     pub const mldsa = @import("crypto/ml_dsa.zig");
+    pub const rsa = @import("crypto/rsa/sign.zig");
 };
 
 /// Stream ciphers. These do not provide any kind of authentication.
@@ -311,6 +313,7 @@ test {
     _ = kem.hybrid;
     _ = kem.kyber_d00;
     _ = kem.ml_kem;
+    _ = kem.rsa;
 
     _ = ecc.Curve25519;
     _ = ecc.Edwards25519;
@@ -349,6 +352,7 @@ test {
     _ = sign.Ed25519;
     _ = sign.ecdsa;
     _ = sign.mldsa;
+    _ = sign.rsa;
 
     _ = stream.chacha.ChaCha20IETF;
     _ = stream.chacha.ChaCha12IETF;

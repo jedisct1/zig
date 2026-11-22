@@ -5,6 +5,8 @@
 //!
 //! Functions with `Public` in their name are the exception.
 //!
+//! Temporary values, secret or not, are not wiped from the stack.
+//!
 //! Parts of that code was ported from the BSD-licensed crypto/internal/bigmod/nat.go file in the Go language, itself inspired from BearSSL.
 
 const std = @import("std");
@@ -171,7 +173,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
                     switch (endian) {
                         .big => {
                             if (out_i == 0) {
-                                if (limb | orLimbs(self.limbsConst()[i + 1 ..]) != 0) {
+                                if ((limb != 0) | !timing_safe.isZero([]const Limb, self.limbsConst()[i + 1 ..])) {
                                     return error.Overflow;
                                 }
                                 return;
@@ -181,7 +183,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
                         .little => {
                             out_i += 1;
                             if (out_i == bytes.len) {
-                                if (limb | orLimbs(self.limbsConst()[i + 1 ..]) != 0) {
+                                if ((limb != 0) | !timing_safe.isZero([]const Limb, self.limbsConst()[i + 1 ..])) {
                                     return error.Overflow;
                                 }
                                 return;
@@ -218,9 +220,22 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             );
         }
 
+        /// Returns `true` if x < y, in constant time.
+        pub fn lessThan(x: Self, y: Self) bool {
+            const Tag = @TypeOf(@backingInt(math.Order.lt));
+            return timing_safe.eql(Tag, @backingInt(x.compare(y)), @backingInt(math.Order.lt));
+        }
+
         /// Returns `true` if the integer is zero.
         pub fn isZero(x: Self) bool {
             return timing_safe.isZero([]const Limb, x.limbsConst());
+        }
+
+        /// Sets a bit, whose position is public.
+        /// The position must be within the active width.
+        pub fn setBit(x: *Self, bit: usize) void {
+            assert(bit < x.limbs_len * t_bits);
+            x.limbs()[bit / t_bits] |= @as(Limb, 1) << @intCast(bit % t_bits);
         }
 
         /// Returns `true` if the integer is odd.
@@ -230,7 +245,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
 
         pub fn isOne(x: Self) bool {
             const x_limbs = x.limbsConst();
-            return timing_safe.isZero(Limb, (x_limbs[0] ^ 1) | orLimbs(x_limbs[1..]));
+            return timing_safe.isZero(Limb, x_limbs[0] ^ 1) & timing_safe.isZero([]const Limb, x_limbs[1..]);
         }
 
         /// Adds `y` to `x`, wrapping at the larger active width. Returns 1 on overflow.
@@ -246,6 +261,7 @@ pub fn Uint(comptime max_bits: comptime_int) type {
         }
 
         /// Adds the product of `x` and `y` to `acc`, wrapping at the active width.
+        /// All three integers must have the same active width.
         /// Returns 1 if any part of the result was discarded.
         pub fn mulAddWithOverflow(acc: *Self, x: Self, y: Self) u1 {
             assert(x.limbs_len == acc.limbs_len);
@@ -349,18 +365,136 @@ pub fn Uint(comptime max_bits: comptime_int) type {
             return a;
         }
 
+        /// Converts the integer to another `Uint` type, with all of the destination's limbs active.
+        /// Returns `error.Overflow` if the value doesn't fit.
+        /// When narrowing a secret, the timing reveals whether it fits.
+        pub fn cast(x: Self, comptime T: type) OverflowError!T {
+            var out = T.zero;
+            const len = @min(x.limbs_len, out.limbs_buffer.len);
+            if (!timing_safe.isZero([]const Limb, x.limbsConst()[len..])) return error.Overflow;
+            @memcpy(out.limbs_buffer[0..len], x.limbsConst()[0..len]);
+            return out;
+        }
+
+        /// Returns the number of trailing zero bits in constant time, or the active width for zero.
+        pub fn trailingZeroBits(x: Self) usize {
+            var count: usize = 0;
+            var found = false;
+            for (x.limbsConst()) |limb| {
+                const is_zero = timing_safe.isZero(Limb, limb);
+                var v = limb;
+                var tz: usize = 0;
+                inline for (.{ 32, 16, 8, 4, 2, 1 }) |s| {
+                    if (s < t_bits) {
+                        const low_zero: timing_safe.Choice = .fromBool(timing_safe.isZero(Limb, v & ((1 << s) - 1)));
+                        tz += timing_safe.select(usize, low_zero, s, 0);
+                        v = timing_safe.select(Limb, low_zero, v >> s, v);
+                    }
+                }
+                count += timing_safe.select(usize, .fromBool(found), 0, timing_safe.select(usize, .fromBool(is_zero), t_bits, tz));
+                found |= !is_zero;
+            }
+            return count;
+        }
+
+        /// Shifts the integer right by a secret amount, in constant time.
+        /// The shift must not exceed the active width.
+        pub fn shiftRight(x: *Self, shift: usize) void {
+            assert(shift <= x.limbs_len * t_bits);
+            for (0..@bitSizeOf(usize)) |i| {
+                const bit = @as(usize, 1) << @intCast(i);
+                if (bit > x.limbs_len * t_bits) break;
+                var shifted = x.*;
+                shifted.shiftRightPublic(bit);
+                x.cmov(!timing_safe.isZero(usize, shift & bit), shifted);
+            }
+        }
+
+        /// Returns the least common multiple of two nonzero integers, in constant time.
+        pub fn lcm(x: Self, y: Self) Uint(2 * capacity_bits) {
+            const Wide = Uint(2 * capacity_bits);
+            assert(!x.isZero() and !y.isZero());
+
+            // Binary GCD with a fixed number of iterations, counting the common factors of two in `shift`.
+            var u = x;
+            var v = y;
+            u.expandTo(max_limbs_count);
+            v.expandTo(max_limbs_count);
+            var shift: usize = 0;
+            for (0..2 * capacity_bits) |_| {
+                const both_odd = u.isOdd() & v.isOdd();
+                const u_lt_v = ct.limbsCmpLt(u, v);
+                _ = u.conditionalSubWithOverflow(both_odd & !u_lt_v, v);
+                _ = v.conditionalSubWithOverflow(both_odd & u_lt_v, u);
+                const u_even = !u.isOdd();
+                const v_even = !v.isOdd();
+                shift += timing_safe.select(usize, .fromBool(u_even & v_even), 1, 0);
+                var t = u;
+                _ = t.shiftRightByOneWithCarry(0);
+                u.cmov(u_even, t);
+                t = v;
+                _ = t.shiftRightByOneWithCarry(0);
+                v.cmov(v_even, t);
+            }
+            // u is now zero, and v is the odd part of the GCD.
+            var product = Wide.zero;
+            _ = product.mulAddWithOverflow(x.cast(Wide) catch unreachable, y.cast(Wide) catch unreachable);
+            product.divExact(v.cast(Wide) catch unreachable);
+            product.shiftRight(shift);
+            return product;
+        }
+
+        // d must be odd and divide x, and both must have all their limbs active.
+        fn divExact(x: *Self, d: Self) void {
+            assert(x.limbs_len == max_limbs_count and d.limbs_len == max_limbs_count);
+            // Newton's method for d^-1 mod 2^capacity_bits, starting from d, which is its own inverse mod 8.
+            var inv = d;
+            var precision: usize = 3;
+            while (precision < capacity_bits) : (precision *|= 2) {
+                var t = Self.zero;
+                _ = t.mulAddWithOverflow(d, inv);
+                var two_minus_t = Self.fromPrimitive(u8, 2) catch unreachable;
+                _ = two_minus_t.subWithOverflow(t);
+                t = Self.zero;
+                _ = t.mulAddWithOverflow(inv, two_minus_t);
+                inv = t;
+            }
+            var q = Self.zero;
+            _ = q.mulAddWithOverflow(x.*, inv);
+            x.* = q;
+        }
+
+        /// Returns the inverse of a small, public, odd `e` modulo the integer, or `null` if it doesn't exist.
+        /// The integer can be secret and even, and both it and `e` must be larger than 1.
+        pub fn inverseOfSmall(x: Self, e: u32) ?Self {
+            assert(e > 1 and e & 1 == 1);
+            const Wide = Uint(capacity_bits + 32);
+            const me = Modulus(32).fromPrimitive(u32, e) catch unreachable;
+            const xw = x.cast(Wide) catch unreachable;
+            const u = (me.invert(me.reduce(xw)) orelse return null).toPrimitive(u32) catch unreachable;
+
+            // e * ((1 + x * (e - u)) / e) = 1 + x * (e - u), which is 1 modulo x, and the division is exact.
+            var n = Wide.fromPrimitive(u8, 1) catch unreachable;
+            _ = n.mulAddWithOverflow(xw, Wide.fromPrimitive(u32, e - u) catch unreachable);
+            n.divExact(Wide.fromPrimitive(u32, e) catch unreachable);
+            return n.cast(Self) catch unreachable;
+        }
+
         fn expandTo(x: *Self, new_len: usize) void {
             assert(new_len >= x.limbs_len and new_len <= x.limbs_buffer.len);
             @memset(x.limbs_buffer[x.limbs_len..new_len], 0);
             x.limbs_len = new_len;
         }
 
-        // Replaces the limbs of `x` with the limbs of `y` if `on` is `true`.
-        fn cmov(x: *Self, on: bool, y: Self) void {
+        /// Replaces the limbs of `x` with the limbs of `y` if `on` is `true`.
+        pub fn cmov(x: *Self, on: bool, y: Self) void {
             const choice: timing_safe.Choice = .fromBool(on);
-            for (x.limbs(), y.limbsConst()) |*x_limb, y_limb| {
+            // Unused limbs are zero, so the narrower operand is zero-extended.
+            const len = @max(x.limbs_len, y.limbs_len);
+            for (x.limbs_buffer[0..len], y.limbs_buffer[0..len]) |*x_limb, y_limb| {
                 x_limb.* = timing_safe.select(Limb, choice, y_limb, x_limb.*);
             }
+            x.limbs_len = len;
         }
 
         // Zeroed unused limbs allow `y` to be narrower than `x`.
@@ -522,6 +656,7 @@ fn FieldElement(comptime bits: comptime_int) type {
         }
 
         /// Compares two field elements in constant time.
+        /// Both elements must be in plain form.
         pub fn compare(x: Self, y: Self) math.Order {
             assert(!x.montgomery and !y.montgomery);
             return x.v.compare(y.v);
@@ -572,14 +707,6 @@ fn decodeBytes(limbs: []Limb, bytes: []const u8, comptime endian: Endian) Limb {
         }
     }
     return acc;
-}
-
-fn orLimbs(limbs: []const Limb) Limb {
-    var t: Limb = 0;
-    for (limbs) |limb| {
-        t |= limb;
-    }
-    return t;
 }
 
 // Adds `x * y` to `z` and returns the carry.
@@ -730,8 +857,21 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             return fromBytesWithOptions(bytes, endian, .{});
         }
 
-        /// Creates a secret modulus, such as a blinded RSA prime.
-        /// The modulus must be odd and between 2^(announced_bits-2) and 2^announced_bits
+        /// Creates a modulus that has to stay secret, such as a blinded RSA prime.
+        ///
+        /// The size of the modulus isn't measured, `announced_bits` is used instead.
+        /// The modulus must be larger than 2^(announced_bits-2) and smaller than 2^announced_bits.
+        /// For example, the product of two odd numbers larger than 1 meets these conditions, with the sum of their sizes as `announced_bits`.
+        ///
+        /// The modulus can also be even, like p - 1 for an RSA prime p.
+        /// Its parity is then public, and only add(), sub(), mul(), sq(), reduce() and the conversions run in constant time.
+        ///
+        /// These conditions are not checked, because that would leak information about the modulus.
+        /// Using a modulus that doesn't meet them is illegal behavior.
+        ///
+        /// With a secret modulus, don't use functions with Public in their name, rejectNonCanonical(), Fe.fromBytes(), Fe.fromPrimitive() or Fe.toPrimitive(), as they can leak information about it.
+        /// Create field elements with reduce() or fromBytesReduced() instead.
+        /// When serializing an element or the modulus with toBytes(), use at least encodedLen() bytes.
         pub fn fromUintSecret(v: FeUint, announced_bits: usize) (InvalidModulusError || OverflowError)!Self {
             if (announced_bits < 2) return error.ModulusTooSmall;
             if (announced_bits > FeUint.capacity_bits) return error.Overflow;
@@ -741,7 +881,13 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             @memset(mv.limbs_buffer[mv.limbs_len..], 0);
 
             var m = initWithoutRR(mv, mv.limbs_len * t_bits - announced_bits, computeM0Inv(mv.limbsConst()[0]));
-            computeRR(&m, announced_bits - 2); // 2^(announced_bits-2) < v
+            if (!mv.isOdd()) {
+                m.rr = m.zero;
+                return m;
+            }
+
+            // We know that the modulus is above 2^(announced_bits-2) without having to look at it.
+            computeRR(&m, announced_bits - 2);
 
             return m;
         }
@@ -794,7 +940,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         pub fn fromProductWithOptions(a: FeUint, b: FeUint, options: Options) (InvalidModulusError || OverflowError)!Self {
             const product = fullProduct(a.limbsConst(), b.limbsConst());
 
-            if (orLimbs(product.limbs_buffer[FeUint.max_limbs_count..]) != 0) {
+            if (!timing_safe.isZero([]const Limb, product.limbs_buffer[FeUint.max_limbs_count..])) {
                 return error.Overflow;
             }
 
@@ -1141,6 +1287,37 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
             return out;
         }
 
+        /// Returns the inverse of a secret x, using a random s from the caller to hide it.
+        ///
+        /// This is about twice as fast as invert().
+        /// The modulus must be public, and s must be uniformly random, secret, fresh, and independent of x.
+        /// If x or s isn't invertible, it returns null, and may leak which factors they share with the modulus.
+        pub fn invertBlinded(self: Self, x: Fe, s: Fe) ?Fe {
+            const xs_inv = self.invertPublic(self.mul(x, s)) orelse return null;
+            return self.mul(xs_inv, s);
+        }
+
+        pub const uniform_bytes_length = @divCeil(FeUint.capacity_bits, 8) + 8;
+
+        /// Maps random bytes to a uniform element of [0, m), in constant time.
+        /// The modulus must be public.
+        ///
+        /// Returns null, with a probability below 2^-64, if the bytes have to be rejected, and the caller must then try again with new bytes.
+        pub fn uniform(self: Self, bytes: *const [uniform_bytes_length]u8) ?Fe {
+            const len_bits = uniform_bytes_length * 8;
+            const X = Uint(len_bits + 1);
+            const x = X.fromBytes(bytes, .big) catch unreachable;
+
+            // Reject x if it falls in the last, incomplete copy of the range.
+            var top = X.zero;
+            top.setBit(len_bits);
+            var sum = self.reduce(top).v.cast(X) catch unreachable;
+            _ = sum.addWithOverflow(x);
+            sum.shiftRightPublic(len_bits);
+            if (!sum.isZero()) return null;
+            return self.reduce(x);
+        }
+
         /// Returns the inverses of the given elements, or null if one of them doesn't have one.
         ///
         /// This is much faster than individual inversions: it needs at most one inversion, and uses multiplications for the rest.
@@ -1192,8 +1369,11 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
         }
 
         /// Reduces an arbitrary `Uint`, converting it to a field element.
+        /// The input must have at least as many active limbs as the modulus.
+        ///
+        /// To move an element to another modulus, take it out of Montgomery form, widen its `v` with `Uint.cast()` if needed, and reduce it.
         pub fn reduce(self: Self, x: anytype) Fe {
-            assert(x.limbs_len >= self.limbsCount()); // Input must have at least as many active limbs as the modulus
+            assert(x.limbs_len >= self.limbsCount());
             if (self.v.isOdd()) {
                 const n = self.limbsCount();
                 var acc = self.zero;
@@ -1220,6 +1400,8 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
                     i -= 1;
                     if (j == 0) break;
                 }
+                // With a secret modulus, these limbs can be larger than the modulus, but less than twice as large.
+                _ = out.v.reduceOnce(0, self.v);
             }
             while (true) : (i -= 1) {
                 self.shiftIn(&out, x.limbsConst()[i]);
@@ -1311,9 +1493,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         // Set `public` to `false` for secret exponents.
         fn powWithEncodedExponentInternal(self: Self, x: Fe, e: []const u8, endian: Endian, comptime public: bool) NullExponentError!Fe {
-            var acc: u8 = 0;
-            for (e) |b| acc |= b;
-            if (acc == 0) return error.NullExponent;
+            if (timing_safe.isZero([]const u8, e)) return error.NullExponent;
 
             // Modulus parity is public; even moduli need plain arithmetic.
             if (!self.v.isOdd()) {
@@ -2026,7 +2206,7 @@ test "secret modulus" {
     for ([_]usize{ t_bits, 2 * t_bits, 3 * t_bits }) |bits| {
         // The smallest and largest moduli in the allowed range for both `bits` and `bits + 1`.
         const half = math.shl(T, 1, bits - 1);
-        for ([_]T{ half + 1, half + (half - 1) }) |mv| {
+        for ([_]T{ half + 1, half + (half - 1), half + 2, half + (half - 2) }) |mv| {
             const v = try U.fromPrimitive(T, mv);
             for ([_]usize{ bits, bits + 1 }) |announced_bits| {
                 if (announced_bits > U.capacity_bits) {
@@ -2091,5 +2271,96 @@ test "batch modular inversion" {
             try testing.expect(m.invertBatch(1, .{xs[1]}).?[0].eql(inverses[1]));
             try testing.expect(m.invertBatch(xs.len, .{ xs[0], no_inverse, xs[2] }) == null);
         }
+    }
+}
+
+test "constant-time Uint shifts and conversions" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+
+    const U = Uint(256);
+    var prng = std.Random.DefaultPrng.init(testing.random_seed);
+    const random = prng.random();
+    for (0..200) |_| {
+        const y = try U.fromPrimitive(u256, random.int(u256) >> random.int(u8));
+        try testing.expectEqual(y.trailingZeroBitsPublic(), y.trailingZeroBits());
+        const shift = random.uintAtMost(usize, U.max_limbs_count * t_bits);
+        var z = y;
+        z.shiftRight(shift);
+        var expected = y;
+        expected.shiftRightPublic(shift);
+        try testing.expect(z.eql(expected));
+    }
+    try testing.expectEqual(U.max_limbs_count * t_bits, U.zero.trailingZeroBits());
+    var full = U.zero;
+    full.cmov(true, (try Modulus(256).fromPrimitive(u256, 257)).v);
+    try testing.expectEqual(257, try full.toPrimitive(u256));
+
+    const big = try Uint(512).fromPrimitive(u512, 1 << 400);
+    try testing.expectError(error.Overflow, big.cast(U));
+    const small = try (try U.fromPrimitive(u256, 1 << 200)).normalize().cast(Uint(512));
+    try testing.expectEqual(Uint(512).max_limbs_count, small.limbs_len);
+    try testing.expectEqual(1 << 200, try (try small.cast(U)).toPrimitive(u256));
+}
+
+test "constant-time lcm and inverses of small integers" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+
+    const U = Uint(128);
+    var prng = std.Random.DefaultPrng.init(testing.random_seed);
+    const random = prng.random();
+    for (0..100) |i| {
+        const common: u128 = @as(u128, 1) << @intCast(i % 20);
+        const a = (random.int(u64) | 1) * common;
+        const b = (random.int(u64) | 1) * common * @as(u128, if (i % 3 == 0) 3 else 1);
+        const l = (try U.fromPrimitive(u128, a)).lcm(try U.fromPrimitive(u128, b));
+        try testing.expectEqual((@as(u256, a) * b) / math.gcd(a, b), try l.toPrimitive(u256));
+
+        const m = random.int(u128) | 2;
+        for ([_]u32{ 3, 65537, math.maxInt(u32) }) |e| {
+            const inv = try U.fromPrimitive(u128, m);
+            if (inv.inverseOfSmall(e)) |y| {
+                const yv = try y.toPrimitive(u128);
+                try testing.expect(yv < m);
+                try testing.expectEqual(1, (@as(u256, yv) * e) % m);
+            } else {
+                try testing.expect(math.gcd(m, e) != 1);
+            }
+        }
+    }
+    // Values that use the whole capacity of a single limb.
+    const top = try Uint(1).fromPrimitive(Limb, 1 << (t_bits - 1));
+    try testing.expectEqual(1 << (t_bits - 1), try top.lcm(top).toPrimitive(Limb));
+    try testing.expectEqual(1, (@as(u128, try top.inverseOfSmall(3).?.toPrimitive(Limb)) * 3) % (1 << (t_bits - 1)));
+    // A one-limb integer with an exponent that needs two limbs on 32-bit targets.
+    const x31 = try Uint(31).fromPrimitive(u32, 1000003);
+    const inv31 = try x31.inverseOfSmall(0xfffffffb).?.toPrimitive(u32);
+    try testing.expectEqual(1, (@as(u64, inv31) * 0xfffffffb) % 1000003);
+    try testing.expect((try U.fromPrimitive(u8, 6)).inverseOfSmall(3) == null);
+    try testing.expectEqual(3, try (try U.fromPrimitive(u8, 8)).inverseOfSmall(3).?.toPrimitive(u8));
+}
+
+test "uniform sampling and blinded inversion" {
+    if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
+
+    const M = Modulus(64);
+    const len_bits = M.uniform_bytes_length * 8;
+    const X = @Int(.unsigned, len_bits + 1);
+    for ([_]u64{ 3, 65537, math.maxInt(u64) - 58 }) |mv| {
+        const m = try M.fromPrimitive(u64, mv);
+        const bound = (@as(X, 1) << len_bits) / mv * mv;
+        for ([_]X{ 0, 1, mv, bound - 1, bound, (1 << len_bits) - 1 }) |xv| {
+            var bytes: [M.uniform_bytes_length]u8 = undefined;
+            mem.writeInt(@Int(.unsigned, len_bits), &bytes, @intCast(xv), .big);
+            const fe = m.uniform(&bytes);
+            if (xv >= bound) {
+                try testing.expect(fe == null);
+            } else {
+                try testing.expectEqual(xv % mv, try fe.?.toPrimitive(u64));
+            }
+        }
+        const x = try M.Fe.fromPrimitive(u64, m, 2);
+        const s = try M.Fe.fromPrimitive(u64, m, mv - 1);
+        try testing.expect(m.isOne(m.mul(x, m.invertBlinded(x, s).?)));
+        try testing.expect(m.invertBlinded(m.zero, s) == null);
     }
 }
