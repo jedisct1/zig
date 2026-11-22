@@ -634,7 +634,7 @@ pub fn Modulus(comptime max_bits: comptime_int) type {
 
         /// R^2 for the Montgomery representation.
         rr: Fe,
-        /// Inverse of the first limb
+        /// Minus the inverse of the first limb, modulo 2^t_bits
         m0inv: Limb,
         /// Number of leading zero bits in the modulus.
         leading: usize,
@@ -1489,7 +1489,7 @@ const ct_protected = struct {
 };
 
 const ct_unprotected = struct {
-    // Compares two big integers in constant time, returning true if x < y.
+    // Compares two big integers, returning true if x < y.
     fn limbsCmpLt(x: anytype, y: @TypeOf(x)) bool {
         const x_limbs = x.limbsConst();
         const y_limbs = y.limbsConst();
@@ -1505,7 +1505,7 @@ const ct_unprotected = struct {
         return false;
     }
 
-    // Compares two big integers in constant time, returning true if x >= y.
+    // Compares two big integers, returning true if x >= y.
     fn limbsCmpGeq(x: anytype, y: @TypeOf(x)) bool {
         return !limbsCmpLt(x, y);
     }
