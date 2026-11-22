@@ -95,7 +95,7 @@ const LoadCommand = enum(u32) {
             macho.node.header.sliceConst(&macho.mf)[lc.offset(macho)..][0..@sizeOf(Cmd)],
         ));
     }
-    fn ptr(lc: LoadCommand, macho: *MachO, comptime Cmd: type) *align(8) Cmd {
+    fn ptr(lc: LoadCommand, macho: *const MachO, comptime Cmd: type) *align(8) Cmd {
         return @ptrCast(@alignCast(
             macho.node.header.slice(&macho.mf)[lc.offset(macho)..][0..@sizeOf(Cmd)],
         ));
@@ -119,7 +119,7 @@ const Segment = enum(u8) {
     fn lcPtrConst(seg: Segment, macho: *const MachO) *const std.macho.segment_command_64 {
         return seg.lc(macho).ptrConst(macho, std.macho.segment_command_64);
     }
-    fn lcPtr(seg: Segment, macho: *MachO) *std.macho.segment_command_64 {
+    fn lcPtr(seg: Segment, macho: *const MachO) *std.macho.segment_command_64 {
         return seg.lc(macho).ptr(macho, std.macho.segment_command_64);
     }
 
@@ -156,7 +156,7 @@ const Section = enum(u8) {
     fn lcPtrConst(sect: Section, macho: *const MachO) *const std.macho.section_64 {
         return sect.lc(macho).ptrConst(macho, std.macho.section_64);
     }
-    fn lcPtr(sect: Section, macho: *MachO) *std.macho.section_64 {
+    fn lcPtr(sect: Section, macho: *const MachO) *std.macho.section_64 {
         return sect.lc(macho).ptr(macho, std.macho.section_64);
     }
 
@@ -269,7 +269,7 @@ const InputAtom = struct {
 
     const Index = enum(u32) {
         _,
-        fn ptr(iai: InputAtom.Index, macho: *MachO) *InputAtom {
+        fn ptr(iai: InputAtom.Index, macho: *const MachO) *InputAtom {
             return &macho.input_atoms.items[@backingInt(iai)];
         }
         fn ptrConst(iai: InputAtom.Index, macho: *const MachO) *const InputAtom {
@@ -289,13 +289,13 @@ const Symbol = struct {
 
     const Index = enum(u32) {
         _,
-        fn ptr(i: Index, macho: *MachO) *Symbol {
+        fn ptr(i: Index, macho: *const MachO) *Symbol {
             return &macho.symtab.items[@backingInt(i)];
         }
         fn ptrConst(i: Index, macho: *const MachO) *const Symbol {
             return &macho.symtab.items[@backingInt(i)];
         }
-        fn nlist(i: Index, macho: *MachO) *std.macho.nlist_64 {
+        fn nlist(i: Index, macho: *const MachO) *std.macho.nlist_64 {
             const nsyms = macho.targetLoad(
                 &macho.lc.symtab.ptrConst(macho, std.macho.symtab_command).nsyms,
             );
@@ -366,7 +366,7 @@ const Symbol = struct {
     };
 
     const GlobalAdapter = struct {
-        macho: *MachO,
+        macho: *const MachO,
         pub fn eql(ctx: GlobalAdapter, lhs_slice: []const u8, rhs_symbol: Symbol.Index, _: usize) bool {
             const macho = ctx.macho;
             return std.mem.eql(u8, lhs_slice, rhs_symbol.name(macho));
@@ -666,7 +666,7 @@ const Reloc = struct {
             }
         };
 
-        fn ptr(ri: Reloc.Index, macho: *MachO) *Reloc {
+        fn ptr(ri: Reloc.Index, macho: *const MachO) *Reloc {
             return &macho.relocs.items[@backingInt(ri)];
         }
     };
@@ -1504,7 +1504,7 @@ fn setGlobalSymbolValue(macho: *MachO, symbol: Symbol.Index, opts: struct {
         });
     }
 }
-fn globalByName(macho: *MachO, name: []const u8) Symbol.Index.Optional {
+fn globalByName(macho: *const MachO, name: []const u8) Symbol.Index.Optional {
     const adapter: Symbol.GlobalAdapter = .{ .macho = macho };
     if (macho.global_symbols.getKeyAdapted(name, adapter)) |symbol| {
         return .wrap(symbol);
@@ -3848,7 +3848,7 @@ pub fn updateExports(
     @panic("TODO");
 }
 
-fn dumpStderr(macho: *MachO) Io.File.Writer.Error!void {
+fn dumpStderr(macho: *const MachO) Io.File.Writer.Error!void {
     const comp = macho.base.comp;
     const io = comp.io;
     var buffer: [512]u8 = undefined;
@@ -3860,7 +3860,7 @@ fn dumpStderr(macho: *MachO) Io.File.Writer.Error!void {
     };
 }
 
-pub fn dump(macho: *MachO, w: *Io.Writer) !link.File.DumpResult {
+pub fn dump(macho: *const MachO, w: *Io.Writer) !link.File.DumpResult {
     if (macho.options.enable_link_snapshots) {
         try macho.printNode(w, .root, 0);
         return .enabled;

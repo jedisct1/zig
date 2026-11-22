@@ -232,17 +232,29 @@ pub const Line = struct {
         line_range: u8,
         opcode_base: u8,
     };
+
+    pub fn cleanHeaderChanged(l: *Line) bool {
+        defer l.header_changed = false;
+        return l.header_changed;
+    }
 };
 
 pub const Rnglists = struct {
     header_ni: link.MappedFile.Node.Index.Optional,
     header_size: usize,
+    compile_unit_ni: link.MappedFile.Node.Index.Optional,
+    compile_unit_end: usize,
+    compile_unit_ranges_changed: bool,
 
     fn tableOffset(dwarf: *const Dwarf) usize {
         return dwarf.unitLengthSize() + 2 + 1 + 1 + 4;
     }
 
-    pub fn size(dwarf: *const Dwarf, mi: Module.Index) usize {
+    pub fn compileUnitSize(r: *const Rnglists) usize {
+        return r.compile_unit_end + 1;
+    }
+
+    pub fn moduleSize(dwarf: *const Dwarf, mi: Module.Index) usize {
         return mi.ptr(dwarf).debug_rnglists_end + 1;
     }
 };
@@ -1356,6 +1368,9 @@ pub fn init(lf: *link.File, format: DW.Format) Dwarf {
         .debug_rnglists = .{
             .header_ni = .none,
             .header_size = 0,
+            .compile_unit_ni = .none,
+            .compile_unit_end = 0,
+            .compile_unit_ranges_changed = false,
         },
         .debug_str_offsets = .{
             .ni = .none,
@@ -1431,11 +1446,6 @@ pub fn getFile(dwarf: *Dwarf, zfi: Zcu.File.Index) std.mem.Allocator.Error!File.
         dwarf.debug_line.header_changed = true;
     }
     return @fromBackingInt(@intCast(file_gop.index));
-}
-
-pub fn cleanDebugLineHeaderChanged(dwarf: *Dwarf) bool {
-    defer dwarf.debug_line.header_changed = false;
-    return dwarf.debug_line.header_changed;
 }
 
 pub fn getConst(dwarf: *Dwarf, pt: Zcu.PerThread, val: Value) link.Error!link.ConstPool.Index {
@@ -1811,6 +1821,7 @@ pub fn genDebugInfoHeader(dwarf: *Dwarf, dih_nw: *link.MappedFile.Node.Writer) l
     defer comp.gpa.free(comp_dir_path);
     try dwarf.strp(.debug_line_str, dih_nw, comp_dir_path);
     try dwarf.strp(.debug_line_str, dih_nw, comp.root_name);
+    try dih_w.writeUleb128(0);
     for ([2]AbbrevCode{ .pad_1, .pad_n }) |pad| _ = try dwarf.refAbbrevCode(dih_nw.mf, pad);
     dwarf.debug_info.header_size = dih_w.end;
 }
@@ -1827,7 +1838,7 @@ pub fn genDebugInfoModule(
     if (!module.alive) return dwarf.genUnitPadding(dim_w);
     try dwarf.abbrevCode(dim_nw, .module);
     try dwarf.strx(dim_nw, zig_module.fully_qualified_name);
-    try dim_w.writeUleb128(@backingInt(mi));
+    try dim_w.writeUleb128(1 + @backingInt(mi));
     if (zcu.builtin_modules.get(zig_module.getBuiltinOptions(zcu.comp.config).hash())) |builtin_mod| {
         try dwarf.genModuleDependency(dim_nw, "builtin", builtin_mod);
     }
@@ -2016,10 +2027,11 @@ pub fn genDebugRnglistsHeader(dwarf: *Dwarf, drh_nw: *link.MappedFile.Node.Write
     try dwarf.genUnitLength(drh_w);
     try drh_w.writeInt(u16, 5, dwarf.endian);
     try drh_w.writeAll(&.{ @backingInt(dwarf.address_size), 0 });
-    try drh_w.writeInt(u32, @intCast(dwarf.modules.len), dwarf.endian);
+    const offset_entry_count = 1 + dwarf.modules.len;
+    try drh_w.writeInt(u32, @intCast(offset_entry_count), dwarf.endian);
     const table_offset = Rnglists.tableOffset(dwarf);
     assert(drh_w.end == table_offset);
-    for (0..dwarf.modules.len) |_| switch (dwarf.format) {
+    for (0..offset_entry_count) |_| switch (dwarf.format) {
         .@"32" => try drh_w.writeInt(u32, std.math.maxInt(u32), dwarf.endian),
         .@"64" => try drh_w.writeInt(u64, std.math.maxInt(u64), dwarf.endian),
     };
@@ -2029,11 +2041,13 @@ pub fn genDebugRnglistsHeader(dwarf: *Dwarf, drh_nw: *link.MappedFile.Node.Write
 pub fn updateDebugRnglistsHeader(
     dwarf: *const Dwarf,
     header: []u8,
-    mi: Module.Index,
+    /// `null` means compile unit
+    maybe_mi: ?Module.Index,
     module_offset: u64,
 ) void {
     const table_offset = Rnglists.tableOffset(dwarf);
-    const offset_entry = header[table_offset + dwarf.secOffsetSize() * @backingInt(mi) ..];
+    const table_index = if (maybe_mi) |mi| 1 + @backingInt(mi) else 0;
+    const offset_entry = header[table_offset + dwarf.secOffsetSize() * table_index ..];
     const offset = module_offset - table_offset;
     switch (dwarf.format) {
         .@"32" => std.mem.writeInt(u32, offset_entry[0..4], @intCast(offset), dwarf.endian),
@@ -2041,7 +2055,38 @@ pub fn updateDebugRnglistsHeader(
     }
 }
 
-pub fn genDebugRnglistsRange(
+pub fn genDebugRnglistsCompileUnitRange(
+    dwarf: *Dwarf,
+    dr_nw: *link.MappedFile.Node.Writer,
+    start_ni: link.MappedFile.Node.Index,
+    end_ni: link.MappedFile.Node.Index,
+) link.EmitError!void {
+    const dr_w = &dr_nw.interface;
+    dr_w.end = dwarf.debug_rnglists.compile_unit_end;
+    try dr_w.writeByte(DW.RLE.start_end);
+    if (dwarf.lf.cast(.elf2)) |elf| {
+        try elf.addReloc(
+            dr_nw.ni,
+            dr_w.end,
+            .{ .node = start_ni },
+            0,
+            .absAddr(elf),
+        );
+        try dwarf.addrPlaceholder(dr_w);
+        try elf.addReloc(
+            dr_nw.ni,
+            dr_w.end,
+            .{ .node = end_ni },
+            0,
+            .absAddr(elf),
+        );
+        try dwarf.addrPlaceholder(dr_w);
+    } else unreachable;
+    dwarf.debug_rnglists.compile_unit_end = dr_w.end;
+    try dr_w.writeByte(DW.RLE.end_of_list);
+}
+
+pub fn genDebugRnglistsModuleRange(
     dwarf: *Dwarf,
     module: *Module,
     dr_nw: *link.MappedFile.Node.Writer,
@@ -6277,6 +6322,7 @@ pub const AbbrevCode = enum {
                 .{ .producer, .strx1 },
                 .{ .comp_dir, .line_strp },
                 .{ .name, .line_strp },
+                .{ .ranges, .rnglistx },
             },
         },
     });

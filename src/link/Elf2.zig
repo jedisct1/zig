@@ -184,6 +184,7 @@ input_pending_index: u32,
 input_sections: std.ArrayList(Input.Section),
 input_section_pending_index: u32,
 merge_sections: std.array_hash_map.Custom(Section.Merge.Key, Section.Merge, void, true),
+zav_ranges: std.EnumArray(Zav.Range.Key, std.array_hash_map.Custom(void, Zav.Range, void, true)),
 /// SPARC has some weird relocations which involve setting some bits to fixed constant values. When
 /// we encounter such a relocation, we queue the action here, and apply them during `idle`.
 one_shot_fixups: std.ArrayList(struct {
@@ -232,6 +233,7 @@ debug_line_header_first_target_reloc: Reloc.Index,
 debug_line_header_first_reloc: Reloc.Index,
 debug_line_str_msi: Section.Merge.Index,
 debug_rnglists_header_first_target_reloc: Reloc.Index,
+debug_rnglists_compile_unit_relocs: std.ArrayList(Reloc.Index),
 debug_str_msi: Section.Merge.Index,
 debug_str_offsets_first_target_reloc: Reloc.Index,
 debug_str_offsets_relocs: std.ArrayList(Reloc.Index),
@@ -291,6 +293,8 @@ const Node = union(enum) {
     /// May contain relocations.
     input_section: Input.Section.Index,
     merge_section: Section.Merge.Index,
+    compile_unit_range: Zav.Range.Index(.compile_unit_ranges),
+    zav_range_end,
     /// May contain relocations.
     nav: NavMapIndex,
     /// May contain relocations.
@@ -318,6 +322,7 @@ const Node = union(enum) {
     debug_line_header,
     debug_line_func: Dwarf.Func.Index,
     debug_rnglists_header,
+    debug_rnglists_compile_unit,
     debug_rnglists_module: Dwarf.Module.Index,
     debug_str_offsets,
 
@@ -389,12 +394,12 @@ const Node = union(enum) {
         return @bitCast(atom);
     }
 
-    fn fmtDebug(ni: MappedFile.Node.Index, elf: *Elf) FormatDebug {
+    fn fmtDebug(ni: MappedFile.Node.Index, elf: *const Elf) FormatDebug {
         return .{ .ni = ni, .elf = elf };
     }
     const FormatDebug = struct {
         ni: MappedFile.Node.Index,
-        elf: *Elf,
+        elf: *const Elf,
         pub fn format(ctx: FormatDebug, w: *Io.Writer) Io.Writer.Error!void {
             const elf = ctx.elf;
             const node = elf.getNode(ctx.ni);
@@ -408,6 +413,7 @@ const Node = union(enum) {
                 .elf,
                 .ehdr,
                 .shdr,
+                .zav_range_end,
                 .debug_abbrev,
                 .debug_addr,
                 .eh_frame_cie,
@@ -417,6 +423,7 @@ const Node = union(enum) {
                 .debug_info_footer,
                 .debug_line_header,
                 .debug_rnglists_header,
+                .debug_rnglists_compile_unit,
                 .debug_str_offsets,
                 => |no_payload| no_payload,
 
@@ -462,9 +469,12 @@ const Node = union(enum) {
                     try w.print("{}, {d}, {q}", .{
                         key.kind,
                         key.entrySize(),
-                        elf.getNodeShndx(msi.ptr(elf).node).name(elf).slice(elf),
+                        msi.shndx(elf).name(elf).slice(elf),
                     });
                 },
+                inline .compile_unit_range => |zri| try w.print("{q}", .{
+                    zri.shndx(elf).name(elf).slice(elf),
+                }),
                 .nav => |nmi| {
                     const ip = &elf.base.comp.zcu.?.intern_pool;
                     try w.print("{qf}", .{ip.getNav(nmi.nav(elf)).fqn.fmt(ip)});
@@ -805,7 +815,7 @@ const Section = struct {
     /// File-backed node corresponding to this section.
     /// This is `.none` for `SHT_NOBITS` sections.
     node: MappedFile.Node.Index.Optional,
-    /// The head of a linked list of symbols in this merge section. This first symbol is the section
+    /// The head of a linked list of symbols in this section. This first symbol is the section
     /// symbol for relocatables.
     first_symbol: Symbol.Id,
     rela: union {
@@ -1621,12 +1631,125 @@ const Zav = struct {
     fn node(zav: *const Zav, elf: *const Elf) MappedFile.Node.Index {
         return zav.symbol().index().ptr(elf).node.unwrap().?;
     }
+
+    const Range = struct {
+        node: MappedFile.Node.Index,
+        first_target_reloc: Reloc.Index,
+        end_first_target_reloc: Reloc.Index,
+
+        const Key = enum { compile_unit_ranges };
+
+        const Adapter = struct {
+            elf: *const Elf,
+            key: Key,
+
+            pub fn eql(
+                adapter: Zav.Range.Adapter,
+                lhs_key: Section.Index,
+                rhs_key: void,
+                rhs_index: usize,
+            ) bool {
+                rhs_key;
+                return lhs_key == adapter.elf.getNodeShndx(
+                    adapter.elf.zav_ranges.getPtrConst(adapter.key).values()[rhs_index].node,
+                );
+            }
+
+            pub fn hash(_: Zav.Range.Adapter, key: Section.Index) u32 {
+                return std.hash.int(@backingInt(key));
+            }
+        };
+
+        fn Index(comptime key: Key) type {
+            return enum(u32) {
+                _,
+
+                fn ptr(zri: @This(), elf: *const Elf) *Range {
+                    return &elf.zav_ranges.getPtrConst(key).values()[@backingInt(zri)];
+                }
+
+                fn shndx(zri: @This(), elf: *const Elf) Section.Index {
+                    return elf.getNodeShndx(zri.ptr(elf).node);
+                }
+            };
+        }
+
+        fn getOrCreate(
+            elf: *Elf,
+            ni: MappedFile.Node.Index,
+            key: Key,
+            need_align: Alignment,
+        ) Error!MappedFile.Node.Index {
+            const gpa = elf.base.comp.gpa;
+            const alignment = elf.mf.flags.block_size.max(need_align);
+            var parent_ni = ni;
+            const shndx = while (true) {
+                switch (elf.getNode(parent_ni)) {
+                    else => unreachable,
+                    .section, .section_manual_size => |shndx| break shndx,
+                    .compile_unit_range => if (alignment.compare(.gt, parent_ni.alignment(&elf.mf)))
+                        try parent_ni.realign(gpa, &elf.mf, alignment),
+                }
+                parent_ni = parent_ni.parent(&elf.mf).unwrap().?;
+            };
+            const range_gop = try elf.zav_ranges.getPtr(key).getOrPutAdapted(
+                gpa,
+                shndx,
+                Zav.Range.Adapter{ .elf = elf, .key = key },
+            );
+            if (range_gop.found_existing) {
+                const range_ni = range_gop.value_ptr.node;
+                assert(range_ni.parent(&elf.mf).unwrap().? == ni);
+                if (alignment.compare(.gt, range_ni.alignment(&elf.mf)))
+                    try range_ni.realign(gpa, &elf.mf, alignment);
+                return range_ni;
+            }
+            errdefer _ = elf.zav_ranges.getPtr(key).pop().?;
+            const range_ni = elf.addNodeAssumeCapacity(try ni.addFloatingChild(gpa, &elf.mf, .{
+                .alignment = alignment,
+            }), switch (key) {
+                .compile_unit_ranges => .{
+                    .compile_unit_range = @fromBackingInt(@intCast(range_gop.index)),
+                },
+            });
+            const range_end_ni = elf.addNodeAssumeCapacity(
+                try range_ni.addOnlyFooterChild(gpa, &elf.mf, .{}),
+                .zav_range_end,
+            );
+            range_gop.key_ptr.* = {};
+            range_gop.value_ptr.* = .{
+                .node = range_ni,
+                .first_target_reloc = .none,
+                .end_first_target_reloc = .none,
+            };
+            {
+                const debug_rnglists_ni = elf.dwarf.debug_rnglists.compile_unit_ni.unwrap().?;
+                var dr_nw: MappedFile.Node.Writer = undefined;
+                try debug_rnglists_ni.moved(gpa, &elf.mf);
+                debug_rnglists_ni.writer(gpa, &elf.mf, &dr_nw);
+                defer dr_nw.deinit();
+                const first_ri = elf.relocs.items.len;
+                elf.dwarf.genDebugRnglistsCompileUnitRange(
+                    &dr_nw,
+                    range_ni,
+                    range_end_ni,
+                ) catch |err| switch (err) {
+                    else => |e| return e,
+                    error.WriteFailed => return dr_nw.err.?,
+                };
+                try elf.debug_rnglists_compile_unit_relocs
+                    .ensureUnusedCapacity(gpa, elf.relocs.items.len - first_ri);
+                for (first_ri..elf.relocs.items.len) |ri| elf.debug_rnglists_compile_unit_relocs
+                    .appendAssumeCapacity(@fromBackingInt(@intCast(ri)));
+            }
+            return range_ni;
+        }
+    };
 };
 
 const DebugModule = struct {
     debug_info_first_target_reloc: Reloc.Index,
     debug_info_first_reloc: Reloc.Index,
-    debug_rnglists_first_target_reloc: Reloc.Index,
 
     fn ptr(mi: Dwarf.Module.Index, elf: *const Elf) *DebugModule {
         return &elf.debug_modules[@backingInt(mi)];
@@ -2062,6 +2185,11 @@ const Reloc = struct {
                 .node => |ni| switch (elf.getNode(ni)) {
                     else => unreachable,
                     inline .input_section, .merge_section => |si| &si.ptr(elf).first_target_reloc,
+                    inline .compile_unit_range => |zri| &zri.ptr(elf).first_target_reloc,
+                    .zav_range_end => switch (elf.getNode(ni.parent(&elf.mf).unwrap().?)) {
+                        else => unreachable,
+                        inline .compile_unit_range => |zri| &zri.ptr(elf).end_first_target_reloc,
+                    },
                     .debug_abbrev => &elf.debug_abbrev_first_target_reloc,
                     .debug_addr => &elf.debug_addr_first_target_reloc,
                     .eh_frame_fde => |fi| &DebugFunc.ptr(fi, elf).fde.eh_frame.first_target_reloc,
@@ -2073,8 +2201,6 @@ const Reloc = struct {
                     .debug_info_decl => |di| &DebugDecl.ptr(di, elf).debug_info_first_target_reloc,
                     .debug_line_header => &elf.debug_line_header_first_target_reloc,
                     .debug_rnglists_header => &elf.debug_rnglists_header_first_target_reloc,
-                    .debug_rnglists_module => |mi| &DebugModule.ptr(mi, elf)
-                        .debug_rnglists_first_target_reloc,
                     .debug_str_offsets => &elf.debug_str_offsets_first_target_reloc,
                 },
             };
@@ -5581,6 +5707,8 @@ pub fn symbolForAtom(elf: *Elf, atom: link.File.AtomId) link.File.SymbolId {
         .section_manual_size,
         .input_section,
         .merge_section,
+        .compile_unit_range,
+        .zav_range_end,
         .debug_abbrev,
         .debug_addr,
         .eh_frame_cie,
@@ -5600,6 +5728,7 @@ pub fn symbolForAtom(elf: *Elf, atom: link.File.AtomId) link.File.SymbolId {
         .debug_line_header,
         .debug_line_func,
         .debug_rnglists_header,
+        .debug_rnglists_compile_unit,
         .debug_rnglists_module,
         => unreachable,
         inline .nav, .uav, .lazy_code, .lazy_const_data => |mi| mi.zav(elf).symbol(),
@@ -5613,7 +5742,8 @@ pub fn lazySymbol(elf: *Elf, lazy: link.File.LazySymbol) link.Error!link.File.Sy
     };
 }
 fn lazySymbolInner(elf: *Elf, lazy: link.File.LazySymbol) Error!link.File.SymbolId {
-    const gpa = elf.base.comp.gpa;
+    const comp = elf.base.comp;
+    const gpa = comp.gpa;
 
     try elf.nodes.ensureUnusedCapacity(gpa, 1);
     try elf.lazy.getPtr(lazy.kind).map.ensureUnusedCapacity(gpa, 1);
@@ -5624,8 +5754,26 @@ fn lazySymbolInner(elf: *Elf, lazy: link.File.LazySymbol) Error!link.File.Symbol
             .code => .{ .text, .FUNC },
             .const_data => .{ .rodata, .OBJECT },
         };
+        const shndx_ni = shndx.node(elf);
+        const alignment: Alignment = switch (lazy.kind) {
+            .code => a: {
+                const target = comp.getTarget();
+                break :a .fromIp(switch (comp.root_mod.optimize_mode) {
+                    .debug, .safe, .fast => target_util.defaultFunctionAlignment(target),
+                    .small => target_util.minFunctionAlignment(target),
+                });
+            },
+            .const_data => .@"1",
+        };
+        const parent_ni = switch (lazy.kind) {
+            .code => try Zav.Range.getOrCreate(elf, shndx_ni, .compile_unit_ranges, alignment),
+            .const_data => shndx_ni,
+        };
+        try shndx.ensureAligned(elf, alignment);
         const node = elf.addNodeAssumeCapacity(
-            try shndx.node(elf).addFloatingChild(gpa, &elf.mf, .{}),
+            try parent_ni.addFloatingChild(gpa, &elf.mf, .{
+                .alignment = alignment,
+            }),
             switch (lazy.kind) {
                 .code => .{ .lazy_code = @fromBackingInt(@intCast(gop.index)) },
                 .const_data => .{ .lazy_const_data = @fromBackingInt(@intCast(gop.index)) },
@@ -5962,6 +6110,7 @@ fn create(
         .input_sections = .empty,
         .input_section_pending_index = 0,
         .merge_sections = .empty,
+        .zav_ranges = comptime .initFill(.empty),
         .one_shot_fixups = .empty,
         .navs = .empty,
         .uavs = .empty,
@@ -5992,6 +6141,7 @@ fn create(
         .debug_line_header_first_reloc = .none,
         .debug_line_str_msi = undefined,
         .debug_rnglists_header_first_target_reloc = .none,
+        .debug_rnglists_compile_unit_relocs = .empty,
         .debug_str_msi = undefined,
         .debug_str_offsets_first_target_reloc = .none,
         .debug_str_offsets_relocs = .empty,
@@ -6044,6 +6194,7 @@ pub fn deinit(elf: *Elf) void {
     elf.input_sections.deinit(gpa);
     for (elf.merge_sections.values()) |*merge_section| merge_section.deinit(gpa);
     elf.merge_sections.deinit(gpa);
+    for (&elf.zav_ranges.values) |*zav_range| zav_range.deinit(gpa);
     elf.one_shot_fixups.deinit(gpa);
     elf.navs.deinit(gpa);
     elf.uavs.deinit(gpa);
@@ -6057,6 +6208,7 @@ pub fn deinit(elf: *Elf) void {
 
     elf.dwarf.deinit();
     elf.debug_addr_relocs.deinit(gpa);
+    elf.debug_rnglists_compile_unit_relocs.deinit(gpa);
     elf.debug_str_offsets_relocs.deinit(gpa);
     gpa.free(elf.debug_modules);
     elf.debug_consts.deinit(gpa);
@@ -7546,15 +7698,20 @@ fn getNodeShndx(elf: *const Elf, ni: MappedFile.Node.Index) Section.Index {
         .segment,
         => unreachable,
         .section, .section_manual_size => |shndx| shndx,
-        .input_section,
-        .merge_section,
-        .nav,
-        .uav,
-        .lazy_code,
-        .lazy_const_data,
-        => switch (elf.getNode(ni.parent(&elf.mf).unwrap().?)) {
+        .input_section, .merge_section => switch (elf.getNode(ni.parent(&elf.mf).unwrap().?)) {
             else => unreachable,
             .section, .section_manual_size => |shndx| shndx,
+        },
+        .compile_unit_range, .zav_range_end, .nav, .uav, .lazy_code, .lazy_const_data => {
+            var parent_ni = ni;
+            while (true) {
+                parent_ni = parent_ni.parent(&elf.mf).unwrap().?;
+                switch (elf.getNode(parent_ni)) {
+                    else => unreachable,
+                    .section, .section_manual_size => |shndx| return shndx,
+                    .compile_unit_range => {},
+                }
+            }
         },
         .debug_abbrev => elf.shndx.debug_abbrev,
         .debug_addr => elf.shndx.debug_addr,
@@ -7570,7 +7727,10 @@ fn getNodeShndx(elf: *const Elf, ni: MappedFile.Node.Index) Section.Index {
         .debug_info_footer,
         => elf.shndx.debug_info,
         .debug_line_header, .debug_line_func => elf.shndx.debug_line,
-        .debug_rnglists_header, .debug_rnglists_module => elf.shndx.debug_rnglists,
+        .debug_rnglists_header,
+        .debug_rnglists_module,
+        .debug_rnglists_compile_unit,
+        => elf.shndx.debug_rnglists,
         .debug_str_offsets => elf.shndx.debug_str_offsets,
     };
 }
@@ -7588,7 +7748,8 @@ fn getNodeVAddr(elf: *const Elf, ni: MappedFile.Node.Index) u64 {
         => unreachable,
         .section, .section_manual_size => |shndx| shndx.vaddr(elf),
         inline .input_section, .merge_section => |si| si.ptr(elf).vaddr,
-        inline .nav, .uav, .lazy_code, .lazy_const_data => |mi| mi.zav(elf).symbol().id().value(elf),
+        .compile_unit_range,
+        .zav_range_end,
         .debug_abbrev,
         .debug_addr,
         .eh_frame_cie,
@@ -7607,9 +7768,11 @@ fn getNodeVAddr(elf: *const Elf, ni: MappedFile.Node.Index) u64 {
         .debug_line_header,
         .debug_line_func,
         .debug_rnglists_header,
+        .debug_rnglists_compile_unit,
         .debug_rnglists_module,
         .debug_str_offsets,
         => elf.computeNodeVAddr(ni),
+        inline .nav, .uav, .lazy_code, .lazy_const_data => |mi| mi.zav(elf).symbol().id().value(elf),
     };
 }
 
@@ -7622,51 +7785,58 @@ fn tbssOffset(elf: *const Elf) u64 {
 }
 
 fn computeNodeVAddr(elf: *const Elf, ni: MappedFile.Node.Index) u64 {
-    const parent_ni = ni.parent(&elf.mf).unwrap().?;
-    const parent_vaddr = parent_vaddr: switch (elf.getNode(parent_ni)) {
-        .deleted,
-        .archive,
-        .archive_header,
-        .archive_input_member,
-        .archive_elf_member_header,
-        => unreachable,
-        .elf => return 0,
-        .ehdr, .shdr => unreachable,
-        .segment => |phndx| switch (elf.phdrSlice()) {
-            inline else => |phdr| elf.targetLoad(&phdr[phndx].vaddr),
-        },
-        .section, .section_manual_size => |shndx| if (shndx == elf.shndx.tdata) 0 else shndx.vaddr(elf),
-        .input_section, .merge_section => unreachable,
-        inline .nav, .uav, .lazy_code, .lazy_const_data => |mi| mi.zav(elf).symbol().id().value(elf),
-        .debug_abbrev,
-        .debug_addr,
-        .eh_frame_cie,
-        .eh_frame_fde,
-        .eh_frame_footer,
-        .debug_frame_cie,
-        .debug_frame_fde,
-        .debug_info_header,
-        .debug_info_module_header,
-        .debug_info_const,
-        .debug_info_global,
-        .debug_info_func,
-        .debug_info_decl,
-        .debug_info_footer,
-        .debug_line_header,
-        .debug_line_func,
-        .debug_rnglists_header,
-        .debug_rnglists_module,
-        .debug_str_offsets,
-        => unreachable,
-        .debug_info_module => {
-            const shndx = elf.shndx.debug_info;
-            assert(elf.getNode(parent_ni.parent(&elf.mf).unwrap().?).section_manual_size == shndx);
-            const section_offset, _ = parent_ni.location(&elf.mf).resolve(&elf.mf);
-            break :parent_vaddr shndx.vaddr(elf) + section_offset;
-        },
-    };
-    const offset, _ = ni.location(&elf.mf).resolve(&elf.mf);
-    return parent_vaddr + offset;
+    var parent_ni = ni;
+    var section_offset: u64 = 0;
+    while (true) {
+        const offset, _ = parent_ni.location(&elf.mf).resolve(&elf.mf);
+        parent_ni = parent_ni.parent(&elf.mf).unwrap().?;
+        section_offset += offset;
+        const section_vaddr = switch (elf.getNode(parent_ni)) {
+            .deleted,
+            .archive,
+            .archive_header,
+            .archive_input_member,
+            .archive_elf_member_header,
+            .ehdr,
+            .shdr,
+            .input_section,
+            .merge_section,
+            .nav,
+            .uav,
+            .lazy_code,
+            .lazy_const_data,
+            .debug_abbrev,
+            .debug_addr,
+            .eh_frame_cie,
+            .eh_frame_fde,
+            .eh_frame_footer,
+            .debug_frame_cie,
+            .debug_frame_fde,
+            .debug_info_header,
+            .debug_info_module_header,
+            .debug_info_const,
+            .debug_info_global,
+            .debug_info_func,
+            .debug_info_decl,
+            .debug_info_footer,
+            .debug_line_header,
+            .debug_line_func,
+            .debug_rnglists_header,
+            .debug_rnglists_compile_unit,
+            .debug_rnglists_module,
+            .debug_str_offsets,
+            => unreachable,
+            .elf => return 0,
+            .segment => |phndx| switch (elf.phdrSlice()) {
+                inline else => |phdr| elf.targetLoad(&phdr[phndx].vaddr),
+            },
+            .section,
+            .section_manual_size,
+            => |shndx| if (shndx == elf.shndx.tdata) 0 else shndx.vaddr(elf),
+            .compile_unit_range, .zav_range_end, .debug_info_module => continue,
+        };
+        return section_vaddr + section_offset;
+    }
 }
 fn computeNodeElfOffset(elf: *const Elf, ni: MappedFile.Node.Index) u64 {
     return ni.fileLocation(&elf.mf, false).offset - elf.ni.elf.fileLocation(&elf.mf, false).offset;
@@ -7692,6 +7862,8 @@ pub fn resetNodeRelocs(elf: *Elf, ni: MappedFile.Node.Index) void {
         .shdr,
         .segment,
         .merge_section,
+        .compile_unit_range,
+        .zav_range_end,
         .debug_abbrev,
         .debug_addr,
         .eh_frame_cie,
@@ -7700,6 +7872,7 @@ pub fn resetNodeRelocs(elf: *Elf, ni: MappedFile.Node.Index) void {
         .debug_info_module,
         .debug_info_footer,
         .debug_rnglists_header,
+        .debug_rnglists_compile_unit,
         .debug_rnglists_module,
         .debug_str_offsets,
         => unreachable, // cannot contain relocs
@@ -8363,13 +8536,14 @@ fn navMapIndex(elf: *Elf, zcu: *Zcu, nav_index: InternPool.Nav.Index) Error!Node
     const nav_gop = elf.navs.getOrPutAssumeCapacity(nav_index);
     const nmi: Node.NavMapIndex = @fromBackingInt(@intCast(nav_gop.index));
     if (!nav_gop.found_existing) {
+        const is_code = ip.isFunctionType(nav.resolved.?.type);
         const shndx: Section.Index = section: {
             if (nav.resolved.?.@"linksection".toSlice(ip)) |@"linksection"| {
                 if (elf.mapInputSection(.{
                     .name = @"linksection",
                     .flags = .{
                         .ALLOC = true,
-                        .EXECINSTR = ip.isFunctionType(nav.resolved.?.type),
+                        .EXECINSTR = is_code,
                         .WRITE = !nav.resolved.?.@"const",
                         .TLS = elf.base.comp.config.any_non_single_threaded and
                             nav.resolved.?.@"threadlocal",
@@ -8394,12 +8568,13 @@ fn navMapIndex(elf: *Elf, zcu: *Zcu, nav_index: InternPool.Nav.Index) Error!Node
                 break :section elf.shndx.tdata;
             } else if (!nav.resolved.?.@"const") {
                 break :section .data;
-            } else if (ip.isFunctionType(nav.resolved.?.type)) {
+            } else if (is_code) {
                 break :section .text;
             } else {
                 break :section .data_rel_ro; // TODO: it would be better to use `.rodata` if the NAV value doesn't have relocs
             }
         };
+        const shndx_ni = shndx.node(elf);
         const alignment: Alignment = switch (Type.fromInterned(nav.resolved.?.type).zigTypeTag(zcu)) {
             .@"fn" => a: {
                 const mod = zcu.navFileScope(nav_index).mod.?;
@@ -8417,8 +8592,12 @@ fn navMapIndex(elf: *Elf, zcu: *Zcu, nav_index: InternPool.Nav.Index) Error!Node
                 else => |a| .fromIp(a),
             },
         };
+        const parent_ni = if (is_code)
+            try Zav.Range.getOrCreate(elf, shndx_ni, .compile_unit_ranges, alignment)
+        else
+            shndx_ni;
         try shndx.ensureAligned(elf, alignment);
-        const node = elf.addNodeAssumeCapacity(try shndx.node(elf).addFloatingChild(gpa, &elf.mf, .{
+        const node = elf.addNodeAssumeCapacity(try parent_ni.addFloatingChild(gpa, &elf.mf, .{
             .alignment = alignment,
         }), .{ .nav = nmi });
         nav_gop.value_ptr.* = .{
@@ -10542,8 +10721,8 @@ fn prelinkInner(elf: *Elf) Error!void {
             .UNDEF => {},
             else => |debug_rnglists_shndx| {
                 const debug_rnglists_ni = debug_rnglists_shndx.node(elf);
-                elf.dwarf.debug_rnglists.header_ni = .wrap(elf.addNodeAssumeCapacity(
-                    try debug_rnglists_ni.addHeaderChildAfter(
+                elf.dwarf.debug_rnglists.header_ni = .wrap(
+                    elf.addNodeAssumeCapacity(try debug_rnglists_ni.addHeaderChildAfter(
                         gpa,
                         &elf.mf,
                         debug_rnglists_ni.last(&elf.mf),
@@ -10552,9 +10731,16 @@ fn prelinkInner(elf: *Elf) Error!void {
                             .moved = true,
                             .next_moved = true,
                         },
-                    ),
-                    .debug_rnglists_header,
-                ));
+                    ), .debug_rnglists_header),
+                );
+                elf.dwarf.debug_rnglists.compile_unit_ni = .wrap(
+                    elf.addNodeAssumeCapacity(try debug_rnglists_ni.addFloatingChild(gpa, &elf.mf, .{
+                        .size = 1,
+                        .enable_next_moved = true,
+                        .moved = true,
+                        .next_moved = true,
+                    }), .debug_rnglists_compile_unit),
+                );
             },
         }
         switch (elf.shndx.debug_str_offsets) {
@@ -10662,7 +10848,6 @@ fn zcuFilesReadyInner(elf: *Elf, zcu: *Zcu) Error!void {
         @memset(elf.debug_modules, .{
             .debug_info_first_target_reloc = .none,
             .debug_info_first_reloc = .none,
-            .debug_rnglists_first_target_reloc = .none,
         });
 
         if (elf.dwarf.debug_rnglists.header_ni.unwrap()) |debug_rnglists_header_ni| {
@@ -10760,7 +10945,7 @@ fn zcuFilesReadyInner(elf: *Elf, zcu: *Zcu) Error!void {
 
 fn flushFiles(elf: *Elf) Error!void {
     const gpa = elf.base.comp.gpa;
-    if (!elf.dwarf.cleanDebugLineHeaderChanged()) return;
+    if (!elf.dwarf.debug_line.cleanHeaderChanged()) return;
     const debug_line_header_ni = elf.dwarf.debug_line.header_ni.unwrap().?;
     try debug_line_header_ni.parent(&elf.mf).unwrap().?.nextMoved(gpa, &elf.mf);
     try debug_line_header_ni.moved(gpa, &elf.mf);
@@ -11019,6 +11204,7 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
         break :oni .none;
     };
     const addr = if (oni.unwrap()) |ni| elf.computeNodeVAddr(ni) else 0;
+    const offset = if (oni.unwrap()) |ni| elf.computeNodeElfOffset(ni) else 0;
     const section = elf.shdrs.addOneAssumeCapacity();
     section.* = .{
         .node = oni,
@@ -11036,7 +11222,7 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
                 .type = opts.type,
                 .flags = .{ .shf = opts.flags },
                 .addr = @intCast(addr),
-                .offset = if (oni.unwrap()) |ni| @intCast(elf.computeNodeElfOffset(ni)) else 0,
+                .offset = @intCast(offset),
                 .size = @intCast(opts.size),
                 .link = opts.link,
                 .info = opts.info,
@@ -12195,7 +12381,7 @@ fn updateFuncInner(
                     defer dr_nw.deinit();
                     const first_ri = elf.relocs.items.len;
                     defer assert(first_ri == elf.relocs.items.len);
-                    debug.wip_func.dwarf.genDebugRnglistsRange(
+                    debug.wip_func.dwarf.genDebugRnglistsModuleRange(
                         module,
                         &dr_nw,
                         debug.wip_func.func_si,
@@ -12292,8 +12478,6 @@ fn flushInner(
     const flush_prog_node = prog_node.start("ELF Flush", 0);
     defer flush_prog_node.end();
 
-    try elf.flushFiles();
-
     if (comp.config.output_mode == .Exe and elf.unknown_globals.count() > 0) {
         for (elf.unknown_globals.keys()) |gsi| {
             diags.addError("undefined global symbol {q}", .{gsi.rawName(elf).slice(elf)});
@@ -12308,10 +12492,9 @@ fn flushInner(
         return error.AlreadyReported;
     }
 
+    try elf.flushFiles();
     try elf.prepareDynamic();
-
     try elf.updateSegmentLoadAddresses();
-
     while (try elf.idle()) {}
 
     assert(elf.input_pending_index == elf.inputs.items.len);
@@ -12809,31 +12992,67 @@ fn genLazyInner(elf: *Elf, pt: Zcu.PerThread, lmr: Node.LazyMapRef) link.Error!v
     // be called to apply the lazy node's new relocations.
     try ni.moved(gpa, &elf.mf);
 
-    var required_alignment: InternPool.Alignment = .none;
-    var nw: MappedFile.Node.Writer = undefined;
-    ni.writer(gpa, &elf.mf, &nw);
-    defer nw.deinit();
-    elf.resetNodeRelocs(ni);
-    codegen.generateLazySymbol(
-        &elf.base,
-        pt,
-        lazy,
-        &required_alignment,
-        &nw.interface,
-        .none,
-        .{ .atom_index = Node.toAtom(ni) },
-    ) catch |err| switch (err) {
-        else => |e| return e,
-        error.WriteFailed => return switch (nw.err.?) {
+    var required_align: InternPool.Alignment = .none;
+    {
+        var nw: MappedFile.Node.Writer = undefined;
+        ni.writer(gpa, &elf.mf, &nw);
+        defer nw.deinit();
+        elf.resetNodeRelocs(ni);
+        codegen.generateLazySymbol(
+            &elf.base,
+            pt,
+            lazy,
+            &required_align,
+            &nw.interface,
+            .none,
+            .{ .atom_index = Node.toAtom(ni) },
+        ) catch |err| switch (err) {
             else => |e| return e,
-            error.MappedFileIo => return elf.base.comp.link_diags.fail(
-                "failed to write output file: {t}",
-                .{elf.mf.io_err.?},
-            ),
+            error.WriteFailed => return switch (nw.err.?) {
+                else => |e| return e,
+                error.MappedFileIo => return zcu.comp.link_diags.fail(
+                    "failed to write output file: {t}",
+                    .{elf.mf.io_err.?},
+                ),
+            },
+        };
+        switch (elf.symPtr(lsi.index())) {
+            inline else => |sym| elf.targetStore(&sym.size, @intCast(nw.interface.end)),
+        }
+    }
+    switch (lazy.kind) {
+        .code => {},
+        .const_data => {
+            const resolved_align: Alignment = .fromIp(required_align);
+            var parent_ni = ni;
+            while (true) {
+                switch (elf.getNode(parent_ni)) {
+                    else => unreachable,
+                    .section, .section_manual_size => |shndx| {
+                        shndx.ensureAligned(elf, resolved_align) catch |err| switch (err) {
+                            else => |e| return e,
+                            error.MappedFileIo => return zcu.comp.link_diags.fail(
+                                "failed to write output file: {t}",
+                                .{elf.mf.io_err.?},
+                            ),
+                        };
+                        break;
+                    },
+                    .compile_unit_range,
+                    .lazy_code,
+                    .lazy_const_data,
+                    => if (resolved_align.compare(.gt, parent_ni.alignment(&elf.mf)))
+                        parent_ni.realign(gpa, &elf.mf, resolved_align) catch |err| switch (err) {
+                            else => |e| return e,
+                            error.MappedFileIo => return zcu.comp.link_diags.fail(
+                                "failed to write output file: {t}",
+                                .{elf.mf.io_err.?},
+                            ),
+                        },
+                }
+                parent_ni = parent_ni.parent(&elf.mf).unwrap().?;
+            }
         },
-    };
-    switch (elf.symPtr(lsi.index())) {
-        inline else => |sym| elf.targetStore(&sym.size, @intCast(nw.interface.end)),
     }
 }
 
@@ -13039,6 +13258,27 @@ fn flushMoved(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!void
                 target_reloc_it = target_reloc.next;
             }
         },
+        inline .compile_unit_range => |zri| {
+            var target_reloc_it = zri.ptr(elf).first_target_reloc;
+            while (target_reloc_it != .none) {
+                const target_reloc = target_reloc_it.ptr(elf);
+                assert(target_reloc.target_payload.node == ni);
+                target_reloc.apply(elf);
+                target_reloc_it = target_reloc.next;
+            }
+        },
+        .zav_range_end => switch (elf.getNode(ni.parent(&elf.mf).unwrap().?)) {
+            else => unreachable,
+            inline .compile_unit_range => |zri| {
+                var target_reloc_it = zri.ptr(elf).end_first_target_reloc;
+                while (target_reloc_it != .none) {
+                    const target_reloc = target_reloc_it.ptr(elf);
+                    assert(target_reloc.target_payload.node == ni);
+                    target_reloc.apply(elf);
+                    target_reloc_it = target_reloc.next;
+                }
+            },
+        },
         inline .nav, .uav, .lazy_code, .lazy_const_data => |mi, tag| {
             const new_addr = elf.computeNodeVAddr(ni);
             const zav = mi.zav(elf);
@@ -13203,18 +13443,30 @@ fn flushMoved(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!void
                 target_reloc_it = target_reloc.next;
             }
         },
-        .debug_rnglists_module => |mi| {
-            var target_reloc_it = DebugModule.ptr(mi, elf).debug_rnglists_first_target_reloc;
-            while (target_reloc_it != .none) {
-                const target_reloc = target_reloc_it.ptr(elf);
-                assert(target_reloc.target_payload.node == ni);
-                target_reloc.apply(elf);
-                target_reloc_it = target_reloc.next;
-            }
+        .debug_rnglists_compile_unit => {
             const header_ni = elf.dwarf.debug_rnglists.header_ni.unwrap().?;
-            const header_offset, _ = header_ni.location(&elf.mf).resolve(&elf.mf);
+            const header_offset, const header_size = header_ni.location(&elf.mf).resolve(&elf.mf);
             const offset, _ = ni.location(&elf.mf).resolve(&elf.mf);
-            elf.dwarf.updateDebugRnglistsHeader(header_ni.slice(&elf.mf), mi, offset - header_offset);
+            if (header_size > 0) elf.dwarf.updateDebugRnglistsHeader(
+                header_ni.slice(&elf.mf),
+                null,
+                offset - header_offset,
+            );
+            for (elf.debug_rnglists_compile_unit_relocs.items) |ri| {
+                const reloc = ri.ptr(elf);
+                assert(reloc.node.unwrap() == ni);
+                reloc.apply(elf);
+            }
+        },
+        .debug_rnglists_module => |mi| {
+            const header_ni = elf.dwarf.debug_rnglists.header_ni.unwrap().?;
+            const header_offset, const header_size = header_ni.location(&elf.mf).resolve(&elf.mf);
+            const offset, _ = ni.location(&elf.mf).resolve(&elf.mf);
+            if (header_size > 0) elf.dwarf.updateDebugRnglistsHeader(
+                header_ni.slice(&elf.mf),
+                mi,
+                offset - header_offset,
+            );
         },
         .debug_str_offsets => {
             var target_reloc_it = elf.debug_str_offsets_first_target_reloc;
@@ -13507,6 +13759,7 @@ fn flushResized(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!vo
                 .none => shndx.setSize(elf, offset + msi.ptr(elf).free_list.items[0]),
             },
         },
+        .compile_unit_range, .zav_range_end => {},
         .nav, .uav, .lazy_code, .lazy_const_data => {},
         .debug_abbrev => elf.shndx.debug_abbrev.setSize(elf, offset + elf.dwarf.debug_abbrev.size()),
         .debug_addr => {
@@ -13530,6 +13783,7 @@ fn flushResized(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!vo
         .debug_line_header,
         .debug_line_func,
         .debug_rnglists_header,
+        .debug_rnglists_compile_unit,
         .debug_rnglists_module,
         => {},
         .debug_str_offsets => {
@@ -13588,6 +13842,8 @@ fn flushPadding(elf: *Elf, ni: MappedFile.Node.Index) link.Error!void {
         .section_manual_size,
         .merge_section,
         .input_section,
+        .compile_unit_range,
+        .zav_range_end,
         .nav,
         .uav,
         .lazy_code,
@@ -13735,13 +13991,14 @@ fn flushPadding(elf: *Elf, ni: MappedFile.Node.Index) link.Error!void {
                 shndx.setSize(elf, end_offset);
             }
         },
-        .debug_rnglists_header, .debug_rnglists_module => {
+        .debug_rnglists_header, .debug_rnglists_compile_unit, .debug_rnglists_module => {
             const shndx = elf.shndx.debug_rnglists;
             const offset, _ = ni.location(&elf.mf).resolve(&elf.mf);
             const end_offset = offset + switch (node) {
                 else => unreachable,
                 .debug_rnglists_header => elf.dwarf.debug_rnglists.header_size,
-                .debug_rnglists_module => |mi| Dwarf.Rnglists.size(&elf.dwarf, mi),
+                .debug_rnglists_compile_unit => elf.dwarf.debug_rnglists.compileUnitSize(),
+                .debug_rnglists_module => |mi| Dwarf.Rnglists.moduleSize(&elf.dwarf, mi),
             };
             if (ni.next(&elf.mf).unwrap()) |next_sibling_ni| {
                 const next_offset, _ = next_sibling_ni.location(&elf.mf).resolve(&elf.mf);
@@ -14245,7 +14502,7 @@ fn updateExportInner(elf: *Elf, export_index: Zcu.Export.Index) Error!void {
     };
 }
 
-fn dumpStderr(elf: *Elf) Io.File.Writer.Error!void {
+fn dumpStderr(elf: *const Elf) Io.File.Writer.Error!void {
     const comp = elf.base.comp;
     const io = comp.io;
     var buffer: [512]u8 = undefined;
@@ -14258,7 +14515,7 @@ fn dumpStderr(elf: *Elf) Io.File.Writer.Error!void {
     try stderr.file_writer.flush();
 }
 
-fn dumpNodeStderr(elf: *Elf, ni: MappedFile.Node.Index) Io.File.Writer.Error!void {
+fn dumpNodeStderr(elf: *const Elf, ni: MappedFile.Node.Index) Io.File.Writer.Error!void {
     const comp = elf.base.comp;
     const io = comp.io;
     var buffer: [512]u8 = undefined;
@@ -14271,7 +14528,7 @@ fn dumpNodeStderr(elf: *Elf, ni: MappedFile.Node.Index) Io.File.Writer.Error!voi
     try stderr.file_writer.flush();
 }
 
-pub fn dump(elf: *Elf, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
+pub fn dump(elf: *const Elf, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
     if (elf.options.enable_link_snapshots) {
         try elf.printNode(w, .root, 0);
         return .enabled;
@@ -14280,7 +14537,7 @@ pub fn dump(elf: *Elf, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
 }
 
 fn printNode(
-    elf: *Elf,
+    elf: *const Elf,
     w: *Io.Writer,
     ni: MappedFile.Node.Index,
     indent: usize,

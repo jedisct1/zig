@@ -503,7 +503,7 @@ pub const Member = struct {
 
         const known_count = @typeInfo(Index).@"enum".field_names.len;
 
-        pub fn get(member_index: Member.Index, coff: *Coff) *Member {
+        pub fn get(member_index: Member.Index, coff: *const Coff) *Member {
             return &coff.members.items[@backingInt(member_index)];
         }
     };
@@ -717,7 +717,7 @@ pub const ExportTable = struct {
     pub const Ordinal = enum(u16) {
         _,
 
-        pub fn get(export_index: ExportTable.Ordinal, coff: *Coff) *Entry {
+        pub fn get(export_index: ExportTable.Ordinal, coff: *const Coff) *Entry {
             return &coff.export_table.entries.values()[@backingInt(export_index)];
         }
     };
@@ -765,7 +765,7 @@ pub const ImportTable = struct {
     pub const Index = enum(u32) {
         _,
 
-        pub fn get(import_index: ImportTable.Index, coff: *Coff) *Entry {
+        pub fn get(import_index: ImportTable.Index, coff: *const Coff) *Entry {
             return &coff.import_table.entries.values()[@backingInt(import_index)];
         }
     };
@@ -813,12 +813,12 @@ pub const String = enum(u32) {
             };
         }
 
-        pub fn toSlice(os: String.Optional, coff: *Coff) ?[:0]const u8 {
+        pub fn toSlice(os: String.Optional, coff: *const Coff) ?[:0]const u8 {
             return (os.unwrap() orelse return null).toSlice(coff);
         }
     };
 
-    pub fn toSlice(s: String, coff: *Coff) [:0]const u8 {
+    pub fn toSlice(s: String, coff: *const Coff) [:0]const u8 {
         const slice = coff.string_bytes.items[@backingInt(s)..];
         return slice[0..std.mem.findScalar(u8, slice, 0).? :0];
     }
@@ -1039,7 +1039,7 @@ pub const Symbol = struct {
             return &coff.section_table.values()[sn.toIndex()];
         }
 
-        pub fn header(sn: SectionNumber, coff: *Coff) *std.coff.SectionHeader {
+        pub fn header(sn: SectionNumber, coff: *const Coff) *std.coff.SectionHeader {
             return &coff.sectionTableSlice()[sn.toIndex()];
         }
     };
@@ -1054,7 +1054,7 @@ pub const Symbol = struct {
 
         const known_count = @typeInfo(Index).@"enum".field_names.len;
 
-        pub fn get(si: Symbol.Index, coff: *Coff) *Symbol {
+        pub fn get(si: Symbol.Index, coff: *const Coff) *Symbol {
             return &coff.symbols.items[@backingInt(si)];
         }
 
@@ -1063,11 +1063,11 @@ pub const Symbol = struct {
             return si;
         }
 
-        pub fn node(si: Symbol.Index, coff: *Coff) MappedFile.Node.Index {
+        pub fn node(si: Symbol.Index, coff: *const Coff) MappedFile.Node.Index {
             return si.get(coff).ni.unwrap().?;
         }
 
-        pub fn sti(si: Symbol.Index, coff: *Coff) SymbolTable.Index {
+        pub fn sti(si: Symbol.Index, coff: *const Coff) SymbolTable.Index {
             assert(!coff.isImage());
             return coff.symbol_table.symbols.get(si) orelse .none;
         }
@@ -1202,7 +1202,7 @@ pub const Reloc = extern struct {
             return @fromBackingInt(@intCast((i orelse return .none) + 1));
         }
 
-        pub fn get(ri: Reloc.Index, coff: *Coff) *Reloc {
+        pub fn get(ri: Reloc.Index, coff: *const Coff) *Reloc {
             return &coff.relocs.items[@backingInt(ri)];
         }
     };
@@ -2520,41 +2520,41 @@ fn targetStore(coff: *const Coff, ptr: anytype, val: @typeInfo(@TypeOf(ptr)).poi
     };
 }
 
-pub fn headerPtr(coff: *Coff) *std.coff.Header {
+pub fn headerPtr(coff: *const Coff) *std.coff.Header {
     assert(coff.hasCoffHeader());
     return @ptrCast(@alignCast(Node.known.coff_header.slice(&coff.mf)));
 }
 
-pub fn firstLinkerMemberNumSymbolsPtr(coff: *Coff) *u32 {
+pub fn firstLinkerMemberNumSymbolsPtr(coff: *const Coff) *u32 {
     assert(coff.isArchive());
     return @ptrCast(@alignCast(Node.known.first_linker_member.slice(&coff.mf)));
 }
 
-pub fn firstLinkerMemberOffsetsSlice(coff: *Coff) []u32 {
+pub fn firstLinkerMemberOffsetsSlice(coff: *const Coff) []u32 {
     const len = std.mem.toNative(u32, coff.firstLinkerMemberNumSymbolsPtr().*, .big);
     return @ptrCast(@alignCast(Node.known.first_linker_member.slice(&coff.mf)[@sizeOf(u32)..][0 .. len * @sizeOf(u32)]));
 }
 
-pub fn secondLinkerMemberNumMembersPtr(coff: *Coff) *align(2) u32 {
+pub fn secondLinkerMemberNumMembersPtr(coff: *const Coff) *align(2) u32 {
     assert(coff.isArchive());
     return @ptrCast(@alignCast(Node.known.second_linker_member.slice(&coff.mf)));
 }
 
-pub fn secondLinkerMemberOffsetsSlice(coff: *Coff) []align(2) u32 {
+pub fn secondLinkerMemberOffsetsSlice(coff: *const Coff) []align(2) u32 {
     const num_members = coff.targetLoad(coff.secondLinkerMemberNumMembersPtr());
     return @ptrCast(@alignCast(
         Node.known.second_linker_member.slice(&coff.mf)[@sizeOf(u32)..][0 .. num_members * @sizeOf(u32)],
     ));
 }
 
-pub fn secondLinkerMemberNumSymbolsPtr(coff: *Coff) *align(2) u32 {
+pub fn secondLinkerMemberNumSymbolsPtr(coff: *const Coff) *align(2) u32 {
     const num_members = coff.targetLoad(coff.secondLinkerMemberNumMembersPtr());
     return @ptrCast(@alignCast(
         Node.known.second_linker_member.slice(&coff.mf)[(1 + num_members) * @sizeOf(u32) ..],
     ));
 }
 
-pub fn secondLinkerMemberIndicesSlice(coff: *Coff) []u16 {
+pub fn secondLinkerMemberIndicesSlice(coff: *const Coff) []u16 {
     const num_members = coff.targetLoad(coff.secondLinkerMemberNumMembersPtr());
     const num_symbols = coff.targetLoad(coff.secondLinkerMemberNumSymbolsPtr());
     return @ptrCast(@alignCast(
@@ -2562,7 +2562,7 @@ pub fn secondLinkerMemberIndicesSlice(coff: *Coff) []u16 {
     ));
 }
 
-pub fn secondLinkerMemberStringsSlice(coff: *Coff) []u8 {
+pub fn secondLinkerMemberStringsSlice(coff: *const Coff) []u8 {
     const num_members = coff.targetLoad(coff.secondLinkerMemberNumMembersPtr());
     const num_symbols = coff.targetLoad(coff.secondLinkerMemberNumSymbolsPtr());
     return @ptrCast(@alignCast(
@@ -2570,7 +2570,7 @@ pub fn secondLinkerMemberStringsSlice(coff: *Coff) []u8 {
     ));
 }
 
-pub fn optionalHeaderStandardPtr(coff: *Coff) *std.coff.OptionalHeader {
+pub fn optionalHeaderStandardPtr(coff: *const Coff) *std.coff.OptionalHeader {
     return @ptrCast(@alignCast(
         Node.known.optional_header.slice(&coff.mf)[0..@sizeOf(std.coff.OptionalHeader)],
     ));
@@ -2580,7 +2580,7 @@ pub const OptionalHeaderPtr = union(std.coff.OptionalHeader.Magic) {
     PE32: *std.coff.OptionalHeader.PE32,
     @"PE32+": *std.coff.OptionalHeader.@"PE32+",
 };
-pub fn optionalHeaderPtr(coff: *Coff) OptionalHeaderPtr {
+pub fn optionalHeaderPtr(coff: *const Coff) OptionalHeaderPtr {
     assert(coff.isImage());
     const slice = Node.known.optional_header.slice(&coff.mf);
     return switch (coff.targetLoad(&coff.optionalHeaderStandardPtr().magic)) {
@@ -2593,7 +2593,7 @@ pub fn optionalHeaderPtr(coff: *Coff) OptionalHeaderPtr {
     };
 }
 pub fn optionalHeaderField(
-    coff: *Coff,
+    coff: *const Coff,
     comptime field: std.meta.FieldEnum(std.coff.OptionalHeader.@"PE32+"),
 ) @FieldType(std.coff.OptionalHeader.@"PE32+", @tagName(field)) {
     assert(coff.isImage());
@@ -2603,38 +2603,41 @@ pub fn optionalHeaderField(
 }
 
 pub fn dataDirectorySlice(
-    coff: *Coff,
+    coff: *const Coff,
 ) *[std.coff.IMAGE.DIRECTORY_ENTRY.len]std.coff.ImageDataDirectory {
     assert(coff.isImage());
     return @ptrCast(@alignCast(Node.known.data_directories.slice(&coff.mf)));
 }
 pub fn dataDirectoryPtr(
-    coff: *Coff,
+    coff: *const Coff,
     entry: std.coff.IMAGE.DIRECTORY_ENTRY,
 ) *std.coff.ImageDataDirectory {
     return &coff.dataDirectorySlice()[@backingInt(entry)];
 }
 
-pub fn sectionTableSlice(coff: *Coff) []std.coff.SectionHeader {
+pub fn sectionTableSlice(coff: *const Coff) []std.coff.SectionHeader {
     return @ptrCast(@alignCast(
         Node.known.section_table.slice(&coff.mf)[0 .. coff.section_table.count() * @sizeOf(std.coff.SectionHeader)],
     ));
 }
 
-pub fn symbolTableEntryStoragePtr(coff: *Coff, index: u32) *[std.coff.Symbol.sizeOf()]u8 {
+pub fn symbolTableEntryStoragePtr(coff: *const Coff, index: u32) *[std.coff.Symbol.sizeOf()]u8 {
     assert(!coff.isImage());
     const offset = index * std.coff.Symbol.sizeOf();
     return @ptrCast(@alignCast(coff.symbol_table.ni.slice(&coff.mf)[offset..][0..std.coff.Symbol.sizeOf()]));
 }
 
-pub fn symbolTableEntryPtr(coff: *Coff, sti: SymbolTable.Index) ?*align(2) std.coff.Symbol {
+pub fn symbolTableEntryPtr(coff: *const Coff, sti: SymbolTable.Index) ?*align(2) std.coff.Symbol {
     if (sti.unwrap()) |index|
         return @ptrCast(@alignCast(symbolTableEntryStoragePtr(coff, index)))
     else
         return null;
 }
 
-pub fn symbolTableSectionAuxEntryPtr(coff: *Coff, sti: SymbolTable.Index) ?*align(2) std.coff.SectionDefinition {
+pub fn symbolTableSectionAuxEntryPtr(
+    coff: *const Coff,
+    sti: SymbolTable.Index,
+) ?*align(2) std.coff.SectionDefinition {
     if (symbolTableEntryPtr(coff, sti)) |entry| {
         assert(entry.storage_class == .STATIC and entry.number_of_aux_symbols == 1);
         return @ptrCast(@alignCast(symbolTableEntryStoragePtr(coff, sti.unwrap().? + 1)));
@@ -2643,7 +2646,10 @@ pub fn symbolTableSectionAuxEntryPtr(coff: *Coff, sti: SymbolTable.Index) ?*alig
     }
 }
 
-pub fn symbolTableWeakExternalAuxEntryPtr(coff: *Coff, sti: SymbolTable.Index) ?*align(2) std.coff.WeakExternalDefinition {
+pub fn symbolTableWeakExternalAuxEntryPtr(
+    coff: *const Coff,
+    sti: SymbolTable.Index,
+) ?*align(2) std.coff.WeakExternalDefinition {
     if (symbolTableEntryPtr(coff, sti)) |entry| {
         assert(entry.storage_class == .WEAK_EXTERNAL and entry.number_of_aux_symbols == 1);
         return @ptrCast(@alignCast(symbolTableEntryStoragePtr(coff, sti.unwrap().? + 1)));
@@ -2652,33 +2658,33 @@ pub fn symbolTableWeakExternalAuxEntryPtr(coff: *Coff, sti: SymbolTable.Index) ?
     }
 }
 
-pub fn symbolTableStringLenPtr(coff: *Coff) *align(1) u32 {
+pub fn symbolTableStringLenPtr(coff: *const Coff) *align(1) u32 {
     return @ptrCast(@alignCast(coff.symbol_table.strings_ni.slice(&coff.mf)[0..@sizeOf(u32)]));
 }
 
-pub fn importDirectoryTableSlice(coff: *Coff) []std.coff.ImportDirectoryEntry {
+pub fn importDirectoryTableSlice(coff: *const Coff) []std.coff.ImportDirectoryEntry {
     assert(coff.isImage());
     return @ptrCast(@alignCast(coff.import_table.ni.slice(&coff.mf)));
 }
 pub fn importDirectoryEntryPtr(
-    coff: *Coff,
+    coff: *const Coff,
     import_index: ImportTable.Index,
 ) *std.coff.ImportDirectoryEntry {
     return &coff.importDirectoryTableSlice()[@backingInt(import_index)];
 }
 
-pub fn exportDirectoryTable(coff: *Coff) *std.coff.ExportDirectoryTable {
+pub fn exportDirectoryTable(coff: *const Coff) *std.coff.ExportDirectoryTable {
     return @ptrCast(@alignCast(coff.export_table.export_directory_table_ni.slice(&coff.mf)));
 }
 
-pub fn exportNamePointerTableSlice(coff: *Coff) []std.coff.ExportNamePointerTableEntry {
+pub fn exportNamePointerTableSlice(coff: *const Coff) []std.coff.ExportNamePointerTableEntry {
     const debug = coff.export_table.name_pointer_table_ni.slice(&coff.mf);
     _ = debug;
 
     return @ptrCast(@alignCast(coff.export_table.name_pointer_table_ni.slice(&coff.mf)));
 }
 
-pub fn exportOrdinalTableSlice(coff: *Coff) []std.coff.ExportOrdinalTableEntry {
+pub fn exportOrdinalTableSlice(coff: *const Coff) []std.coff.ExportOrdinalTableEntry {
     return @ptrCast(@alignCast(coff.export_table.ordinal_table_ni.slice(&coff.mf)));
 }
 
@@ -5692,10 +5698,7 @@ pub fn updateErrorData(coff: *Coff, pt: Zcu.PerThread) !void {
     };
 }
 
-fn flushImplib(
-    coff: *Coff,
-    implib_file: []const u8,
-) !void {
+fn flushImplib(coff: *const Coff, implib_file: []const u8) !void {
     // Emitting implibs is only valid for images
 
     const comp = coff.base.comp;
@@ -5766,7 +5769,7 @@ fn flushImplib(
     try file_writer.interface.flush();
 }
 
-fn reportUndefs(coff: *Coff) !void {
+fn reportUndefs(coff: *const Coff) !void {
     const comp = coff.base.comp;
     const gpa = comp.gpa;
     const max_notes = 4;
@@ -7233,7 +7236,7 @@ fn flushResized(coff: *Coff, ni: MappedFile.Node.Index) !void {
     }
 }
 
-fn flushMember(coff: *Coff, mi: Member.Index) !void {
+fn flushMember(coff: *const Coff, mi: Member.Index) !void {
     const member = mi.get(coff);
     switch (member.kind) {
         .first_linker,
@@ -7242,7 +7245,7 @@ fn flushMember(coff: *Coff, mi: Member.Index) !void {
         => unreachable,
         .second_linker => {
             const Context = struct {
-                coff: *Coff,
+                coff: *const Coff,
                 indices: []u16,
                 strings: []String,
 
@@ -7285,9 +7288,9 @@ fn flushMember(coff: *Coff, mi: Member.Index) !void {
     }
 }
 
-fn flushExportsSort(coff: *Coff) void {
+fn flushExportsSort(coff: *const Coff) void {
     const Context = struct {
-        coff: *Coff,
+        coff: *const Coff,
         np: []std.coff.ExportNamePointerTableEntry,
         ord: []std.coff.ExportOrdinalTableEntry,
         entries: []ExportTable.Entry,
@@ -7323,7 +7326,7 @@ fn flushSectionMerges(coff: *Coff) !void {
         try coff.flushSectionMerge(coff.section_merge_pending_index);
 }
 
-fn flushSectionMerge(coff: *Coff, index: u32) !void {
+fn flushSectionMerge(coff: *const Coff, index: u32) !void {
     assert(coff.isImage());
     const from = coff.section_merges.keys()[index];
     const to = coff.section_merges.values()[index];
@@ -7595,7 +7598,7 @@ fn updateExportInner(
     }
 }
 
-fn dumpStderr(coff: *Coff) Io.File.Writer.Error!void {
+fn dumpStderr(coff: *const Coff) Io.File.Writer.Error!void {
     const comp = coff.base.comp;
     const io = comp.io;
     var buffer: [512]u8 = undefined;
@@ -7607,7 +7610,7 @@ fn dumpStderr(coff: *Coff) Io.File.Writer.Error!void {
     };
 }
 
-pub fn dump(coff: *Coff, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
+pub fn dump(coff: *const Coff, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
     if (coff.options.enable_link_snapshots) {
         try coff.printNode(w, .root, 0);
         try w.writeAll("Section table:\n");
@@ -7622,7 +7625,7 @@ pub fn dump(coff: *Coff, w: *Io.Writer) Io.Writer.Error!link.File.DumpResult {
     return .disabled;
 }
 
-fn printSection(coff: *Coff, w: *Io.Writer, name: String, si: Symbol.Index) Io.Writer.Error!void {
+fn printSection(coff: *const Coff, w: *Io.Writer, name: String, si: Symbol.Index) Io.Writer.Error!void {
     const sym = si.get(coff);
     try w.print("{d:0>6}@{d:0>2} {x:08} n{d:0>8} | {s}\n", .{
         si,
@@ -7634,7 +7637,7 @@ fn printSection(coff: *Coff, w: *Io.Writer, name: String, si: Symbol.Index) Io.W
 }
 
 fn printSymbol(
-    coff: *Coff,
+    coff: *const Coff,
     w: *Io.Writer,
     si: Symbol.Index,
 ) Io.Writer.Error!void {
@@ -7681,9 +7684,12 @@ fn printSymbol(
     }
 }
 
-const FmtGlobalName = struct { coff: *Coff, gmi: Node.GlobalMapIndex };
+const FmtGlobalName = struct { coff: *const Coff, gmi: Node.GlobalMapIndex };
 
-fn fmtGlobalName(coff: *Coff, gmi: Node.GlobalMapIndex) std.fmt.Alt(FmtGlobalName, globalNameEscape) {
+fn fmtGlobalName(
+    coff: *const Coff,
+    gmi: Node.GlobalMapIndex,
+) std.fmt.Alt(FmtGlobalName, globalNameEscape) {
     return .{ .data = .{ .coff = coff, .gmi = gmi } };
 }
 
@@ -7697,7 +7703,7 @@ fn globalNameEscape(data: FmtGlobalName, w: *std.Io.Writer) std.Io.Writer.Error!
 }
 
 fn printNodeName(
-    coff: *Coff,
+    coff: *const Coff,
     w: *std.Io.Writer,
     node: Node,
 ) Io.Writer.Error!void {
@@ -7763,7 +7769,7 @@ fn printNodeName(
 }
 
 fn printNode(
-    coff: *Coff,
+    coff: *const Coff,
     w: *Io.Writer,
     ni: MappedFile.Node.Index,
     indent: usize,
