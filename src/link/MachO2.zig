@@ -729,11 +729,6 @@ fn create(
     const io = comp.io;
 
     const macho = try arena.create(MachO);
-    const file = try path.root_dir.handle.createFile(io, path.sub_path, .{
-        .read = true,
-        .permissions = link.File.determinePermissions(comp.config.output_mode, comp.config.link_mode),
-    });
-
     macho.* = .{
         .base = .{
             .tag = .macho2,
@@ -741,7 +736,7 @@ fn create(
             .comp = comp,
             .emit = path,
 
-            .file = file,
+            .file = null,
             .gc_sections = false,
             .print_gc_sections = false,
             .build_id = .none,
@@ -754,7 +749,7 @@ fn create(
         .synth_prog_node = .none,
         .input_prog_node = .none,
 
-        .mf = try .init(file, comp.gpa, io),
+        .mf = .init,
         .nodes = .empty,
 
         .node = undefined,
@@ -791,7 +786,14 @@ fn create(
 
         .prev_got_offset = 0,
     };
-    errdefer macho.deinit();
+    errdefer macho.base.destroy();
+
+    const file = try path.root_dir.handle.createFile(io, path.sub_path, .{
+        .read = true,
+        .permissions = link.File.determinePermissions(comp.config.output_mode, comp.config.link_mode),
+    });
+    macho.base.file = file;
+    try macho.mf.map(comp.gpa, io, file);
 
     try macho.initInner();
 

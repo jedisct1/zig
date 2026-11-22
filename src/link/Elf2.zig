@@ -5994,11 +5994,6 @@ fn create(
     };
 
     const elf = try arena.create(Elf);
-    const file = try path.root_dir.handle.createFile(io, path.sub_path, .{
-        .read = true,
-        .permissions = link.File.determinePermissions(comp.config.output_mode, comp.config.link_mode),
-    });
-    errdefer file.close(io);
     elf.* = .{
         .base = .{
             .tag = .elf2,
@@ -6006,7 +6001,7 @@ fn create(
             .comp = comp,
             .emit = path,
 
-            .file = file,
+            .file = null,
             .gc_sections = false,
             .print_gc_sections = false,
             .build_id = .none,
@@ -6014,7 +6009,7 @@ fn create(
             .stack_size = 0,
         },
         .options = options,
-        .mf = try .init(file, comp.gpa, io),
+        .mf = .init,
         .ehdr_fields = .{
             .class = class,
             .type = @"type",
@@ -6159,9 +6154,16 @@ fn create(
         .const_prog_node = .none,
         .input_prog_node = .none,
     };
-    errdefer elf.deinit();
+    errdefer elf.base.destroy();
 
-    try elf.initHeaders(class, data, osabi, @"type", machine, maybe_interp);
+    const file = try path.root_dir.handle.createFile(io, path.sub_path, .{
+        .read = true,
+        .permissions = link.File.determinePermissions(comp.config.output_mode, comp.config.link_mode),
+    });
+    elf.base.file = file;
+    try elf.mf.map(comp.gpa, io, file);
+
+    try elf.initHeaders(arena, class, data, osabi, @"type", machine, maybe_interp);
     return elf;
 }
 
@@ -6221,6 +6223,7 @@ pub fn deinit(elf: *Elf) void {
 
 fn initHeaders(
     elf: *Elf,
+    arena: std.mem.Allocator,
     class: std.elf.CLASS,
     data: std.elf.DATA,
     osabi: std.elf.OSABI,
@@ -6238,9 +6241,9 @@ fn initHeaders(
         .DYN => true,
     };
     const have_eh_frame = machine == .X86_64 and comp.config.any_unwind_tables;
-    const have_debug_frame = machine == .X86_64 and switch (comp.config.debug_format) {
+    const have_self_hosted_debug_info = machine == .X86_64 and switch (comp.config.debug_format) {
         .strip => false,
-        .dwarf => !comp.config.any_unwind_tables,
+        .dwarf => comp.zcu != null and !comp.config.use_llvm,
         .code_view, .nsdi => unreachable,
     };
     const addr_align: Alignment = switch (class) {
@@ -6289,20 +6292,16 @@ fn initHeaders(
             shnum += @intFromBool(@"type" != .REL); // .eh_frame_hdr
             shnum += 1; // .eh_frame
         }
-        switch (comp.config.debug_format) {
-            .strip => {},
-            .dwarf => {
-                shnum += 1; // .debug_abbrev
-                shnum += 1; // .debug_addr
-                shnum += @intFromBool(have_debug_frame); // .debug_frame
-                shnum += 1; // .debug_info
-                shnum += 1; // .debug_line
-                shnum += 1; // .debug_line_str
-                shnum += 1; // .debug_rnglists
-                shnum += 1; // .debug_str
-                shnum += 1; // .debug_str_offsets
-            },
-            .code_view, .nsdi => unreachable,
+        if (have_self_hosted_debug_info) {
+            shnum += 1; // .debug_abbrev
+            shnum += 1; // .debug_addr
+            shnum += @intFromBool(!comp.config.any_unwind_tables); // .debug_frame
+            shnum += 1; // .debug_info
+            shnum += 1; // .debug_line
+            shnum += 1; // .debug_line_str
+            shnum += 1; // .debug_rnglists
+            shnum += 1; // .debug_str
+            shnum += 1; // .debug_str_offsets
         }
         if (@"type" != .REL) {
             shnum += 1; // .got
@@ -6396,12 +6395,9 @@ fn initHeaders(
 
     const expected_merge_sections_len = @as(usize, 2) + // .shstrtab, .strtab
         @intFromBool(have_dynamic) + // .dynstr
-        @as(usize, switch (comp.config.debug_format) {
-            .strip => 0,
-            .dwarf => 2, // .debug_line_str, .debug_str
-            .code_view, .nsdi => unreachable,
-        });
-    const expected_nodes_len = @as(usize, if (is_archive) 3 else 0) + // .archive, .archive_header, .archive_elf_member_header
+        @as(usize, if (have_self_hosted_debug_info) 2 else 0); // .debug_line_str, .debug_str
+    const expected_nodes_len =
+        @as(usize, if (is_archive) 3 else 0) + // .archive, .archive_header, .archive_elf_member_header
         3 + // `.elf`, `.ehdr`, and `.shdr` nodes
         (shnum - 1 - nobits_shnum) + // -1 because the SHN_UNDEF shdr does not have a `.section` node
         (phnum -| 1) + // -1 because the GNU_STACK phdr does not have a `.segment` node
@@ -6479,10 +6475,8 @@ fn initHeaders(
             .ar_size = undefined, // populated by `flushResized` for the `.elf` node
             .ar_fmag = std.elf.ARFMAG.*,
         };
-        const zcu_member_name = try gpa.print("{s}_zcu.o", .{comp.root_name});
-        defer gpa.free(zcu_member_name);
         // After this call returns, `elf_ar_hdr` is invalidated.
-        try elf.populateArchiveMemberName(elf_ar_hdr, zcu_member_name);
+        try elf.populateArchiveMemberName(elf_ar_hdr, try arena.print("{s}_zcu.o", .{comp.root_name}));
     } else elf.ni.elf = elf.addNodeAssumeCapacity(.root, .elf);
 
     const entsize: struct { ph: u32, sh: u32 } = switch (class) {
@@ -7542,67 +7536,65 @@ fn initHeaders(
             .manual_size = null,
         });
     }
-    switch (comp.config.debug_format) {
-        .strip => {},
-        .dwarf => {
-            elf.shndx.debug_abbrev = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_abbrev",
-                .manual_size = true,
-            });
-            elf.shndx.debug_addr = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_addr",
-                .addralign = addr_align,
-                .node_align = elf.mf.flags.block_size,
-                .manual_size = true,
-            });
-            if (have_debug_frame) elf.shndx.debug_frame = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_frame",
-                .addralign = addr_align,
-                .node_align = elf.mf.flags.block_size,
-                .manual_size = true,
-            });
-            elf.shndx.debug_info = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_info",
-                .node_align = elf.mf.flags.block_size,
-                .manual_size = true,
-            });
-            elf.shndx.debug_line = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_line",
-                .node_align = elf.mf.flags.block_size,
-                .manual_size = true,
-            });
-            const debug_line_str_shndx = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_line_str",
-                .flags = .{ .MERGE = true, .STRINGS = true },
-                .entsize = 1,
-                .manual_size = true,
-            });
-            elf.debug_line_str_msi =
-                try Section.Merge.getOrCreateAssumeCapacity(debug_line_str_shndx, .strtab, .@"1", elf);
-            elf.shndx.debug_rnglists = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_rnglists",
-                .node_align = elf.mf.flags.block_size,
-                .manual_size = true,
-            });
-            const debug_str_shndx = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_str",
-                .flags = .{ .MERGE = true, .STRINGS = true },
-                .entsize = 1,
-                .manual_size = true,
-            });
-            elf.debug_str_msi =
-                try Section.Merge.getOrCreateAssumeCapacity(debug_str_shndx, .strtab, .@"1", elf);
-            elf.shndx.debug_str_offsets = try elf.addSection(elf.ni.elf, .{
-                .name = ".debug_str_offsets",
-                .addralign = switch (elf.dwarf.format) {
-                    .@"32" => .@"4",
-                    .@"64" => .@"8",
-                },
-                .node_align = elf.mf.flags.block_size,
-                .manual_size = true,
-            });
-        },
-        .code_view, .nsdi => unreachable,
+    if (have_self_hosted_debug_info) {
+        elf.shndx.debug_abbrev = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_abbrev",
+            .manual_size = true,
+        });
+        elf.shndx.debug_addr = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_addr",
+            .addralign = addr_align,
+            .node_align = elf.mf.flags.block_size,
+            .manual_size = true,
+        });
+        if (!comp.config.any_unwind_tables) elf.shndx.debug_frame = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_frame",
+            .addralign = addr_align,
+            .node_align = elf.mf.flags.block_size,
+            .manual_size = true,
+        });
+        elf.shndx.debug_info = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_info",
+            .node_align = elf.mf.flags.block_size,
+            .manual_size = true,
+        });
+        elf.shndx.debug_line = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_line",
+            .node_align = elf.mf.flags.block_size,
+            .manual_size = true,
+        });
+        const debug_line_str_shndx = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_line_str",
+            .flags = .{ .MERGE = true, .STRINGS = true },
+            .entsize = 1,
+            .manual_size = true,
+        });
+        elf.debug_line_str_msi =
+            try Section.Merge.getOrCreateAssumeCapacity(debug_line_str_shndx, .strtab, .@"1", elf);
+        elf.shndx.debug_rnglists = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_rnglists",
+            .node_align = elf.mf.flags.block_size,
+            .manual_size = true,
+        });
+        const debug_str_shndx = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_str",
+            .flags = .{ .MERGE = true, .STRINGS = true },
+            .entsize = 1,
+            .manual_size = true,
+        });
+        elf.debug_str_msi =
+            try Section.Merge.getOrCreateAssumeCapacity(debug_str_shndx, .strtab, .@"1", elf);
+        elf.shndx.debug_str_offsets = try elf.addSection(elf.ni.elf, .{
+            .name = ".debug_str_offsets",
+            .addralign = switch (elf.dwarf.format) {
+                .@"32" => .@"4",
+                .@"64" => .@"8",
+            },
+            .node_align = elf.mf.flags.block_size,
+            .manual_size = true,
+        });
+
+        try elf.dwarf.initDebugInfo(arena);
     }
 
     // If we have an entry point symbol, create the undefined reference now.
@@ -7632,6 +7624,7 @@ fn initHeaders(
 
     assert(elf.nodes.len == expected_nodes_len);
     assert(elf.shdrs.items.len == shnum - 1); // -1 to exclude SHN_UNDEF
+    assert(elf.merge_sections.count() == expected_merge_sections_len);
 
     for (1..shnum) |shndx_raw| { // start at 1 to exclude SHN_UNDEF
         const shndx: Section.Index = @fromBackingInt(@intCast(shndx_raw));
@@ -7648,10 +7641,9 @@ fn initHeaders(
         },
         .rpath = rpath: {
             var rpath: std.ArrayList(u8) = .empty;
-            defer rpath.deinit(gpa);
             for (elf.options.rpath_list, 0..) |path, rpath_index| {
-                if (rpath_index > 0) try rpath.append(gpa, ':');
-                try rpath.appendSlice(gpa, path);
+                if (rpath_index > 0) try rpath.append(arena, ':');
+                try rpath.appendSlice(arena, path);
             }
             break :rpath try .fromString(rpath.items, elf);
         },
@@ -10560,25 +10552,6 @@ fn prelinkInner(elf: *Elf) Error!void {
         .@"64" => .@"8",
     };
 
-    for ([_]Section.Index{
-        elf.shndx.eh_frame,
-        elf.shndx.debug_abbrev,
-        elf.shndx.debug_addr,
-        elf.shndx.debug_frame,
-        elf.shndx.debug_info,
-        elf.shndx.debug_line,
-        elf.debug_line_str_msi.shndx(elf),
-        elf.shndx.debug_rnglists,
-        elf.debug_str_msi.shndx(elf),
-        elf.shndx.debug_str_offsets,
-    }) |debug_shndx| {
-        if (debug_shndx == .UNDEF) continue;
-        const last_child_ni = debug_shndx.node(elf).last(&elf.mf).unwrap() orelse continue;
-        const last_child_offset, const last_child_size =
-            last_child_ni.location(&elf.mf).resolve(&elf.mf);
-        debug_shndx.setSize(elf, last_child_offset + last_child_size);
-    }
-
     if (comp.zcu) |_| self_hosted_codegen: {
         if (comp.config.use_llvm) break :self_hosted_codegen;
 
@@ -10828,7 +10801,7 @@ fn prelinkInner(elf: *Elf) Error!void {
     }
 }
 
-pub fn zcuFilesReady(elf: *Elf, zcu: *Zcu) link.Error!void {
+pub fn zcuFilesReady(elf: *Elf, zcu: *const Zcu) link.Error!void {
     elf.zcuFilesReadyInner(zcu) catch |err| switch (err) {
         else => |e| return e,
         error.MappedFileIo => return elf.base.comp.link_diags.fail(
@@ -10838,13 +10811,13 @@ pub fn zcuFilesReady(elf: *Elf, zcu: *Zcu) link.Error!void {
     };
     try elf.updateSegmentLoadAddresses();
 }
-fn zcuFilesReadyInner(elf: *Elf, zcu: *Zcu) Error!void {
+fn zcuFilesReadyInner(elf: *Elf, zcu: *const Zcu) Error!void {
     const gpa = zcu.gpa;
     const modules_len = zcu.module_roots.count();
     if (elf.debug_modules.len == 0) {
         @branchHint(.unlikely);
         try elf.dwarf.initModules(gpa, modules_len);
-        elf.debug_modules = try gpa.alloc(DebugModule, zcu.module_roots.count());
+        elf.debug_modules = try gpa.alloc(DebugModule, modules_len);
         @memset(elf.debug_modules, .{
             .debug_info_first_target_reloc = .none,
             .debug_info_first_reloc = .none,
@@ -10865,9 +10838,10 @@ fn zcuFilesReadyInner(elf: *Elf, zcu: *Zcu) Error!void {
     if (!try elf.dwarf.updateModules(zcu)) return;
 
     try elf.nodes.ensureUnusedCapacity(gpa, 4 * modules_len);
-    for (elf.dwarf.modules, 0..modules_len) |*module, module_index| {
-        if (!module.alive) continue;
+    for (0..modules_len) |module_index| {
         const mi: Dwarf.Module.Index = @fromBackingInt(@intCast(module_index));
+        const module = mi.ptr(&elf.dwarf);
+        if (!module.alive) continue;
         switch (elf.shndx.debug_info) {
             .UNDEF => {},
             else => |debug_info_shndx| {
@@ -10924,39 +10898,44 @@ fn zcuFilesReadyInner(elf: *Elf, zcu: *Zcu) Error!void {
             },
         }
     }
+}
 
-    for (elf.dwarf.modules, 0..modules_len) |*module, module_index| {
-        if (!module.alive) continue;
-        const mi: Dwarf.Module.Index = @fromBackingInt(@intCast(module_index));
-        if (module.debug_info_ni.unwrap()) |debug_info_ni| {
+fn flushFiles(elf: *Elf, tid: Zcu.PerThread.Id) Error!void {
+    const comp = elf.base.comp;
+    const gpa = comp.gpa;
+    if (elf.dwarf.debug_info.cleanModulesChanged()) {
+        const pt: Zcu.PerThread = .{ .zcu = elf.base.comp.zcu.?, .tid = tid };
+        for (0..elf.dwarf.modules.len) |module_index| {
+            const mi: Dwarf.Module.Index = @fromBackingInt(@intCast(module_index));
+            const module = mi.ptr(&elf.dwarf);
+            if (!module.alive) continue;
+            const debug_info_ni = module.debug_info_ni.unwrap().?;
             const debug_info_header_ni = debug_info_ni.first(&elf.mf).unwrap().?;
             var dih_nw: MappedFile.Node.Writer = undefined;
             debug_info_header_ni.writer(gpa, &elf.mf, &dih_nw);
             defer dih_nw.deinit();
             elf.resetNodeRelocs(debug_info_header_ni);
-            elf.dwarf.genDebugInfoModule(zcu, mi, &dih_nw) catch |err| switch (err) {
+            elf.dwarf.genDebugInfoModule(pt, mi, &dih_nw) catch |err| switch (err) {
                 else => |e| return e,
                 error.WriteFailed => return dih_nw.err.?,
             };
         }
+        try elf.genPending(pt);
+        try elf.dwarf.const_pool.flushPending(pt, .{ .elf2 = elf });
     }
-    try elf.genPendingDebug(gpa);
-}
-
-fn flushFiles(elf: *Elf) Error!void {
-    const gpa = elf.base.comp.gpa;
-    if (!elf.dwarf.debug_line.cleanHeaderChanged()) return;
-    const debug_line_header_ni = elf.dwarf.debug_line.header_ni.unwrap().?;
-    try debug_line_header_ni.parent(&elf.mf).unwrap().?.nextMoved(gpa, &elf.mf);
-    try debug_line_header_ni.moved(gpa, &elf.mf);
-    var dlh_nw: MappedFile.Node.Writer = undefined;
-    debug_line_header_ni.writer(gpa, &elf.mf, &dlh_nw);
-    defer dlh_nw.deinit();
-    elf.resetNodeRelocs(debug_line_header_ni);
-    elf.dwarf.genDebugLineHeader(&dlh_nw, elf.base.comp.zcu.?) catch |err| switch (err) {
-        else => |e| return e,
-        error.WriteFailed => return dlh_nw.err.?,
-    };
+    if (elf.dwarf.debug_line.cleanHeaderChanged()) {
+        const debug_line_header_ni = elf.dwarf.debug_line.header_ni.unwrap().?;
+        try debug_line_header_ni.parent(&elf.mf).unwrap().?.nextMoved(gpa, &elf.mf);
+        try debug_line_header_ni.moved(gpa, &elf.mf);
+        var dlh_nw: MappedFile.Node.Writer = undefined;
+        debug_line_header_ni.writer(gpa, &elf.mf, &dlh_nw);
+        defer dlh_nw.deinit();
+        elf.resetNodeRelocs(debug_line_header_ni);
+        elf.dwarf.genDebugLineHeader(&dlh_nw, elf.base.comp.zcu.?) catch |err| switch (err) {
+            else => |e| return e,
+            error.WriteFailed => return dlh_nw.err.?,
+        };
+    }
 }
 
 fn prepareDynamic(elf: *Elf) Error!void {
@@ -12457,8 +12436,7 @@ pub fn flush(
     tid: Zcu.PerThread.Id,
     prog_node: std.Progress.Node,
 ) link.Error!void {
-    _ = tid;
-    elf.flushInner(arena, prog_node) catch |err| switch (err) {
+    elf.flushInner(arena, tid, prog_node) catch |err| switch (err) {
         else => |e| return e,
         error.MappedFileIo => return elf.base.comp.link_diags.fail(
             "failed to write output file: {t}",
@@ -12469,6 +12447,7 @@ pub fn flush(
 fn flushInner(
     elf: *Elf,
     arena: std.mem.Allocator,
+    tid: Zcu.PerThread.Id,
     prog_node: std.Progress.Node,
 ) Error!void {
     const comp = elf.base.comp;
@@ -12492,7 +12471,7 @@ fn flushInner(
         return error.AlreadyReported;
     }
 
-    try elf.flushFiles();
+    try elf.flushFiles(tid);
     try elf.prepareDynamic();
     try elf.updateSegmentLoadAddresses();
     while (try elf.idle()) {}
@@ -12876,27 +12855,18 @@ fn genPending(elf: *Elf, pt: Zcu.PerThread) link.Error!void {
         lazy.value.pending_index += 1;
     };
     const gpa = elf.base.comp.gpa;
-    switch (elf.base.comp.config.debug_format) {
-        .strip => {},
-        .dwarf => while (true) {
-            const pending = elf.dwarf.pending_decl;
-            if (pending.instance == .none) break;
-            elf.dwarf.pending_decl = .{ .di = undefined, .instance = .none };
-            const debug_info_ni = pending.di.ptr(&elf.dwarf).debug_info_ni.unwrap().?;
-            try debug_info_ni.moved(gpa, &elf.mf);
-            var di_nw: MappedFile.Node.Writer = undefined;
-            debug_info_ni.writer(gpa, &elf.mf, &di_nw);
-            defer di_nw.deinit();
-            elf.resetNodeRelocs(debug_info_ni);
-            try elf.dwarf.genDecl(pt, &di_nw, pending.instance);
-            pending.di.ptr(&elf.dwarf).debug_info_size = di_nw.interface.end;
-        },
-        .code_view, .nsdi => unreachable,
+    while (elf.dwarf.pending_decl.instance != .none) {
+        const pending = elf.dwarf.pending_decl;
+        elf.dwarf.pending_decl = .{ .di = undefined, .instance = .none };
+        const debug_info_ni = pending.di.ptr(&elf.dwarf).debug_info_ni.unwrap().?;
+        try debug_info_ni.moved(gpa, &elf.mf);
+        var di_nw: MappedFile.Node.Writer = undefined;
+        debug_info_ni.writer(gpa, &elf.mf, &di_nw);
+        defer di_nw.deinit();
+        elf.resetNodeRelocs(debug_info_ni);
+        try elf.dwarf.genDecl(pt, &di_nw, pending.instance);
+        pending.di.ptr(&elf.dwarf).debug_info_size = di_nw.interface.end;
     }
-    try elf.genPendingDebug(gpa);
-    assert(elf.pending_uavs.items.len == 0); // no UAVs added by lazy code/data or by debug info
-}
-fn genPendingDebug(elf: *Elf, gpa: std.mem.Allocator) link.Error!void {
     if (elf.dwarf.debug_addr.map.count() - elf.dwarf.debug_addr.pending_index > 0) {
         const debug_addr_ni = elf.dwarf.debug_addr.ni.unwrap().?;
         try debug_addr_ni.resized(gpa, &elf.mf);

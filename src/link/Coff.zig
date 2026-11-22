@@ -1600,11 +1600,6 @@ fn create(
     const io = comp.io;
 
     const coff = try arena.create(Coff);
-    const file = try path.root_dir.handle.createFile(io, path.sub_path, .{
-        .read = true,
-        .permissions = link.File.determinePermissions(comp.config.output_mode, comp.config.link_mode),
-    });
-    errdefer file.close(io);
     coff.* = .{
         .base = .{
             .tag = .coff,
@@ -1612,7 +1607,7 @@ fn create(
             .comp = comp,
             .emit = path,
 
-            .file = file,
+            .file = null,
             .gc_sections = false,
             .print_gc_sections = false,
             .build_id = .none,
@@ -1620,7 +1615,7 @@ fn create(
             .stack_size = 0,
         },
         .options = options,
-        .mf = try .init(file, comp.gpa, io),
+        .mf = .init,
         .nodes = .empty,
         .members = .empty,
         .pending_members = .empty,
@@ -1692,7 +1687,14 @@ fn create(
         .member_prog_node = .none,
         .input_prog_node = .none,
     };
-    errdefer coff.deinit();
+    errdefer coff.base.destroy();
+
+    const file = try path.root_dir.handle.createFile(io, path.sub_path, .{
+        .read = true,
+        .permissions = link.File.determinePermissions(comp.config.output_mode, comp.config.link_mode),
+    });
+    coff.base.file = file;
+    try coff.mf.map(comp.gpa, io, file);
 
     {
         const strings = std.enums.values(String);
