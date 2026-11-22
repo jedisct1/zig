@@ -2018,16 +2018,52 @@ test "modular inversion" {
 test "secret modulus" {
     if (builtin.zig_backend == .stage2_c) return error.SkipZigTest;
 
-    for ([_]usize{ t_bits + 1, 2 * t_bits + 1 }) |bits| {
-        const mv = math.shl(u128, 1, bits - 2) + 1;
-        const m = try Modulus(128).fromUintSecret(try Uint(128).fromPrimitive(u128, mv), bits);
-        var buf: [16]u8 = undefined;
-        const max = math.shl(u128, 1, bits) - 1;
-        mem.writeInt(u128, &buf, max, .big);
-        const x = try Modulus(128).Fe.fromBytesReduced(m, &buf, .big);
-        const r: u256 = max % mv;
-        try testing.expectEqual(r, try x.toPrimitive(u128));
-        try testing.expectEqual((r * r) % mv, try m.sq(x).toPrimitive(u128));
+    const T = @Int(.unsigned, 3 * t_bits);
+    const U = Uint(3 * t_bits);
+    const M = Modulus(3 * t_bits);
+    try testing.expectError(error.ModulusTooSmall, M.fromUintSecret(U.zero, 1));
+
+    for ([_]usize{ t_bits, 2 * t_bits, 3 * t_bits }) |bits| {
+        // The smallest and largest moduli in the allowed range for both `bits` and `bits + 1`.
+        const half = math.shl(T, 1, bits - 1);
+        for ([_]T{ half + 1, half + (half - 1) }) |mv| {
+            const v = try U.fromPrimitive(T, mv);
+            for ([_]usize{ bits, bits + 1 }) |announced_bits| {
+                if (announced_bits > U.capacity_bits) {
+                    try testing.expectError(error.Overflow, M.fromUintSecret(v, announced_bits));
+                    continue;
+                }
+                const m = try M.fromUintSecret(v, announced_bits);
+                try testing.expectEqual(announced_bits, m.bits());
+
+                const wide: T = math.maxInt(T) - 1;
+                const a = wide % mv;
+                const b = mv - 2;
+                const x = m.reduce(try U.fromPrimitive(T, wide));
+                const y = m.reduce(try U.fromPrimitive(T, b));
+                try testing.expectEqual(a, try x.toPrimitive(T));
+                try testing.expectEqual((@as(u512, a) + b) % mv, try m.add(x, y).toPrimitive(T));
+                try testing.expectEqual((@as(u512, a) + mv - b) % mv, try m.sub(x, y).toPrimitive(T));
+                try testing.expectEqual((@as(u512, a) * b) % mv, try m.mul(x, y).toPrimitive(T));
+                try testing.expectEqual((@as(u512, b) * b) % mv, try m.sq(y).toPrimitive(T));
+
+                for ([_]T{ 0, 3, b }) |c| {
+                    const z = m.reduce(try U.fromPrimitive(T, c));
+                    if (m.invert(z)) |inv| {
+                        try testing.expect(m.isOne(m.mul(z, inv)));
+                    } else {
+                        try testing.expect(math.gcd(c, mv) != 1);
+                    }
+                }
+
+                var buf: [32]u8 = undefined;
+                const max = math.shl(u256, 1, announced_bits) - 1;
+                mem.writeInt(u256, &buf, max, .big);
+                try testing.expectEqual(max % mv, try (try M.Fe.fromBytesReduced(m, &buf, .big)).toPrimitive(T));
+                mem.writeInt(u256, &buf, max + 1, .big);
+                try testing.expectError(error.Overflow, M.Fe.fromBytesReduced(m, &buf, .big));
+            }
+        }
     }
 }
 
