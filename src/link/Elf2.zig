@@ -287,9 +287,9 @@ const Node = union(enum) {
     ehdr,
     shdr,
     segment: u32,
-    section: Section.Index,
+    well_known_section: Section.Index,
     /// The section '.plt' may contain relocations via `elf.plt_first_reloc`.
-    section_manual_size: Section.Index,
+    custom_section: Section.Index,
     /// May contain relocations.
     input_section: Input.Section.Index,
     merge_section: Section.Merge.Index,
@@ -452,7 +452,7 @@ const Node = union(enum) {
                         if (pf.X) try w.writeByte('X');
                     },
                 },
-                .section, .section_manual_size => |shndx| try w.print("{q}", .{
+                .well_known_section, .custom_section => |shndx| try w.print("{q}", .{
                     shndx.name(elf).slice(elf),
                 }),
                 .input_section => |isi| {
@@ -847,6 +847,8 @@ const Section = struct {
         free_head: RelaIndex.Optional,
     },
 
+    const NodeTag = enum { well_known, custom };
+
     const RelaIndex = enum(u32) {
         none,
         _,
@@ -918,7 +920,7 @@ const Section = struct {
                             .entsize = @sizeOf(u32),
                             .node_align = elf.mf.flags.block_size,
                             .link = Section.Index.symtab.toSectionIndex().?,
-                            .manual_size = true,
+                            .node_tag = .custom,
                         });
                         @memset(elf.shndx.symtab_shndx.node(elf).slice(&elf.mf)[0..section_size], 0);
                     }
@@ -1324,13 +1326,13 @@ const Section = struct {
 
         const Key = bitpack struct(u4) {
             log2_entry_size: u3,
-            kind: Kind,
+            kind: Section.Merge.Key.Kind,
 
             const Kind = enum(u1) { cst, str };
 
             const strtab: Key = .{ .log2_entry_size = 0, .kind = .str };
 
-            fn get(entry_size: u64, kind: Kind) ?Section.Merge.Key {
+            fn get(entry_size: u64, kind: Section.Merge.Key.Kind) ?Section.Merge.Key {
                 if (entry_size == 0) return null;
                 const key: Section.Merge.Key = .{
                     .log2_entry_size = std.math.log2_int(
@@ -1352,7 +1354,7 @@ const Section = struct {
             null = std.math.maxInt(u32),
             _,
 
-            fn slice(mse: Entry, msi: Section.Merge.Index, elf: *const Elf) []const u8 {
+            fn slice(mse: Section.Merge.Entry, msi: Section.Merge.Index, elf: *const Elf) []const u8 {
                 const merge_key = msi.key(elf);
                 const entry_size = merge_key.entrySize();
                 const entry = msi.ptr(elf).node.sliceConst(&elf.mf)[@backingInt(mse)..];
@@ -1373,7 +1375,7 @@ const Section = struct {
 
             fn Ref(comptime msi: Section.Merge.Index) type {
                 return bitpack struct(u32) {
-                    entry: Entry,
+                    entry: Section.Merge.Entry,
 
                     const empty: @This() = .{ .entry = .empty };
                     const @"null": @This() = .{ .entry = .null };
@@ -1473,7 +1475,7 @@ const Section = struct {
                 need_align: Alignment,
                 entry: []const u8,
                 elf: *Elf,
-            ) Entry {
+            ) Section.Merge.Entry {
                 const merge_key = msi.key(elf);
                 const merge = msi.ptr(elf);
                 const entry_size = merge_key.entrySize();
@@ -1686,7 +1688,7 @@ const Zav = struct {
             const shndx = while (true) {
                 switch (elf.getNode(parent_ni)) {
                     else => unreachable,
-                    .section, .section_manual_size => |shndx| break shndx,
+                    .well_known_section, .custom_section => |shndx| break shndx,
                     .compile_unit_range => if (alignment.compare(.gt, parent_ni.alignment(&elf.mf)))
                         try parent_ni.realign(gpa, &elf.mf, alignment),
                 }
@@ -5427,7 +5429,9 @@ const Symbol = struct {
                 };
                 switch (elf.getNode(symbol_ni)) {
                     else => unreachable,
-                    .section, .section_manual_size => |parent_shndx| break :parent_shndx parent_shndx,
+                    .well_known_section,
+                    .custom_section,
+                    => |parent_shndx| break :parent_shndx parent_shndx,
                     inline .input_section, .merge_section => |si| return &si.ptr(elf).first_symbol,
                     inline .nav, .uav, .lazy_code, .lazy_const_data => |mi| {
                         const zav = mi.zav(elf);
@@ -5703,8 +5707,8 @@ pub fn symbolForAtom(elf: *Elf, atom: link.File.AtomId) link.File.SymbolId {
         .ehdr,
         .shdr,
         .segment,
-        .section,
-        .section_manual_size,
+        .well_known_section,
+        .custom_section,
         .input_section,
         .merge_section,
         .compile_unit_range,
@@ -6813,7 +6817,7 @@ fn initHeaders(
                 .node_align = node_block_align,
                 .link = @backingInt(Section.Index.strtab),
                 .info = 1, // index of first non-local symbol
-                .manual_size = true,
+                .node_tag = .custom,
             }));
             const symtab_null = @field(elf.symPtr(.null), @tagName(ct_class));
             symtab_null.* = .{
@@ -6836,7 +6840,7 @@ fn initHeaders(
         .size = 1,
         .entsize = 1,
         .node_align = node_block_align,
-        .manual_size = true,
+        .node_tag = .custom,
     }));
     assert(.shstrtab == try Section.Merge.getOrCreateAssumeCapacity(.shstrtab, .strtab, .@"1", elf));
     try Section.Index.symtab.rename(elf, ".symtab");
@@ -6848,7 +6852,7 @@ fn initHeaders(
         .size = 1,
         .entsize = 1,
         .node_align = node_block_align,
-        .manual_size = true,
+        .node_tag = .custom,
     }));
     assert(.strtab == try Section.Merge.getOrCreateAssumeCapacity(.strtab, .strtab, .@"1", elf));
 
@@ -6856,32 +6860,32 @@ fn initHeaders(
         .name = ".rodata",
         .flags = .{ .ALLOC = true },
         .node_align = node_block_align,
-        .manual_size = false,
+        .node_tag = .well_known,
     }));
     assert(.text == try elf.addSection(elf.ni.text, .{
         .name = ".text",
         .flags = .{ .ALLOC = true, .EXECINSTR = true },
         .node_align = node_block_align,
-        .manual_size = false,
+        .node_tag = .well_known,
     }));
     assert(.data == try elf.addSection(elf.ni.data, .{
         .name = ".data",
         .flags = .{ .WRITE = true, .ALLOC = true },
         .node_align = node_block_align,
-        .manual_size = false,
+        .node_tag = .well_known,
     }));
     assert(.data_rel_ro == try elf.addSection(elf.ni.data_rel_ro, .{
         .name = ".data.rel.ro",
         .flags = .{ .WRITE = true, .ALLOC = true },
         .node_align = node_block_align,
-        .manual_size = false,
+        .node_tag = .well_known,
     }));
 
     elf.shndx.bss = try elf.addSection(elf.ni.data, .{
         .name = ".bss",
         .type = .NOBITS,
         .flags = .{ .WRITE = true, .ALLOC = true },
-        .manual_size = null,
+        .node_tag = null,
     });
 
     if (@"type" != .REL) {
@@ -6897,7 +6901,7 @@ fn initHeaders(
             .flags = .{ .WRITE = true, .ALLOC = true },
             .addralign = addr_align,
             .entsize = @intCast(addr_align.toByteUnits()),
-            .manual_size = true,
+            .node_tag = .custom,
         });
         {
             const init_plt_size = plt.entry_size * plt.header_entries;
@@ -6910,7 +6914,7 @@ fn initHeaders(
                     .size = got_plt.header_entries * elf.targetPtrSize(),
                     .addralign = addr_align,
                     .entsize = @intCast(addr_align.toByteUnits()),
-                    .manual_size = true,
+                    .node_tag = .custom,
                 });
                 elf.shndx.plt = try elf.addSection(elf.ni.text, .{
                     .name = ".plt",
@@ -6919,7 +6923,7 @@ fn initHeaders(
                     .size = plt.@"align".forward(init_plt_size),
                     .addralign = plt.@"align",
                     .node_align = node_block_align,
-                    .manual_size = true,
+                    .node_tag = .custom,
                 });
             } else {
                 elf.shndx.plt = try elf.addSection(elf.phdrs.items[phndx.plt].unwrap().?, .{
@@ -6929,7 +6933,7 @@ fn initHeaders(
                     .size = plt.@"align".forward(init_plt_size),
                     .addralign = plt.@"align",
                     .node_align = node_block_align,
-                    .manual_size = true,
+                    .node_tag = .custom,
                 });
             }
             // And the award for most annoying PLT requirement goes to SPARC, which decided that the
@@ -6946,7 +6950,7 @@ fn initHeaders(
             .flags = .{ .ALLOC = true, .EXECINSTR = true },
             .addralign = plt.@"align",
             .node_align = node_block_align,
-            .manual_size = false,
+            .node_tag = .well_known,
         });
         if (maybe_interp) |interp| {
             const interp_ni = elf.addNodeAssumeCapacity(
@@ -6964,7 +6968,7 @@ fn initHeaders(
                 .type = .PROGBITS,
                 .flags = .{ .ALLOC = true },
                 .size = @intCast(interp.len + 1),
-                .manual_size = true,
+                .node_tag = .custom,
             });
             const sec_interp = sec_interp_shndx.node(elf).slice(&elf.mf);
             @memcpy(sec_interp[0..interp.len], interp);
@@ -6988,7 +6992,7 @@ fn initHeaders(
                 .size = 1,
                 .entsize = 1,
                 .node_align = node_block_align,
-                .manual_size = true,
+                .node_tag = .custom,
             });
             assert(.dynstr ==
                 try Section.Merge.getOrCreateAssumeCapacity(dynstr_shndx, .strtab, .@"1", elf));
@@ -7008,7 +7012,7 @@ fn initHeaders(
                         .addralign = addr_align,
                         .entsize = @sizeOf(Sym),
                         .node_align = node_block_align,
-                        .manual_size = true,
+                        .node_tag = .custom,
                     });
                     const dynsym_null = @field(elf.dynsymPtr(0), @tagName(ct_class));
                     dynsym_null.* = .{
@@ -7037,7 +7041,7 @@ fn initHeaders(
                 .addralign = addr_align,
                 .entsize = rela_size,
                 .node_align = node_block_align,
-                .manual_size = true,
+                .node_tag = .custom,
             });
             elf.shndx.rela_plt = try elf.addSection(elf.ni.rodata, .{
                 .name = ".rela.plt",
@@ -7049,7 +7053,7 @@ fn initHeaders(
                 .addralign = addr_align,
                 .entsize = rela_size,
                 .node_align = node_block_align,
-                .manual_size = true,
+                .node_tag = .custom,
             });
             elf.shndx.dynamic = try elf.addSection(dynamic_ni, .{
                 .name = ".dynamic",
@@ -7058,7 +7062,7 @@ fn initHeaders(
                 .link = dynstr_shndx.toSectionIndex().?,
                 .entsize = @intCast(addr_align.toByteUnits() * 2),
                 .addralign = addr_align,
-                .manual_size = true,
+                .node_tag = .custom,
             });
 
             elf.shndx.gnu_version = try elf.addSection(elf.ni.rodata, .{
@@ -7069,7 +7073,7 @@ fn initHeaders(
                 .link = elf.shndx.dynsym.toSectionIndex().?,
                 .addralign = .@"2",
                 .entsize = @sizeOf(std.elf.Versym),
-                .manual_size = true,
+                .node_tag = .custom,
             });
             elf.targetStore(&elf.versymSlice()[0], .LOCAL); // "null" dynsym entry
 
@@ -7083,7 +7087,7 @@ fn initHeaders(
                 .info = 1,
                 .addralign = .@"4",
                 .size = @sizeOf(VerdefEntry), // "file" entry
-                .manual_size = true,
+                .node_tag = .custom,
             });
             {
                 const base_version_name: []const u8 = elf.options.soname orelse comp.root_name;
@@ -7120,7 +7124,7 @@ fn initHeaders(
                 .info = 0,
                 .addralign = .@"4",
                 .size = 0,
-                .manual_size = true,
+                .node_tag = .custom,
             });
 
             switch (elf.targetDynsymHashInfo()) {
@@ -7137,7 +7141,7 @@ fn initHeaders(
                         .addralign = .fromByteUnits(@sizeOf(info.Int())),
                         // initially: nbucket = 8 + nchain = 1
                         .size = @sizeOf(info.Header()) + @sizeOf(info.Int()) * (8 + 1),
-                        .manual_size = true,
+                        .node_tag = .custom,
                     });
                     const hash_slice: []align(@sizeOf(info.Int())) u8 = @alignCast(elf.shndx.hash.node(elf).slice(&elf.mf));
                     const header: *info.Header() = @ptrCast(hash_slice[0..@sizeOf(info.Header())]);
@@ -7273,14 +7277,14 @@ fn initHeaders(
                 .flags = .{ .ALLOC = true },
                 .size = @sizeOf(Dwarf.EhFrameHdr),
                 .addralign = .@"4",
-                .manual_size = true,
+                .node_tag = .custom,
             });
             elf.shndx.eh_frame = try elf.addSection(elf.ni.rodata, .{
                 .name = ".eh_frame",
                 .flags = .{ .ALLOC = true },
                 .addralign = addr_align,
                 .node_align = elf.mf.flags.block_size,
-                .manual_size = true,
+                .node_tag = .custom,
             });
 
             elf.section_first_target_reloc.putAssumeCapacityNoClobber(elf.shndx.eh_frame, .none);
@@ -7519,7 +7523,7 @@ fn initHeaders(
             .flags = .{ .ALLOC = true },
             .addralign = addr_align,
             .node_align = elf.mf.flags.block_size,
-            .manual_size = true,
+            .node_tag = .custom,
         });
     }
     if (elf.ni.tls.unwrap()) |tls_segment_ni| {
@@ -7527,60 +7531,60 @@ fn initHeaders(
             .name = ".tdata",
             .flags = .{ .WRITE = true, .ALLOC = true, .TLS = true },
             .node_align = node_block_align,
-            .manual_size = false,
+            .node_tag = .well_known,
         });
         elf.shndx.tbss = try elf.addSection(tls_segment_ni, .{
             .name = ".tbss",
             .type = .NOBITS,
             .flags = .{ .WRITE = true, .ALLOC = true, .TLS = true },
-            .manual_size = null,
+            .node_tag = null,
         });
     }
     if (have_self_hosted_debug_info) {
         elf.shndx.debug_abbrev = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_abbrev",
-            .manual_size = true,
+            .node_tag = .custom,
         });
         elf.shndx.debug_addr = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_addr",
             .addralign = addr_align,
             .node_align = elf.mf.flags.block_size,
-            .manual_size = true,
+            .node_tag = .custom,
         });
         if (!comp.config.any_unwind_tables) elf.shndx.debug_frame = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_frame",
             .addralign = addr_align,
             .node_align = elf.mf.flags.block_size,
-            .manual_size = true,
+            .node_tag = .custom,
         });
         elf.shndx.debug_info = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_info",
             .node_align = elf.mf.flags.block_size,
-            .manual_size = true,
+            .node_tag = .custom,
         });
         elf.shndx.debug_line = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_line",
             .node_align = elf.mf.flags.block_size,
-            .manual_size = true,
+            .node_tag = .custom,
         });
         const debug_line_str_shndx = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_line_str",
             .flags = .{ .MERGE = true, .STRINGS = true },
             .entsize = 1,
-            .manual_size = true,
+            .node_tag = .custom,
         });
         elf.debug_line_str_msi =
             try Section.Merge.getOrCreateAssumeCapacity(debug_line_str_shndx, .strtab, .@"1", elf);
         elf.shndx.debug_rnglists = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_rnglists",
             .node_align = elf.mf.flags.block_size,
-            .manual_size = true,
+            .node_tag = .custom,
         });
         const debug_str_shndx = try elf.addSection(elf.ni.elf, .{
             .name = ".debug_str",
             .flags = .{ .MERGE = true, .STRINGS = true },
             .entsize = 1,
-            .manual_size = true,
+            .node_tag = .custom,
         });
         elf.debug_str_msi =
             try Section.Merge.getOrCreateAssumeCapacity(debug_str_shndx, .strtab, .@"1", elf);
@@ -7591,7 +7595,7 @@ fn initHeaders(
                 .@"64" => .@"8",
             },
             .node_align = elf.mf.flags.block_size,
-            .manual_size = true,
+            .node_tag = .custom,
         });
 
         try elf.dwarf.initDebugInfo(arena);
@@ -7689,10 +7693,10 @@ fn getNodeShndx(elf: *const Elf, ni: MappedFile.Node.Index) Section.Index {
         .shdr,
         .segment,
         => unreachable,
-        .section, .section_manual_size => |shndx| shndx,
+        .well_known_section, .custom_section => |shndx| shndx,
         .input_section, .merge_section => switch (elf.getNode(ni.parent(&elf.mf).unwrap().?)) {
             else => unreachable,
-            .section, .section_manual_size => |shndx| shndx,
+            .well_known_section, .custom_section => |shndx| shndx,
         },
         .compile_unit_range, .zav_range_end, .nav, .uav, .lazy_code, .lazy_const_data => {
             var parent_ni = ni;
@@ -7700,7 +7704,7 @@ fn getNodeShndx(elf: *const Elf, ni: MappedFile.Node.Index) Section.Index {
                 parent_ni = parent_ni.parent(&elf.mf).unwrap().?;
                 switch (elf.getNode(parent_ni)) {
                     else => unreachable,
-                    .section, .section_manual_size => |shndx| return shndx,
+                    .well_known_section, .custom_section => |shndx| return shndx,
                     .compile_unit_range => {},
                 }
             }
@@ -7738,7 +7742,7 @@ fn getNodeVAddr(elf: *const Elf, ni: MappedFile.Node.Index) u64 {
         .shdr,
         .segment,
         => unreachable,
-        .section, .section_manual_size => |shndx| shndx.vaddr(elf),
+        .well_known_section, .custom_section => |shndx| shndx.vaddr(elf),
         inline .input_section, .merge_section => |si| si.ptr(elf).vaddr,
         .compile_unit_range,
         .zav_range_end,
@@ -7822,8 +7826,8 @@ fn computeNodeVAddr(elf: *const Elf, ni: MappedFile.Node.Index) u64 {
             .segment => |phndx| switch (elf.phdrSlice()) {
                 inline else => |phdr| elf.targetLoad(&phdr[phndx].vaddr),
             },
-            .section,
-            .section_manual_size,
+            .well_known_section,
+            .custom_section,
             => |shndx| if (shndx == elf.shndx.tdata) 0 else shndx.vaddr(elf),
             .compile_unit_range, .zav_range_end, .debug_info_module => continue,
         };
@@ -7853,6 +7857,8 @@ pub fn resetNodeRelocs(elf: *Elf, ni: MappedFile.Node.Index) void {
         .ehdr,
         .shdr,
         .segment,
+        .well_known_section,
+        .custom_section,
         .merge_section,
         .compile_unit_range,
         .zav_range_end,
@@ -7867,10 +7873,7 @@ pub fn resetNodeRelocs(elf: *Elf, ni: MappedFile.Node.Index) void {
         .debug_rnglists_compile_unit,
         .debug_rnglists_module,
         .debug_str_offsets,
-        => unreachable, // cannot contain relocs
-        .section,
-        .section_manual_size,
-        => unreachable, // cannot contain relocs (.plt, .dynamic, and .eh_frame_hdr unsupported)
+        => unreachable,
         .input_section => |isi| .{ .first_reloc = &isi.ptr(elf).first_reloc },
         .nav => |nmi| .{
             .first_reloc = &nmi.zav(elf).first_reloc,
@@ -8343,7 +8346,6 @@ fn mapInputSection(elf: *Elf, opts: struct {
     flags: std.elf.SHF,
     entsize: std.elf.Xword,
     /// Must be one of:
-    /// * `.NULL`
     /// * `.PROGBITS`
     /// * `.NOBITS`
     /// * `.X86_64_UNWIND`
@@ -8374,7 +8376,7 @@ fn mapInputSection(elf: *Elf, opts: struct {
     }
 
     if (elf.base.comp.config.debug_format == .strip and
-        (opts.type == .PROGBITS or opts.type == .NULL) and
+        opts.type == .PROGBITS and
         std.mem.startsWith(u8, opts.name, ".debug_") and
         !opts.flags.ALLOC)
     {
@@ -8382,7 +8384,7 @@ fn mapInputSection(elf: *Elf, opts: struct {
     }
 
     if (!elf.base.comp.config.any_unwind_tables and
-        (opts.type == .PROGBITS or opts.type == .NULL or opts.type == std.elf.SHT.X86_64_UNWIND) and
+        (opts.type == .PROGBITS or opts.type == std.elf.SHT.X86_64_UNWIND) and
         std.mem.eql(u8, opts.name, ".eh_frame"))
     {
         return error.StripSection;
@@ -8392,6 +8394,20 @@ fn mapInputSection(elf: *Elf, opts: struct {
         const name: []const u8 = switch (elf.ehdrType()) {
             .REL => opts.name,
             .EXEC, .DYN => switch (opts.type) {
+                else => unreachable,
+                .PROGBITS, .NOBITS, .X86_64_UNWIND => name: {
+                    if (std.mem.startsWith(u8, opts.name, ".text.")) break :name ".text";
+                    if (std.mem.startsWith(u8, opts.name, ".rodata.")) break :name ".rodata";
+                    if (std.mem.startsWith(u8, opts.name, ".data.rel.ro.")) break :name ".data.rel.ro";
+                    if (std.mem.startsWith(u8, opts.name, ".data.")) break :name ".data";
+                    if (std.mem.startsWith(u8, opts.name, ".tdata.")) break :name ".tdata";
+                    if (std.mem.startsWith(u8, opts.name, ".gcc_except_table.")) break :name ".gcc_except_table";
+                    if (std.mem.eql(u8, opts.name, ".bss")) break :name ".bss";
+                    if (std.mem.startsWith(u8, opts.name, ".bss.")) break :name ".bss";
+                    if (std.mem.eql(u8, opts.name, ".tbss")) break :name ".tbss";
+                    if (std.mem.startsWith(u8, opts.name, ".tbss.")) break :name ".tbss";
+                    break :name opts.name;
+                },
                 .INIT_ARRAY => break :existing try elf.getOrCreateInitFiniArraySection(
                     &elf.shndx.init_array,
                     .INIT_ARRAY,
@@ -8413,19 +8429,6 @@ fn mapInputSection(elf: *Elf, opts: struct {
                     "__preinit_array_start",
                     "__preinit_array_end",
                 ),
-                else => name: {
-                    if (std.mem.startsWith(u8, opts.name, ".text.")) break :name ".text";
-                    if (std.mem.startsWith(u8, opts.name, ".rodata.")) break :name ".rodata";
-                    if (std.mem.startsWith(u8, opts.name, ".data.rel.ro.")) break :name ".data.rel.ro";
-                    if (std.mem.startsWith(u8, opts.name, ".data.")) break :name ".data";
-                    if (std.mem.startsWith(u8, opts.name, ".tdata.")) break :name ".tdata";
-                    if (std.mem.startsWith(u8, opts.name, ".gcc_except_table.")) break :name ".gcc_except_table";
-                    if (std.mem.eql(u8, opts.name, ".bss")) break :name ".bss";
-                    if (std.mem.startsWith(u8, opts.name, ".bss.")) break :name ".bss";
-                    if (std.mem.eql(u8, opts.name, ".tbss")) break :name ".tbss";
-                    if (std.mem.startsWith(u8, opts.name, ".tbss.")) break :name ".tbss";
-                    break :name opts.name;
-                },
             },
         };
         const name_ref: Section.Merge.Entry.Ref(.shstrtab) = try .fromString(name, elf);
@@ -8445,16 +8448,17 @@ fn mapInputSection(elf: *Elf, opts: struct {
         return elf.addSection(parent_node, .{
             .name = name,
             .type = switch (opts.type) {
-                .NULL, .PROGBITS => .NULL, // size is 0
-                .NOBITS => if (elf.ehdrType() == .REL) .NOBITS else return error.UnsupportedNobitsSection,
-
+                else => unreachable,
+                .PROGBITS => .NULL, // size is 0
+                .NOBITS => switch (elf.ehdrType()) {
+                    .REL => .NOBITS,
+                    .EXEC, .DYN => return error.UnsupportedNobitsSection,
+                },
                 .X86_64_UNWIND,
                 .INIT_ARRAY,
                 .FINI_ARRAY,
                 .PREINIT_ARRAY,
                 => |t| t,
-
-                else => unreachable, // unsupported section type
             },
             .flags = flags: {
                 // We need to decompress the section for linking.
@@ -8463,16 +8467,19 @@ fn mapInputSection(elf: *Elf, opts: struct {
                 break :flags flags;
             },
             .entsize = switch (opts.type) {
+                else => unreachable,
+                .PROGBITS, .NOBITS, .X86_64_UNWIND => std.math.lossyCast(u32, opts.entsize),
                 .INIT_ARRAY, .FINI_ARRAY, .PREINIT_ARRAY => elf.targetPtrSize(),
-                else => std.math.lossyCast(u32, opts.entsize),
             },
             .addralign = switch (opts.type) {
+                else => unreachable,
+                .PROGBITS, .NOBITS, .X86_64_UNWIND => .@"1",
                 .INIT_ARRAY, .FINI_ARRAY, .PREINIT_ARRAY => .fromByteUnits(elf.targetPtrSize()),
-                else => .@"1",
             },
-            .manual_size = switch (opts.type) {
-                .INIT_ARRAY, .FINI_ARRAY, .PREINIT_ARRAY => true,
-                else => false,
+            .node_tag = switch (opts.type) {
+                else => unreachable,
+                .PROGBITS, .X86_64_UNWIND, .INIT_ARRAY, .FINI_ARRAY, .PREINIT_ARRAY => .custom,
+                .NOBITS => null,
             },
         });
     };
@@ -8490,18 +8497,16 @@ fn mapInputSection(elf: *Elf, opts: struct {
             const existing_type = elf.targetLoad(&shdr.type);
 
             switch (opts.type) {
-                .NULL, .PROGBITS, .X86_64_UNWIND => switch (existing_type) {
+                else => unreachable,
+                .PROGBITS, .X86_64_UNWIND => switch (existing_type) {
                     .NULL, .PROGBITS, .X86_64_UNWIND => {},
                     else => return error.SectionTypeConflict,
                 },
-
                 .NOBITS,
                 .INIT_ARRAY,
                 .FINI_ARRAY,
                 .PREINIT_ARRAY,
                 => |t| if (existing_type != t) return error.SectionTypeConflict,
-
-                else => unreachable, // unsupported section type
             }
 
             // All okay, combine the section flags
@@ -9048,6 +9053,7 @@ fn loadObject(
                     const name = std.mem.sliceTo(shstrtab[section.shdr.name..], 0);
 
                     switch (section.shdr.type) {
+                        .NULL,
                         .REL,
                         .RELA,
                         .STRTAB,
@@ -9088,7 +9094,6 @@ fn loadObject(
                         .GNU_SFRAME,
                         => continue, // TODO
 
-                        .NULL,
                         .PROGBITS,
                         .NOBITS,
                         .X86_64_UNWIND,
@@ -9156,8 +9161,6 @@ fn loadObject(
 
                     switch (section.shdr.type) {
                         else => unreachable, // handled above
-
-                        .NULL => continue,
 
                         .NOBITS => {
                             _ = try elf.section_first_target_reloc.getOrPutValue(gpa, shndx, .none);
@@ -9302,13 +9305,13 @@ fn loadObject(
                             // For well-known sections, we know that it's fine to have e.g. random
                             // padding, so there's no need to make the sections fixed. For custom
                             // sections, however, we do want fixed nodes to avoid padding.
-                            const use_header_node = shndx != .text and
-                                shndx != .rodata and
-                                shndx != .data and
-                                shndx != .data_rel_ro and
-                                shndx != elf.shndx.tdata;
-
                             const shndx_ni = shndx.node(elf);
+                            const section_node_tag: Section.NodeTag = switch (elf.getNode(shndx_ni)) {
+                                else => unreachable,
+                                .well_known_section => .well_known,
+                                .custom_section => .custom,
+                            };
+
                             const add_node_opts: MappedFile.Node.AddOptions = .{
                                 .size = need_align.forward(opts.output_size),
                                 .alignment = need_align,
@@ -9318,21 +9321,19 @@ fn loadObject(
                                 elf.input_sections.items.len,
                             ));
                             const ni = elf.addNodeAssumeCapacity(
-                                if (use_header_node) try shndx_ni.addHeaderChildAfter(
-                                    gpa,
-                                    &elf.mf,
-                                    after: {
+                                switch (section_node_tag) {
+                                    .well_known => try shndx_ni
+                                        .addFloatingChild(gpa, &elf.mf, add_node_opts),
+                                    .custom => try shndx_ni.addHeaderChildAfter(gpa, &elf.mf, after: {
                                         var node_it = shndx_ni.last(&elf.mf);
-                                        while (node_it.unwrap()) |ni| : ({
-                                            node_it = ni.prev(&elf.mf);
-                                        }) switch (ni.position(&elf.mf)) {
-                                            .header => break :after .wrap(ni), // last header
-                                            .footer, .floating => {},
-                                        };
+                                        while (node_it.unwrap()) |ni| : (node_it = ni.prev(&elf.mf))
+                                            switch (ni.position(&elf.mf)) {
+                                                .header => break :after .wrap(ni), // last header
+                                                .footer, .floating => {},
+                                            };
                                         break :after .none;
-                                    },
-                                    add_node_opts,
-                                ) else try shndx_ni.addFloatingChild(gpa, &elf.mf, add_node_opts),
+                                    }, add_node_opts),
+                                },
                                 .{ .input_section = isi },
                             );
                             elf.input_sections.addOneAssumeCapacity().* = .{
@@ -9352,6 +9353,13 @@ fn loadObject(
                                 .first_reloc = .none,
                             };
                             elf.input_prog_node.increaseEstimatedTotalItems(1);
+                            switch (section_node_tag) {
+                                .well_known => {},
+                                .custom => if (ni == shndx_ni.last(&elf.mf).unwrap().?) {
+                                    const offset, const size = ni.location(&elf.mf).resolve(&elf.mf);
+                                    shndx.setSize(elf, offset + size);
+                                },
+                            }
                             section.placement = .{ .progbits = isi };
                         },
                         .INIT_ARRAY => {
@@ -10379,7 +10387,7 @@ fn getOrCreateInitFiniArraySection(
                 .@"64" => .@"8",
             },
             .entsize = elf.identClass().size(),
-            .manual_size = true,
+            .node_tag = .custom,
         });
         const shndx_ni = shndx.node(elf);
         const shndx_vaddr = shndx.vaddr(elf);
@@ -11111,7 +11119,8 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
     addralign: Alignment = .@"1",
     entsize: std.elf.Word = 0,
     node_align: Alignment = .@"1",
-    manual_size: ?bool,
+    /// `null` means no `MappedFile.Node` should be created.
+    node_tag: ?Section.NodeTag,
 }) Error!Section.Index {
     switch (opts.type) {
         .NULL => assert(opts.size == 0),
@@ -11167,17 +11176,17 @@ fn addSection(elf: *Elf, segment_ni: MappedFile.Node.Index, opts: struct {
         .EXEC, .DYN => segment_ni,
     };
     assert(opts.addralign.check(opts.size));
-    const oni: MappedFile.Node.Index.Optional = if (opts.manual_size) |manual_size| oni: {
+    const oni: MappedFile.Node.Index.Optional = if (opts.node_tag) |node_tag| oni: {
         assert(opts.type != .NOBITS);
-        break :oni .wrap(elf.addNodeAssumeCapacity(
-            try parent_ni.addFloatingChild(gpa, &elf.mf, .{
-                .size = opts.node_align.forward(opts.size),
-                .alignment = opts.addralign.max(opts.node_align),
-                .resized = opts.size > 0,
-                .bubbles_moved = opts.flags.ALLOC, // see handling in `flushMoved`
-            }),
-            if (manual_size) .{ .section_manual_size = shndx } else .{ .section = shndx },
-        ));
+        break :oni .wrap(elf.addNodeAssumeCapacity(try parent_ni.addFloatingChild(gpa, &elf.mf, .{
+            .size = opts.node_align.forward(opts.size),
+            .alignment = opts.addralign.max(opts.node_align),
+            .resized = opts.size > 0,
+            .bubbles_moved = opts.flags.ALLOC, // see handling in `flushMoved`
+        }), switch (node_tag) {
+            .well_known => .{ .well_known_section = shndx },
+            .custom => .{ .custom_section = shndx },
+        }));
     } else oni: {
         assert(opts.type == .NOBITS);
         break :oni .none;
@@ -11247,7 +11256,7 @@ fn ensureUnusedRelocCapacity(elf: *Elf, node: MappedFile.Node.Index, len: usize)
                         inline else => |ct_class| @sizeOf(ct_class.ElfN().Rela),
                     },
                     .node_align = elf.mf.flags.block_size,
-                    .manual_size = true,
+                    .node_tag = .custom,
                 });
                 elf.section_by_name.putAssumeCapacityNoClobber(rela_shndx.name(elf), {});
                 shndx.ptr(elf).rela.shndx = rela_shndx;
@@ -12780,7 +12789,7 @@ fn startIdleProgress(
     var name: [std.Progress.Node.max_name_len]u8 = undefined;
     return prog_node.start(name: switch (node) {
         else => |tag| @tagName(tag),
-        .section, .section_manual_size => |shndx| shndx.name(elf).slice(elf),
+        .well_known_section, .custom_section => |shndx| shndx.name(elf).slice(elf),
         .nav => |nmi| {
             const ip = &elf.base.comp.zcu.?.intern_pool;
             break :name ip.getNav(nmi.nav(elf)).fqn.toSlice(ip);
@@ -12998,7 +13007,7 @@ fn genLazyInner(elf: *Elf, pt: Zcu.PerThread, lmr: Node.LazyMapRef) link.Error!v
             while (true) {
                 switch (elf.getNode(parent_ni)) {
                     else => unreachable,
-                    .section, .section_manual_size => |shndx| {
+                    .well_known_section, .custom_section => |shndx| {
                         shndx.ensureAligned(elf, resolved_align) catch |err| switch (err) {
                             else => |e| return e,
                             error.MappedFileIo => return zcu.comp.link_diags.fail(
@@ -13064,7 +13073,7 @@ fn flushElfOffset(elf: *Elf, ni: MappedFile.Node.Index) void {
                 elf.flushElfOffset(child_ni);
             }
         },
-        .section, .section_manual_size => |shndx| switch (elf.shdrPtr(shndx)) {
+        .well_known_section, .custom_section => |shndx| switch (elf.shdrPtr(shndx)) {
             inline else => |shdr| elf.targetStore(&shdr.offset, @intCast(elf_offset)),
         },
     }
@@ -13136,7 +13145,7 @@ fn flushMoved(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!void
                 },
             }
         },
-        .section, .section_manual_size => |shndx| {
+        .well_known_section, .custom_section => |shndx| {
             elf.flushElfOffset(ni);
             const addr = elf.computeNodeVAddr(ni);
             const old_addr: u64, const flags: std.elf.SHF = switch (elf.shdrPtr(shndx)) {
@@ -13709,7 +13718,7 @@ fn flushResized(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!vo
                 }
             },
         },
-        .section => |shndx| switch (elf.shdrPtr(shndx)) {
+        .well_known_section => |shndx| switch (elf.shdrPtr(shndx)) {
             inline else => |shdr| {
                 switch (elf.targetLoad(&shdr.type)) {
                     else => unreachable,
@@ -13720,11 +13729,11 @@ fn flushResized(elf: *Elf, ni: MappedFile.Node.Index) std.mem.Allocator.Error!vo
                 elf.targetStore(&shdr.size, @intCast(size));
             },
         },
-        .section_manual_size, .input_section => {},
+        .custom_section, .input_section => {},
         .merge_section => |msi| switch (elf.getNode(ni.parent(&elf.mf).unwrap().?)) {
             else => unreachable,
-            .section => {},
-            .section_manual_size => |shndx| switch (ni.next(&elf.mf)) {
+            .well_known_section => {},
+            .custom_section => |shndx| switch (ni.next(&elf.mf)) {
                 else => {},
                 .none => shndx.setSize(elf, offset + msi.ptr(elf).free_list.items[0]),
             },
@@ -13808,8 +13817,8 @@ fn flushPadding(elf: *Elf, ni: MappedFile.Node.Index) link.Error!void {
         .ehdr,
         .shdr,
         .segment,
-        .section,
-        .section_manual_size,
+        .well_known_section,
+        .custom_section,
         .merge_section,
         .input_section,
         .compile_unit_range,
