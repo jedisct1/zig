@@ -286,6 +286,7 @@ pub fn build(b: *std.Build) !void {
                     b.dependOnFileMetadata(b.path(".git/logs/HEAD"));
                     break :git;
                 },
+                error.FileNotFound => @panic("version-string option not provided and .git directory not found"),
                 else => |e| return e,
             };
             defer git_file.close(io);
