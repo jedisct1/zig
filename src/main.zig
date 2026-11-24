@@ -3338,7 +3338,7 @@ fn buildOutputType(
             const test_mod = if (test_runner_path) |test_runner| test_mod: {
                 const test_mod = try Module.create(arena, .{
                     .paths = .{
-                        .root = try .fromUnresolved(arena, dirs, &.{fs.path.dirname(test_runner) orelse "."}),
+                        .root = try .fromUnresolved(arena, &dirs, &.{fs.path.dirname(test_runner) orelse "."}),
                         .root_src_path = fs.path.basename(test_runner),
                     },
                     .fully_qualified_name = "root",
@@ -3351,7 +3351,7 @@ fn buildOutputType(
                 break :test_mod test_mod;
             } else try Module.create(arena, .{
                 .paths = .{
-                    .root = try .fromRoot(arena, dirs, .zig_lib, "compiler"),
+                    .root = try .fromRoot(arena, &dirs, .zig_lib, "compiler"),
                     .root_src_path = "test_runner.zig",
                 },
                 .fully_qualified_name = "root",
@@ -4336,7 +4336,7 @@ fn createModule(
         };
     }
 
-    const root: Compilation.Path = try .fromUnresolved(arena, create_module.dirs, &.{cli_mod.root_path});
+    const root: Compilation.Path = try .fromUnresolved(arena, &create_module.dirs, &.{cli_mod.root_path});
 
     const mod = Module.create(arena, .{
         .paths = .{
@@ -5090,7 +5090,7 @@ fn jitCmdInner(
     // big block here to ensure the cleanup gets run when we extract out our argv.
     {
         const main_mod_paths: Module.CreateOptions.Paths = .{
-            .root = try .fromRoot(arena, dirs, .zig_lib, "compiler"),
+            .root = try .fromRoot(arena, &dirs, .zig_lib, "compiler"),
             .root_src_path = options.root_src_path,
         };
 
@@ -5120,7 +5120,7 @@ fn jitCmdInner(
         if (options.depend_on_aro) {
             const aro_mod = try Module.create(arena, .{
                 .paths = .{
-                    .root = try .fromRoot(arena, dirs, .zig_lib, "compiler/aro"),
+                    .root = try .fromRoot(arena, &dirs, .zig_lib, "compiler/aro"),
                     .root_src_path = "aro.zig",
                 },
                 .fully_qualified_name = "aro",
