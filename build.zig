@@ -754,6 +754,7 @@ pub fn build(b: *std.Build) !void {
             .optimize = optimize,
         }),
     });
+    b.step("runner", "Compile the compiler test runner").dependOn(&runner.step);
     const runner_opts: tests.RunnerOptions = .{
         .test_filters = test_filters,
         .test_target_filters = test_target_filters,
