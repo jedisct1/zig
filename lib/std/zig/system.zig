@@ -253,10 +253,12 @@ pub const ResolveTargetDiagnostics = struct {
 
     pub const InvalidQuery = union(enum) {
         explicit_cpu_required: Target.Cpu.Arch,
+        native_cpu_foreign_arch: Target.Cpu.Arch,
 
         pub fn format(diag: InvalidQuery, w: *Io.Writer) Io.Writer.Error!void {
             switch (diag) {
                 .explicit_cpu_required => |arch| try w.print("architecture {t} requires an explicit CPU model", .{arch}),
+                .native_cpu_foreign_arch => |arch| try w.print("native CPU model requested for foreign architecture {t}", .{arch}),
             }
         }
     };
@@ -583,7 +585,12 @@ pub fn resolveTargetQuery(
     }
 
     const maybe_cpu: ?Target.Cpu = switch (query.cpu_model) {
-        .native => detectNativeCpuAndFeatures(io, query_cpu_arch),
+        .native => if (query_cpu_arch.family() == builtin.target.cpu.arch.family())
+            detectNativeCpuAndFeatures(io, query_cpu_arch)
+        else {
+            diags.invalid_query = .{ .native_cpu_foreign_arch = query_cpu_arch };
+            return error.InvalidTargetQuery;
+        },
         .baseline => null,
         .determined_by_arch_os => if (query.cpu_arch == null)
             detectNativeCpuAndFeatures(io, query_cpu_arch)
